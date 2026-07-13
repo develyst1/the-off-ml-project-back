@@ -1,7 +1,10 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import { analyticsRoutes } from "./routes/analytics";
+import { automationRoutes } from "./routes/automation";
 import { caseRoutes } from "./routes/cases";
+import { confidenceRoutes } from "./routes/confidence";
 import { healthRoutes } from "./routes/health";
 import { integrationRoutes } from "./routes/integrations";
 import { lineWebhookRoutes } from "./routes/webhooks-line";
@@ -14,6 +17,9 @@ app.use("*", cors());
 
 app.route("/health", healthRoutes);
 app.route("/cases", caseRoutes);
+app.route("/analytics", analyticsRoutes);
+app.route("/confidence", confidenceRoutes);
+app.route("/automation", automationRoutes);
 app.route("/webhooks/line", lineWebhookRoutes);
 app.route("/webhooks/teams", teamsWebhookRoutes);
 app.route("/integrations", integrationRoutes);

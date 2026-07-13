@@ -124,7 +124,7 @@ export const aiCenterClient = {
       {
         role: "system",
         content:
-          "คุณคือ AI วิเคราะห์เคส Tech Support ของระบบ Off Mai ตอบกลับเป็น JSON เท่านั้น ห้ามมี markdown หรือคำอธิบายเพิ่ม",
+          "คุณคือ AI วิเคราะห์เคส Tech Support ของระบบ Off ML Project ตอบกลับเป็น JSON เท่านั้น ห้ามมี markdown หรือคำอธิบายเพิ่ม",
       },
       {
         role: "user",

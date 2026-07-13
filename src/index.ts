@@ -6,4 +6,4 @@ Bun.serve({
   fetch: app.fetch,
 });
 
-console.log(`Off Mai backend listening on http://localhost:${env.PORT}`);
+console.log(`Off ML Project backend listening on http://localhost:${env.PORT}`);
