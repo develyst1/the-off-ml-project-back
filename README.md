@@ -34,7 +34,7 @@ Backend ของโปรเจค **Off Mai / ออฟใหม่** ระ�
 - มี Hono server แล้ว
 - มี route สำหรับ LINE webhook และ Teams webhook แล้ว
 - มี service layer สำหรับควบคุม flow หลักแล้ว
-- มี AI CENTER client แบบ placeholder แล้ว
+- มี AI CENTER client ที่อิงจาก Bruno collection จริงแล้ว
 - มี LINE และ Teams client แบบ mock/fallback แล้ว
 - มี in-memory store ชั่วคราวแทน database
 - ยังไม่ได้ต่อ database จริง
@@ -113,8 +113,12 @@ http://localhost:4000
 NODE_ENV=development
 PORT=4000
 
-AI_CENTER_BASE_URL=
-AI_CENTER_API_KEY=
+AI_CENTER_BASE_URL=http://localhost:3009
+AI_CENTER_BRUNO_COLLECTION_PATH=C:\Users\User\Downloads\bruno\bruno
+AI_CENTER_PROVIDER=
+AI_CENTER_MODEL=
+AI_CENTER_TEMPERATURE=0.2
+AI_CENTER_MAX_TOKENS=900
 
 LINE_CHANNEL_SECRET=
 LINE_CHANNEL_ACCESS_TOKEN=
@@ -124,6 +128,11 @@ TEAMS_WEBHOOK_URL=
 
 หมายเหตุ:
 
+- AI CENTER อ้างอิงจาก Bruno collection ที่ `C:\Users\User\Downloads\bruno\bruno`
+- Bruno local environment ใช้ `baseUrl: http://localhost:3009`
+- Bruno production environment ใช้ `baseUrl: https://ai.develyst.online`
+- AI CENTER collection นี้เป็น `auth: none` ดังนั้น backend ไม่ต้องตั้งค่า key สำหรับเรียก AI CENTER
+- Backend เรียก AI CENTER ผ่าน `POST /chat` โดยส่ง `messages`, `temperature`, `max_tokens` และ optional `provider`/`model`
 - ถ้า `AI_CENTER_BASE_URL` ว่าง ระบบจะใช้ผลวิเคราะห์ mock
 - ถ้า `TEAMS_WEBHOOK_URL` ว่าง ระบบจะ log ข้อความ Teams ใน console
 - ถ้า `LINE_CHANNEL_ACCESS_TOKEN` ว่าง ระบบจะ log ข้อความ LINE ใน console
@@ -289,7 +298,7 @@ curl.exe -X POST http://localhost:4000/webhooks/teams `
 3. ปรับ `POST /webhooks/line` ให้รับ payload จริงจาก LINE OA
 4. เพิ่ม LINE signature verification
 5. เลือกวิธีเชื่อม MS Teams จริง เช่น webhook, bot, adaptive card หรือ Graph API
-6. ปรับ AI CENTER endpoint และ response shape ให้ตรงกับ Bruno collection จริง
+6. ปรับ prompt/schema ของ AI CENTER ให้ตอบ JSON คงที่มากขึ้นสำหรับงาน analyze/rewrite
 7. เพิ่ม idempotency สำหรับ webhook event ที่ส่งซ้ำ
 8. เพิ่ม automated tests สำหรับ LINE intake และ Teams reply flow
 9. เพิ่ม repository layer สำหรับเปลี่ยนจาก in-memory store เป็น database จริง
