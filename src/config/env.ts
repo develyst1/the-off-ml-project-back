@@ -7,6 +7,8 @@ type Env = {
   AI_CENTER_MODEL?: string;
   AI_CENTER_TEMPERATURE: number;
   AI_CENTER_MAX_TOKENS: number;
+  DATABASE_URL?: string;
+  DATABASE_SSL: boolean;
   LINE_CHANNEL_SECRET?: string;
   LINE_CHANNEL_ACCESS_TOKEN?: string;
   TEAMS_WEBHOOK_URL?: string;
@@ -15,6 +17,7 @@ type Env = {
 const port = Number(Bun.env.PORT ?? 4000);
 const aiCenterTemperature = Number(Bun.env.AI_CENTER_TEMPERATURE ?? 0.2);
 const aiCenterMaxTokens = Number(Bun.env.AI_CENTER_MAX_TOKENS ?? 900);
+const databaseSsl = Bun.env.DATABASE_SSL === "true";
 
 if (!Number.isInteger(port) || port <= 0) {
   throw new Error("PORT must be a positive integer");
@@ -37,6 +40,8 @@ export const env: Env = {
   AI_CENTER_MODEL: Bun.env.AI_CENTER_MODEL,
   AI_CENTER_TEMPERATURE: aiCenterTemperature,
   AI_CENTER_MAX_TOKENS: aiCenterMaxTokens,
+  DATABASE_URL: Bun.env.DATABASE_URL,
+  DATABASE_SSL: databaseSsl,
   LINE_CHANNEL_SECRET: Bun.env.LINE_CHANNEL_SECRET,
   LINE_CHANNEL_ACCESS_TOKEN: Bun.env.LINE_CHANNEL_ACCESS_TOKEN,
   TEAMS_WEBHOOK_URL: Bun.env.TEAMS_WEBHOOK_URL,

@@ -1,7 +1,8 @@
 import type { Analysis, CaseDetail, CaseStatus, Customer, Message, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
+import type { CaseStore } from "./case-store";
 
-class InMemoryStore {
+export class InMemoryStore implements CaseStore {
   private customers = new Map<string, Customer>();
   private customersByLineUserId = new Map<string, string>();
   private cases = new Map<string, SupportCase>();
@@ -9,7 +10,7 @@ class InMemoryStore {
   private analyses = new Map<string, Analysis>();
   private solutions = new Map<string, Solution>();
 
-  upsertCustomer(input: { lineUserId: string; displayName?: string }): Customer {
+  async upsertCustomer(input: { lineUserId: string; displayName?: string }): Promise<Customer> {
     const existingId = this.customersByLineUserId.get(input.lineUserId);
     const timestamp = nowIso();
 
@@ -41,7 +42,7 @@ class InMemoryStore {
     return customer;
   }
 
-  createCase(input: { customerId: string; status?: CaseStatus; category?: string; confidenceScore?: number }): SupportCase {
+  async createCase(input: { customerId: string; status?: CaseStatus; category?: string; confidenceScore?: number }): Promise<SupportCase> {
     const timestamp = nowIso();
     const supportCase: SupportCase = {
       id: createId("case"),
@@ -57,7 +58,7 @@ class InMemoryStore {
     return supportCase;
   }
 
-  updateCase(id: string, patch: Partial<Omit<SupportCase, "id" | "customerId" | "createdAt">>): SupportCase {
+  async updateCase(id: string, patch: Partial<Omit<SupportCase, "id" | "customerId" | "createdAt">>): Promise<SupportCase> {
     const current = this.cases.get(id);
 
     if (!current) {
@@ -74,7 +75,7 @@ class InMemoryStore {
     return updated;
   }
 
-  createMessage(input: Omit<Message, "id" | "createdAt">): Message {
+  async createMessage(input: Omit<Message, "id" | "createdAt">): Promise<Message> {
     const message: Message = {
       ...input,
       id: createId("msg"),
@@ -85,7 +86,7 @@ class InMemoryStore {
     return message;
   }
 
-  createAnalysis(input: Omit<Analysis, "id" | "createdAt">): Analysis {
+  async createAnalysis(input: Omit<Analysis, "id" | "createdAt">): Promise<Analysis> {
     const analysis: Analysis = {
       ...input,
       id: createId("ana"),
@@ -96,7 +97,7 @@ class InMemoryStore {
     return analysis;
   }
 
-  createSolution(input: Omit<Solution, "id" | "createdAt">): Solution {
+  async createSolution(input: Omit<Solution, "id" | "createdAt">): Promise<Solution> {
     const solution: Solution = {
       ...input,
       id: createId("sol"),
@@ -107,14 +108,15 @@ class InMemoryStore {
     return solution;
   }
 
-  listCases(): CaseDetail[] {
-    return [...this.cases.values()]
+  async listCases(): Promise<CaseDetail[]> {
+    const details = await Promise.all([...this.cases.values()]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .map((supportCase) => this.getCaseDetail(supportCase.id))
-      .filter((detail): detail is CaseDetail => Boolean(detail));
+      .map((supportCase) => this.getCaseDetail(supportCase.id)));
+
+    return details.filter((detail): detail is CaseDetail => Boolean(detail));
   }
 
-  getCaseDetail(id: string): CaseDetail | undefined {
+  async getCaseDetail(id: string): Promise<CaseDetail | undefined> {
     const supportCase = this.cases.get(id);
     if (!supportCase) return undefined;
 
@@ -130,5 +132,3 @@ class InMemoryStore {
     };
   }
 }
-
-export const store = new InMemoryStore();

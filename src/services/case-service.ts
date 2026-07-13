@@ -1,5 +1,5 @@
 import type { CaseStatus } from "../domain/types";
-import { store } from "../repositories/in-memory-store";
+import { store } from "../repositories/store";
 import { aiCenterClient } from "./ai-center-client";
 import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
@@ -11,17 +11,17 @@ export const caseService = {
     text: string;
     externalMessageId?: string;
   }) {
-    const customer = store.upsertCustomer({
+    const customer = await store.upsertCustomer({
       lineUserId: input.lineUserId,
       displayName: input.displayName,
     });
 
-    const supportCase = store.createCase({
+    const supportCase = await store.createCase({
       customerId: customer.id,
       status: "analyzing",
     });
 
-    const message = store.createMessage({
+    const message = await store.createMessage({
       caseId: supportCase.id,
       direction: "inbound_customer",
       channel: "line",
@@ -34,7 +34,7 @@ export const caseService = {
       customerDisplayName: input.displayName,
     });
 
-    store.createAnalysis({
+    await store.createAnalysis({
       caseId: supportCase.id,
       messageId: message.id,
       analysisType: "customer_message",
@@ -44,14 +44,14 @@ export const caseService = {
       rawJson: analysis,
     });
 
-    store.updateCase(supportCase.id, {
+    await store.updateCase(supportCase.id, {
       status: "awaiting_tech",
       category: analysis.category,
       priority: analysis.urgency,
       confidenceScore: analysis.confidence,
     });
 
-    const detail = store.getCaseDetail(supportCase.id);
+    const detail = await store.getCaseDetail(supportCase.id);
     if (!detail) {
       throw new Error("Case detail missing after intake");
     }
@@ -65,14 +65,14 @@ export const caseService = {
     text: string;
     externalMessageId?: string;
   }) {
-    const detail = store.getCaseDetail(input.caseId);
+    const detail = await store.getCaseDetail(input.caseId);
     if (!detail) {
       throw new Error("Case not found");
     }
 
-    store.updateCase(input.caseId, { status: "tech_replied" });
+    await store.updateCase(input.caseId, { status: "tech_replied" });
 
-    const message = store.createMessage({
+    const message = await store.createMessage({
       caseId: input.caseId,
       direction: "inbound_tech",
       channel: "ms_teams",
@@ -80,7 +80,7 @@ export const caseService = {
       externalMessageId: input.externalMessageId,
     });
 
-    store.updateCase(input.caseId, { status: "analyzing_solution" });
+    await store.updateCase(input.caseId, { status: "analyzing_solution" });
 
     const originalCustomerText = detail.messages.find((item) => item.direction === "inbound_customer")?.originalText;
     const solutionAnalysis = await aiCenterClient.analyzeTechSolution({
@@ -88,7 +88,7 @@ export const caseService = {
       originalCustomerText,
     });
 
-    store.createAnalysis({
+    await store.createAnalysis({
       caseId: input.caseId,
       messageId: message.id,
       analysisType: "tech_solution",
@@ -98,7 +98,7 @@ export const caseService = {
       rawJson: solutionAnalysis,
     });
 
-    store.createSolution({
+    await store.createSolution({
       caseId: input.caseId,
       rawReplyText: input.text,
       rootCause: solutionAnalysis.rootCause,
@@ -108,12 +108,12 @@ export const caseService = {
       validatedByTeam: true,
     });
 
-    store.updateCase(input.caseId, {
+    await store.updateCase(input.caseId, {
       status: "resolved",
       category: solutionAnalysis.category ?? detail.category,
     });
 
-    const updatedDetail = store.getCaseDetail(input.caseId);
+    const updatedDetail = await store.getCaseDetail(input.caseId);
     if (!updatedDetail) {
       throw new Error("Case detail missing after Teams reply");
     }
@@ -123,14 +123,14 @@ export const caseService = {
       text: solutionAnalysis.rewrittenCustomerText,
     });
 
-    store.createMessage({
+    await store.createMessage({
       caseId: input.caseId,
       direction: "outbound_customer",
       channel: "line",
       originalText: solutionAnalysis.rewrittenCustomerText,
     });
 
-    store.updateCase(input.caseId, { status: "sent_to_customer" });
+    await store.updateCase(input.caseId, { status: "sent_to_customer" });
     return store.getCaseDetail(input.caseId);
   },
 

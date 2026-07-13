@@ -9,7 +9,7 @@ export const integrationRoutes = new Hono();
 integrationRoutes.post("/teams/notify", async (c) => {
   const body = await readJsonObject(c);
   const caseId = requiredString(body, "caseId");
-  const detail = caseService.getCase(caseId);
+  const detail = await caseService.getCase(caseId);
 
   if (!detail) {
     return c.json({ error: "case_not_found" }, 404);

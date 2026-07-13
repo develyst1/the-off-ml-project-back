@@ -17,10 +17,10 @@ const statuses: CaseStatus[] = [
 
 export const caseRoutes = new Hono();
 
-caseRoutes.get("/", (c) => c.json({ data: caseService.listCases() }));
+caseRoutes.get("/", async (c) => c.json({ data: await caseService.listCases() }));
 
-caseRoutes.get("/:id", (c) => {
-  const detail = caseService.getCase(c.req.param("id"));
+caseRoutes.get("/:id", async (c) => {
+  const detail = await caseService.getCase(c.req.param("id"));
 
   if (!detail) {
     return c.json({ error: "case_not_found" }, 404);
@@ -37,5 +37,5 @@ caseRoutes.patch("/:id/status", async (c) => {
     return c.json({ error: "invalid_status", allowed: statuses }, 400);
   }
 
-  return c.json({ data: caseService.updateStatus(c.req.param("id"), status as CaseStatus) });
+  return c.json({ data: await caseService.updateStatus(c.req.param("id"), status as CaseStatus) });
 });
