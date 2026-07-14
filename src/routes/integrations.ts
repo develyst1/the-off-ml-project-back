@@ -6,6 +6,13 @@ import { teamsClient } from "../services/teams-client";
 
 export const integrationRoutes = new Hono();
 
+integrationRoutes.get("/teams/status", (c) => c.json({
+  data: {
+    connected: teamsClient.isConfigured(),
+    mode: teamsClient.isConfigured() ? "incoming_webhook" : "mock",
+  },
+}));
+
 integrationRoutes.post("/teams/notify", async (c) => {
   const body = await readJsonObject(c);
   const caseId = requiredString(body, "caseId");

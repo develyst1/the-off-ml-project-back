@@ -2,6 +2,10 @@ import { env } from "../config/env";
 import type { CaseDetail } from "../domain/types";
 
 export const teamsClient = {
+  isConfigured() {
+    return Boolean(env.TEAMS_WEBHOOK_URL);
+  },
+
   async notifyCase(caseDetail: CaseDetail): Promise<{ delivered: boolean; externalId?: string }> {
     const latestCustomerMessage = caseDetail.messages.find((message) => message.direction === "inbound_customer");
     const latestAnalysis = caseDetail.analyses.find((analysis) => analysis.analysisType === "customer_message");
@@ -23,7 +27,14 @@ export const teamsClient = {
     const response = await fetch(env.TEAMS_WEBHOOK_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({
+        "@type": "MessageCard",
+        "@context": "https://schema.org/extensions",
+        summary: `Off ML Project case ${caseDetail.caseNumber}`,
+        themeColor: "0078D4",
+        title: `Off ML Project - Case ${caseDetail.caseNumber}`,
+        text,
+      }),
     });
 
     if (!response.ok) {
