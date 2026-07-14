@@ -242,6 +242,15 @@ export class PostgresStore implements CaseStore {
     return mapMessage(result.rows[0]);
   }
 
+  async getMessageByExternalMessageId(externalMessageId: string): Promise<Message | undefined> {
+    const result = await this.query<DbMessage>(
+      "select * from messages where external_message_id = $1 limit 1",
+      [externalMessageId],
+    );
+
+    return result.rows[0] ? mapMessage(result.rows[0]) : undefined;
+  }
+
   async createAnalysis(input: Omit<Analysis, "id" | "createdAt">): Promise<Analysis> {
     const result = await this.query<DbAnalysis>(
       `insert into analyses (id, case_id, message_id, analysis_type, summary, category, confidence, raw_json, created_at)

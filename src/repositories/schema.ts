@@ -101,6 +101,7 @@ create table if not exists auto_answer_logs (
 
 create index if not exists support_cases_created_at_idx on support_cases(created_at desc);
 create index if not exists messages_case_id_idx on messages(case_id);
+create unique index if not exists messages_external_message_id_uidx on messages(external_message_id) where external_message_id is not null;
 create index if not exists analyses_case_id_idx on analyses(case_id);
 create index if not exists solutions_case_id_idx on solutions(case_id);
 create index if not exists confidence_matches_case_id_idx on confidence_matches(case_id);

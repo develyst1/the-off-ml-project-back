@@ -86,6 +86,10 @@ export class InMemoryStore implements CaseStore {
     return message;
   }
 
+  async getMessageByExternalMessageId(externalMessageId: string): Promise<Message | undefined> {
+    return [...this.messages.values()].find((message) => message.externalMessageId === externalMessageId);
+  }
+
   async createAnalysis(input: Omit<Analysis, "id" | "createdAt">): Promise<Analysis> {
     const analysis: Analysis = {
       ...input,
