@@ -19,6 +19,32 @@ export const teamsClient = {
       `Confidence: ${latestAnalysis?.confidence ?? 0}%`,
     ].join("\n");
 
+    const data = {
+      caseNumber: caseDetail.caseNumber,
+      caseId: caseDetail.id,
+      customerName: caseDetail.customer.displayName ?? caseDetail.customer.lineUserId,
+      originalText: latestCustomerMessage?.originalText ?? "-",
+      summary: latestAnalysis?.summary ?? "-",
+      category: latestAnalysis?.category ?? "-",
+      confidence: latestAnalysis?.confidence ?? 0,
+    };
+
+    const card = {
+      $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
+      type: "AdaptiveCard",
+      version: "1.2",
+      body: [
+        { type: "TextBlock", size: "Large", weight: "Bolder", text: `Off ML Project - Case ${data.caseNumber}` },
+        { type: "FactSet", facts: [
+          { title: "Customer", value: data.customerName },
+          { title: "Category", value: data.category },
+          { title: "AI confidence", value: `${data.confidence}%` },
+        ] },
+        { type: "TextBlock", wrap: true, text: `Customer message: ${data.originalText}` },
+        { type: "TextBlock", wrap: true, text: `AI summary: ${data.summary}` },
+      ],
+    };
+
     if (!env.TEAMS_WEBHOOK_URL) {
       console.log("[teams:mock]", text);
       return { delivered: false };
@@ -28,12 +54,10 @@ export const teamsClient = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        "@type": "MessageCard",
-        "@context": "https://schema.org/extensions",
-        summary: `Off ML Project case ${caseDetail.caseNumber}`,
-        themeColor: "0078D4",
-        title: `Off ML Project - Case ${caseDetail.caseNumber}`,
+        event: "off_ml_project_case_created",
         text,
+        data,
+        card,
       }),
     });
 
