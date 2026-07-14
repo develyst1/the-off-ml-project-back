@@ -9,6 +9,7 @@ create table if not exists customers (
 
 create table if not exists support_cases (
   id text primary key,
+  case_number bigint,
   customer_id text not null references customers(id),
   status text not null,
   category text,
@@ -18,6 +19,18 @@ create table if not exists support_cases (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+create sequence if not exists support_cases_case_number_seq;
+alter table support_cases add column if not exists case_number bigint;
+update support_cases
+set case_number = nextval('support_cases_case_number_seq')
+where case_number is null;
+select setval(
+  'support_cases_case_number_seq',
+  coalesce((select max(case_number) from support_cases), 1),
+  (select count(*) > 0 from support_cases)
+);
+alter table support_cases alter column case_number set not null;
 
 create table if not exists messages (
   id text primary key,
@@ -100,6 +113,7 @@ create table if not exists auto_answer_logs (
 );
 
 create index if not exists support_cases_created_at_idx on support_cases(created_at desc);
+create unique index if not exists support_cases_case_number_uidx on support_cases(case_number);
 create index if not exists messages_case_id_idx on messages(case_id);
 create unique index if not exists messages_external_message_id_uidx on messages(external_message_id) where external_message_id is not null;
 create index if not exists analyses_case_id_idx on analyses(case_id);

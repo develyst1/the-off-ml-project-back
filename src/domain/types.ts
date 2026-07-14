@@ -27,6 +27,7 @@ export type Customer = {
 
 export type SupportCase = {
   id: string;
+  caseNumber: number;
   customerId: string;
   status: CaseStatus;
   category?: string;

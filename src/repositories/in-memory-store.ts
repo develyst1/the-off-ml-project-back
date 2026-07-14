@@ -6,6 +6,7 @@ export class InMemoryStore implements CaseStore {
   private customers = new Map<string, Customer>();
   private customersByLineUserId = new Map<string, string>();
   private cases = new Map<string, SupportCase>();
+  private nextCaseNumber = 1;
   private messages = new Map<string, Message>();
   private analyses = new Map<string, Analysis>();
   private solutions = new Map<string, Solution>();
@@ -46,6 +47,7 @@ export class InMemoryStore implements CaseStore {
     const timestamp = nowIso();
     const supportCase: SupportCase = {
       id: createId("case"),
+      caseNumber: this.nextCaseNumber++,
       customerId: input.customerId,
       status: input.status ?? "new",
       category: input.category,

@@ -6,6 +6,7 @@
   "scripts": {
     "build": "bun build src/index.ts --compile --minify --outfile dist/the-off-ml-project-back",
     "db:ensure": "bun src/scripts/ensure-database.ts",
+    "db:migrate": "bun src/scripts/migrate-database.ts",
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "test": "bun test",

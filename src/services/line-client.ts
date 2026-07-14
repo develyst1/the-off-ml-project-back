@@ -1,6 +1,26 @@
 import { env } from "../config/env";
 
 export const lineClient = {
+  async getProfile(lineUserId: string): Promise<{ displayName: string; pictureUrl?: string } | undefined> {
+    if (!env.LINE_CHANNEL_ACCESS_TOKEN) {
+      return undefined;
+    }
+
+    const response = await fetch(`https://api.line.me/v2/bot/profile/${encodeURIComponent(lineUserId)}`, {
+      headers: {
+        authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`LINE profile lookup failed: ${response.status} ${errorBody}`);
+    }
+
+    const profile = (await response.json()) as { displayName?: string; pictureUrl?: string };
+    return profile.displayName ? { displayName: profile.displayName, pictureUrl: profile.pictureUrl } : undefined;
+  },
+
   async replyToToken(input: { replyToken: string | undefined; text: string }): Promise<{ delivered: boolean }> {
     if (!input.replyToken) {
       return { delivered: false };

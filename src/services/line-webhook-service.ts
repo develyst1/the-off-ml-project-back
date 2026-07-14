@@ -11,6 +11,7 @@ export type LineTextMessageInput = {
   lineUserId: string;
   messageId: string;
   text: string;
+  displayName?: string;
   replyToken?: string;
   timestamp?: number;
 };
@@ -38,8 +39,18 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     return { processed: false, duplicate: true };
   }
 
+  let displayName = input.displayName;
+  if (!displayName) {
+    try {
+      displayName = (await lineClient.getProfile(input.lineUserId))?.displayName;
+    } catch (error) {
+      console.warn({ event: "line_profile_lookup_failed", lineUserId: input.lineUserId, error: String(error) });
+    }
+  }
+
   const customer = await store.upsertCustomer({
     lineUserId: input.lineUserId,
+    displayName,
   });
 
   const supportCase = await store.createCase({
@@ -61,6 +72,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
 
   const analysis = await aiCenterClient.analyzeCustomerMessage({
     text: input.text,
+    customerDisplayName: customer.displayName,
   });
 
   await store.createAnalysis({

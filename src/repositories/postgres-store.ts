@@ -17,6 +17,7 @@ type DbCustomer = {
 
 type DbCase = {
   id: string;
+  case_number: number | string;
   customer_id: string;
   status: CaseStatus;
   category: string | null;
@@ -83,6 +84,7 @@ function mapCustomer(row: DbCustomer): Customer {
 function mapCase(row: DbCase): SupportCase {
   return {
     id: row.id,
+    caseNumber: Number(row.case_number),
     customerId: row.customer_id,
     status: row.status,
     category: row.category ?? undefined,
@@ -184,8 +186,8 @@ export class PostgresStore implements CaseStore {
   }): Promise<SupportCase> {
     const timestamp = nowIso();
     const result = await this.query<DbCase>(
-      `insert into support_cases (id, customer_id, status, category, confidence_score, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $6)
+      `insert into support_cases (id, case_number, customer_id, status, category, confidence_score, created_at, updated_at)
+       values ($1, nextval('support_cases_case_number_seq'), $2, $3, $4, $5, $6, $6)
        returning *`,
       [createId("case"), input.customerId, input.status ?? "new", input.category ?? null, input.confidenceScore ?? null, timestamp],
     );

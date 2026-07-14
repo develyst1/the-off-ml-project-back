@@ -7,7 +7,7 @@ export const teamsClient = {
     const latestAnalysis = caseDetail.analyses.find((analysis) => analysis.analysisType === "customer_message");
 
     const text = [
-      `New Off ML Project case: ${caseDetail.id}`,
+      `New Off ML Project case: เคส ${caseDetail.caseNumber}`,
       `Customer: ${caseDetail.customer.displayName ?? caseDetail.customer.lineUserId}`,
       `Original: ${latestCustomerMessage?.originalText ?? "-"}`,
       `Summary: ${latestAnalysis?.summary ?? "-"}`,
