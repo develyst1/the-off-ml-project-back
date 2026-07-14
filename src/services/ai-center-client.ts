@@ -120,7 +120,8 @@ function parseJsonObject<T>(content: string, fallback: T): T {
 export const aiCenterClient = {
   async analyzeCustomerMessage(input: { text: string; customerDisplayName?: string }) {
     const fallback = fallbackCustomerAnalysis(input.text);
-    const content = await chatWithAiCenter([
+    try {
+      const content = await chatWithAiCenter([
       {
         role: "system",
         content:
@@ -145,8 +146,15 @@ export const aiCenterClient = {
       },
     ]);
 
-    if (!content) return fallback;
-    return parseJsonObject<CustomerMessageAnalysis>(content, fallback);
+      if (!content) return fallback;
+      return parseJsonObject<CustomerMessageAnalysis>(content, fallback);
+    } catch (error) {
+      console.error({
+        event: "ai_center_customer_analysis_failed",
+        message: error instanceof Error ? error.message : "Unexpected AI CENTER error",
+      });
+      return fallback;
+    }
   },
 
   async analyzeTechSolution(input: { techReplyText: string; originalCustomerText?: string }) {

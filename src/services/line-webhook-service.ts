@@ -1,6 +1,8 @@
 import type { CaseDetail } from "../domain/types";
 import { store } from "../repositories/store";
+import { aiCenterClient } from "./ai-center-client";
 import { lineClient } from "./line-client";
+import { teamsClient } from "./teams-client";
 
 export const LINE_ACKNOWLEDGEMENT_TEXT =
   "รับเรื่องเรียบร้อยแล้วค่ะ ทีมงานกำลังตรวจสอบปัญหาให้คุณ";
@@ -45,12 +47,37 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     status: "new",
   });
 
-  await store.createMessage({
+  await store.updateCase(supportCase.id, {
+    status: "analyzing",
+  });
+
+  const message = await store.createMessage({
     caseId: supportCase.id,
     direction: "inbound_customer",
     channel: "line",
     originalText: input.text,
     externalMessageId: input.messageId,
+  });
+
+  const analysis = await aiCenterClient.analyzeCustomerMessage({
+    text: input.text,
+  });
+
+  await store.createAnalysis({
+    caseId: supportCase.id,
+    messageId: message.id,
+    analysisType: "customer_message",
+    summary: analysis.summary,
+    category: analysis.category,
+    confidence: analysis.confidence,
+    rawJson: analysis,
+  });
+
+  await store.updateCase(supportCase.id, {
+    status: "awaiting_tech",
+    category: analysis.category,
+    priority: analysis.urgency,
+    confidenceScore: analysis.confidence,
   });
 
   console.log({
@@ -66,9 +93,14 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     text: LINE_ACKNOWLEDGEMENT_TEXT,
   });
 
+  const caseDetail = await store.getCaseDetail(supportCase.id);
+  if (caseDetail) {
+    await teamsClient.notifyCase(caseDetail);
+  }
+
   return {
     processed: true,
     duplicate: false,
-    caseDetail: await store.getCaseDetail(supportCase.id),
+    caseDetail,
   };
 }
