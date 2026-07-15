@@ -79,12 +79,25 @@ export const teamsClient = {
           isMultiline: true,
           maxLength: 4000,
         },
+        {
+          type: "Input.Text",
+          id: "requestInfoText",
+          label: "ข้อความขอข้อมูลเพิ่มเติมจากลูกค้า",
+          placeholder: "เช่น รบกวนส่งภาพหน้าจอหรือข้อความแจ้งเตือนเพิ่มเติม",
+          isMultiline: true,
+          maxLength: 2000,
+        },
       ],
       actions: [
         {
           type: "Action.Submit",
           title: "วิเคราะห์และส่งให้ลูกค้า",
           data: { action: "reply", caseId: data.caseId, caseNumber: data.caseNumber },
+        },
+        {
+          type: "Action.Submit",
+          title: "ขอข้อมูลเพิ่มเติม",
+          data: { action: "request-info", caseId: data.caseId, caseNumber: data.caseNumber },
         },
         {
           type: "Action.OpenUrl",
