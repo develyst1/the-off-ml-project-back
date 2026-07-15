@@ -5,6 +5,97 @@ import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
 
 export const caseService = {
+  async findRelatedLineCase(input: { customerId: string; newText: string; receivedAt?: string }) {
+    const cases = (await store.listCases())
+      .filter((item) => item.customer.id === input.customerId)
+      .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+    const candidate = cases[0];
+    if (!candidate) return undefined;
+
+    const customerMessages = candidate.messages.filter((message) => message.direction === "inbound_customer");
+    const originalCustomerText = customerMessages[0]?.originalText;
+    if (!originalCustomerText) return undefined;
+
+    const latestActivity = candidate.messages.reduce((latest, message) => {
+      return Math.max(latest, new Date(message.createdAt).getTime());
+    }, new Date(candidate.updatedAt).getTime());
+    const receivedAt = input.receivedAt ? new Date(input.receivedAt).getTime() : Date.now();
+    const elapsedHours = Math.max(0, (receivedAt - latestActivity) / (1000 * 60 * 60));
+    const relation = await aiCenterClient.analyzeCaseRelation({
+      originalCustomerText,
+      caseCategory: candidate.category,
+      recentConversation: candidate.messages.slice(-6).map((message) => `${message.direction}: ${message.originalText}`),
+      newCustomerText: input.newText,
+      elapsedHours,
+      caseStatus: candidate.status,
+    });
+
+    console.log({
+      event: "line_case_relation_decision",
+      caseId: candidate.id,
+      elapsedHours: Number(elapsedHours.toFixed(2)),
+      related: relation.related,
+      confidence: relation.confidence,
+      reason: relation.reason,
+    });
+
+    return relation.related ? candidate : undefined;
+  },
+
+  async appendLineMessageToCase(input: { caseId: string; text: string; externalMessageId?: string }) {
+    const detail = await store.getCaseDetail(input.caseId);
+    if (!detail) throw new Error("Case not found");
+
+    const message = await store.createMessage({
+      caseId: input.caseId,
+      direction: "inbound_customer",
+      channel: "line",
+      originalText: input.text,
+      externalMessageId: input.externalMessageId,
+    });
+    const analysis = await aiCenterClient.analyzeCustomerMessage({
+      text: input.text,
+      customerDisplayName: detail.customer.displayName,
+    });
+
+    await store.createAnalysis({
+      caseId: input.caseId,
+      messageId: message.id,
+      analysisType: "customer_message",
+      summary: analysis.summary,
+      category: analysis.category,
+      confidence: analysis.confidence,
+      rawJson: analysis,
+    });
+    await store.updateCase(input.caseId, {
+      status: "awaiting_tech",
+      category: detail.category ?? analysis.category,
+      priority: analysis.urgency,
+      confidenceScore: analysis.confidence,
+    });
+
+    const updatedDetail = await store.getCaseDetail(input.caseId);
+    if (!updatedDetail) throw new Error("Case detail missing after appending LINE message");
+
+    try {
+      await teamsClient.notifyCase(updatedDetail);
+      await store.updateCase(input.caseId, {
+        teamsDeliveryStatus: "accepted",
+        teamsDeliveryAt: new Date().toISOString(),
+        teamsDeliveryError: undefined,
+      });
+    } catch (error) {
+      await store.updateCase(input.caseId, {
+        teamsDeliveryStatus: "failed",
+        teamsDeliveryAt: new Date().toISOString(),
+        teamsDeliveryError: error instanceof Error ? error.message : String(error),
+      });
+      console.error({ event: "teams_related_case_delivery_failed", caseId: input.caseId, error: String(error) });
+    }
+
+    return store.getCaseDetail(input.caseId);
+  },
+
   async acceptCase(caseId: string) {
     const detail = await store.getCaseDetail(caseId);
     if (!detail) throw new Error("Case not found");

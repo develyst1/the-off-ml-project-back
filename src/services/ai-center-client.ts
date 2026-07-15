@@ -49,6 +49,12 @@ export type TechSolutionAnalysis = {
   confidence: number;
 };
 
+export type CaseRelationAnalysis = {
+  related: boolean;
+  confidence: number;
+  reason: string;
+};
+
 function fallbackCustomerAnalysis(text: string): CustomerMessageAnalysis {
   return {
     summary: text.length > 120 ? `${text.slice(0, 117)}...` : text,
@@ -68,6 +74,16 @@ function fallbackTechSolution(text: string): TechSolutionAnalysis {
     rewrittenCustomerText: text,
     category: "uncategorized",
     confidence: 50,
+  };
+}
+
+function fallbackCaseRelation(input: { caseStatus?: string }): CaseRelationAnalysis {
+  return {
+    related: input.caseStatus === "awaiting_customer_info",
+    confidence: input.caseStatus === "awaiting_customer_info" ? 60 : 0,
+    reason: input.caseStatus === "awaiting_customer_info"
+      ? "ลูกค้ากำลังตอบกลับจากคำขอข้อมูลเพิ่มเติมของเคสเดิม"
+      : "ยังไม่มีผลวิเคราะห์ความเกี่ยวข้องจาก AI CENTER",
   };
 }
 
@@ -118,6 +134,58 @@ function parseJsonObject<T>(content: string, fallback: T): T {
 }
 
 export const aiCenterClient = {
+  async analyzeCaseRelation(input: {
+    originalCustomerText: string;
+    caseCategory?: string;
+    recentConversation: string[];
+    newCustomerText: string;
+    elapsedHours: number;
+    caseStatus?: string;
+  }): Promise<CaseRelationAnalysis> {
+    const fallback = fallbackCaseRelation(input);
+    try {
+      const content = await chatWithAiCenter([
+        {
+          role: "system",
+          content: "คุณคือ AI ตรวจสอบว่าข้อความ LINE ใหม่เกี่ยวข้องกับเคสเดิมหรือไม่ ตอบเป็น JSON เท่านั้น",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "judge_case_relation",
+            rules: [
+              "ใช้ข้อความต้นฉบับของเคสเป็นหัวเรื่องหลัก",
+              "พิจารณาบทสนทนาล่าสุดและสถานะเคสประกอบ",
+              "ถ้าเป็นการตอบข้อมูลที่ทีมขอ หรือเป็นปัญหาเดียวกัน ให้ related=true",
+              "ถ้าเปลี่ยนหัวเรื่องหรือเป็นปัญหาคนละเรื่อง ให้ related=false",
+              "เวลาไม่ใช่เหตุผลเดียวในการตัดสิน: ภายใน 2 ชั่วโมงก็ต้องตรวจเนื้อหา และเกิน 2 ชั่วโมงก็ยังต่อเคสเดิมได้ถ้าเกี่ยวข้อง",
+            ],
+            required_schema: {
+              related: "boolean",
+              confidence: "number 0-100",
+              reason: "string",
+            },
+            originalCustomerText: input.originalCustomerText,
+            caseCategory: input.caseCategory,
+            recentConversation: input.recentConversation,
+            newCustomerText: input.newCustomerText,
+            elapsedHours: input.elapsedHours,
+            caseStatus: input.caseStatus,
+          }),
+        },
+      ]);
+
+      if (!content) return fallback;
+      return parseJsonObject<CaseRelationAnalysis>(content, fallback);
+    } catch (error) {
+      console.error({
+        event: "ai_center_case_relation_failed",
+        message: error instanceof Error ? error.message : "Unexpected AI CENTER error",
+      });
+      return fallback;
+    }
+  },
+
   async analyzeCustomerMessage(input: { text: string; customerDisplayName?: string }) {
     const fallback = fallbackCustomerAnalysis(input.text);
     try {

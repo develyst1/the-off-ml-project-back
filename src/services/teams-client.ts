@@ -31,8 +31,12 @@ export const teamsClient = {
   },
 
   async notifyCase(caseDetail: CaseDetail): Promise<{ delivered: boolean; externalId?: string }> {
-    const latestCustomerMessage = caseDetail.messages.find((message) => message.direction === "inbound_customer");
-    const latestAnalysis = caseDetail.analyses.find((analysis) => analysis.analysisType === "customer_message");
+    const latestCustomerMessage = [...caseDetail.messages]
+      .filter((message) => message.direction === "inbound_customer")
+      .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+    const latestAnalysis = [...caseDetail.analyses]
+      .filter((analysis) => analysis.analysisType === "customer_message")
+      .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
 
     const text = [
       `New Off ML Project case: เคส ${caseDetail.caseNumber}`,

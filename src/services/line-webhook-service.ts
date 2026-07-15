@@ -1,6 +1,7 @@
 import type { CaseDetail } from "../domain/types";
 import { store } from "../repositories/store";
 import { aiCenterClient } from "./ai-center-client";
+import { caseService } from "./case-service";
 import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
 
@@ -52,6 +53,39 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     lineUserId: input.lineUserId,
     displayName,
   });
+
+  const relatedCase = await caseService.findRelatedLineCase({
+    customerId: customer.id,
+    newText: input.text,
+    receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : undefined,
+  });
+
+  if (relatedCase) {
+    const caseDetail = await caseService.appendLineMessageToCase({
+      caseId: relatedCase.id,
+      text: input.text,
+      externalMessageId: input.messageId,
+    });
+
+    console.log({
+      event: "line_webhook_message_attached_to_existing_case",
+      lineUserId: input.lineUserId,
+      lineMessageId: input.messageId,
+      caseId: relatedCase.id,
+      timestamp: input.timestamp,
+    });
+
+    await lineClient.replyToToken({
+      replyToken: input.replyToken,
+      text: LINE_ACKNOWLEDGEMENT_TEXT,
+    });
+
+    return {
+      processed: true,
+      duplicate: false,
+      caseDetail,
+    };
+  }
 
   const supportCase = await store.createCase({
     customerId: customer.id,
