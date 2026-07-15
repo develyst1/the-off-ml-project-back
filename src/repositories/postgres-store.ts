@@ -229,7 +229,7 @@ export class PostgresStore implements CaseStore {
         patch.teamsThreadId ?? current.teams_thread_id,
         patch.teamsDeliveryStatus ?? current.teams_delivery_status,
         patch.teamsDeliveryAt ?? current.teams_delivery_at,
-        patch.teamsDeliveryError ?? current.teams_delivery_error,
+        "teamsDeliveryError" in patch ? patch.teamsDeliveryError ?? null : current.teams_delivery_error,
         nowIso(),
       ],
     );

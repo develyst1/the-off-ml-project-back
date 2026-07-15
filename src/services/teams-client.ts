@@ -79,20 +79,12 @@ export const teamsClient = {
       throw new Error(this.getStatus().reason ?? "TEAMS_WEBHOOK_URL is invalid");
     }
 
+    // The Power Automate flow posts the Body variable directly as an Adaptive Card.
+    // Send the card as the webhook root so triggerBody() resolves to a valid card.
     const response = await fetch(webhookUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        "@type": "MessageCard",
-        "@context": "https://schema.org/extensions",
-        summary: `Off ML Project case ${caseDetail.caseNumber}`,
-        themeColor: "0078D4",
-        title: `Off ML Project - Case ${caseDetail.caseNumber}`,
-        event: "off_ml_project_case_created",
-        text,
-        data,
-        card,
-      }),
+      body: JSON.stringify(card),
     });
 
     if (!response.ok) {
