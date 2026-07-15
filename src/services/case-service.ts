@@ -1,4 +1,4 @@
-import type { CaseStatus } from "../domain/types";
+import type { CaseStatus, MessageChannel } from "../domain/types";
 import { store } from "../repositories/store";
 import { aiCenterClient } from "./ai-center-client";
 import { lineClient } from "./line-client";
@@ -219,6 +219,7 @@ export const caseService = {
     caseId: string;
     text: string;
     externalMessageId?: string;
+    channel?: MessageChannel;
   }) {
     if (input.externalMessageId) {
       const existingMessage = await store.getMessageByExternalMessageId(input.externalMessageId);
@@ -237,7 +238,7 @@ export const caseService = {
     const message = await store.createMessage({
       caseId: input.caseId,
       direction: "inbound_tech",
-      channel: "ms_teams",
+      channel: input.channel ?? "ms_teams",
       originalText: input.text,
       externalMessageId: input.externalMessageId,
     });
@@ -302,6 +303,11 @@ export const caseService = {
 
   getCase(caseId: string) {
     return store.getCaseDetail(caseId);
+  },
+
+  async getCaseByNumber(caseNumber: number) {
+    const cases = await store.listCases();
+    return cases.find((item) => item.caseNumber === caseNumber);
   },
 
   updateStatus(caseId: string, status: CaseStatus) {

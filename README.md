@@ -132,12 +132,13 @@ POST /webhooks/teams
 ```json
 {
   "caseId": "case_xxx",
+  "caseNumber": 10,
   "text": "ปลดล็อก account ให้แล้ว ให้ลูกค้าลอง login ใหม่",
   "eventId": "teams_event_001"
 }
 ```
 
-ผลลัพธ์คือเก็บคำตอบทีม, วิเคราะห์ solution, สร้างข้อความตอบลูกค้า, ส่งกลับ LINE และเปลี่ยนสถานะเป็น `sent_to_customer`
+Power Automate ต้องเรียก endpoint นี้หลังทีมตอบกลับในเธรด โดยส่ง `caseId` หรือ `caseNumber` พร้อมข้อความตอบกลับและ `eventId` ที่ไม่ซ้ำกัน ผลลัพธ์คือเก็บคำตอบทีม, วิเคราะห์ solution, สร้างข้อความตอบลูกค้า, ส่งกลับ LINE และเปลี่ยนสถานะเป็น `sent_to_customer`
 
 ### Case API
 

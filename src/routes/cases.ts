@@ -44,6 +44,18 @@ caseRoutes.post("/:id/request-info", async (c) => {
   return c.json({ data: await caseService.requestAdditionalInfo(c.req.param("id"), text) });
 });
 
+caseRoutes.post("/:id/reply", async (c) => {
+  const body = await readJsonObject(c);
+
+  return c.json({
+    data: await caseService.receiveTeamsReply({
+      caseId: c.req.param("id"),
+      text: requiredString(body, "text"),
+      channel: "system",
+    }),
+  });
+});
+
 caseRoutes.patch("/:id/status", async (c) => {
   const body = await readJsonObject(c);
   const status = requiredString(body, "status");

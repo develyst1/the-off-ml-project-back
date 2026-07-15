@@ -65,6 +65,7 @@ export const teamsClient = {
         { type: "TextBlock", size: "Large", weight: "Bolder", text: `Off ML Project - Case ${data.caseNumber}` },
         { type: "FactSet", facts: [
           { title: "Customer", value: data.customerName },
+          { title: "Case ID", value: data.caseId },
           { title: "Category", value: data.category },
           { title: "AI confidence", value: `${data.confidence}%` },
         ] },
