@@ -71,8 +71,21 @@ export const teamsClient = {
         ] },
         { type: "TextBlock", wrap: true, text: `Customer message: ${data.originalText}` },
         { type: "TextBlock", wrap: true, text: `AI summary: ${data.summary}` },
+        {
+          type: "Input.Text",
+          id: "techReplyText",
+          label: "คำตอบจากทีม Tech Support",
+          placeholder: "พิมพ์วิธีแก้ปัญหาหรือคำตอบให้ลูกค้า",
+          isMultiline: true,
+          maxLength: 4000,
+        },
       ],
       actions: [
+        {
+          type: "Action.Submit",
+          title: "วิเคราะห์และส่งให้ลูกค้า",
+          data: { action: "reply", caseId: data.caseId, caseNumber: data.caseNumber },
+        },
         {
           type: "Action.OpenUrl",
           title: "เปิดเคสในระบบ",

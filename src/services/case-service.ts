@@ -143,7 +143,8 @@ export const caseService = {
   async acceptCase(caseId: string) {
     const detail = await store.getCaseDetail(caseId);
     if (!detail) throw new Error("Case not found");
-    return store.updateCase(caseId, { status: "assigned" });
+    await store.updateCase(caseId, { status: "assigned" });
+    return store.getCaseDetail(caseId);
   },
 
   async requestAdditionalInfo(caseId: string, text: string) {
