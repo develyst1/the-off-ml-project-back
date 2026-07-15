@@ -12,6 +12,7 @@ type Env = {
   LINE_CHANNEL_SECRET?: string;
   LINE_CHANNEL_ACCESS_TOKEN?: string;
   TEAMS_WEBHOOK_URL?: string;
+  FRONTEND_BASE_URL: string;
 };
 
 const port = Number(Bun.env.PORT ?? 4000);
@@ -45,4 +46,5 @@ export const env: Env = {
   LINE_CHANNEL_SECRET: Bun.env.LINE_CHANNEL_SECRET,
   LINE_CHANNEL_ACCESS_TOKEN: Bun.env.LINE_CHANNEL_ACCESS_TOKEN,
   TEAMS_WEBHOOK_URL: Bun.env.TEAMS_WEBHOOK_URL,
+  FRONTEND_BASE_URL: Bun.env.FRONTEND_BASE_URL ?? "https://offml.develyst.online",
 };

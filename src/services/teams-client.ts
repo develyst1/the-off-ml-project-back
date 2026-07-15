@@ -67,6 +67,23 @@ export const teamsClient = {
         { type: "TextBlock", wrap: true, text: `Customer message: ${data.originalText}` },
         { type: "TextBlock", wrap: true, text: `AI summary: ${data.summary}` },
       ],
+      actions: [
+        {
+          type: "Action.OpenUrl",
+          title: "เปิดเคสในระบบ",
+          url: `${env.FRONTEND_BASE_URL}/?caseId=${encodeURIComponent(data.caseId)}`,
+        },
+        {
+          type: "Action.OpenUrl",
+          title: "รับเคส",
+          url: `${env.FRONTEND_BASE_URL}/?caseId=${encodeURIComponent(data.caseId)}&action=accept`,
+        },
+        {
+          type: "Action.OpenUrl",
+          title: "ขอข้อมูลเพิ่ม",
+          url: `${env.FRONTEND_BASE_URL}/?caseId=${encodeURIComponent(data.caseId)}&action=request-info`,
+        },
+      ],
     };
 
     const webhookUrl = this.getWebhookUrl();
