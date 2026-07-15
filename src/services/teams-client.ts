@@ -54,6 +54,11 @@ export const teamsClient = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        "@type": "MessageCard",
+        "@context": "https://schema.org/extensions",
+        summary: `Off ML Project case ${caseDetail.caseNumber}`,
+        themeColor: "0078D4",
+        title: `Off ML Project - Case ${caseDetail.caseNumber}`,
         event: "off_ml_project_case_created",
         text,
         data,
@@ -62,7 +67,8 @@ export const teamsClient = {
     });
 
     if (!response.ok) {
-      throw new Error(`Teams notification failed: ${response.status}`);
+      const errorBody = await response.text();
+      throw new Error(`Teams notification failed: ${response.status} ${errorBody}`);
     }
 
     return { delivered: true };
