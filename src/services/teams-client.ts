@@ -116,6 +116,7 @@ export const teamsClient = {
         },
       ],
     };
+    card.actions = card.actions.filter((action) => !("url" in action && action.url?.includes("action=request-info")));
 
     const webhookUrl = this.getWebhookUrl();
     if (!webhookUrl) {
