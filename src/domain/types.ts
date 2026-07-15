@@ -2,11 +2,13 @@ export type CaseStatus =
   | "new"
   | "analyzing"
   | "awaiting_tech"
+  | "assigned"
   | "tech_replied"
   | "analyzing_solution"
   | "resolved"
   | "sent_to_customer"
   | "closed"
+  | "awaiting_customer_info"
   | "awaiting_confirmation";
 
 export type MessageDirection =
@@ -29,6 +31,9 @@ export type SupportCase = {
   id: string;
   caseNumber: number;
   customerId: string;
+  teamsDeliveryStatus?: "not_sent" | "accepted" | "failed";
+  teamsDeliveryAt?: string;
+  teamsDeliveryError?: string;
   status: CaseStatus;
   category?: string;
   priority?: "low" | "medium" | "high" | "critical";

@@ -24,6 +24,9 @@ type DbCase = {
   priority: SupportCase["priority"] | null;
   confidence_score: string | number | null;
   teams_thread_id: string | null;
+  teams_delivery_status: SupportCase["teamsDeliveryStatus"];
+  teams_delivery_at: Date | null;
+  teams_delivery_error: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -91,6 +94,9 @@ function mapCase(row: DbCase): SupportCase {
     priority: row.priority ?? undefined,
     confidenceScore: optionalNumber(row.confidence_score),
     teamsThreadId: row.teams_thread_id ?? undefined,
+    teamsDeliveryStatus: row.teams_delivery_status ?? "not_sent",
+    teamsDeliveryAt: row.teams_delivery_at ? dateIso(row.teams_delivery_at) : undefined,
+    teamsDeliveryError: row.teams_delivery_error ?? undefined,
     createdAt: dateIso(row.created_at),
     updatedAt: dateIso(row.updated_at),
   };
@@ -208,7 +214,10 @@ export class PostgresStore implements CaseStore {
          priority = $4,
          confidence_score = $5,
          teams_thread_id = $6,
-         updated_at = $7
+         teams_delivery_status = $7,
+         teams_delivery_at = $8,
+         teams_delivery_error = $9,
+         updated_at = $10
        where id = $1
        returning *`,
       [
@@ -218,6 +227,9 @@ export class PostgresStore implements CaseStore {
         patch.priority ?? current.priority,
         patch.confidenceScore ?? current.confidence_score,
         patch.teamsThreadId ?? current.teams_thread_id,
+        patch.teamsDeliveryStatus ?? current.teams_delivery_status,
+        patch.teamsDeliveryAt ?? current.teams_delivery_at,
+        patch.teamsDeliveryError ?? current.teams_delivery_error,
         nowIso(),
       ],
     );

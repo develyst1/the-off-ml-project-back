@@ -16,6 +16,9 @@ create table if not exists support_cases (
   priority text,
   confidence_score numeric,
   teams_thread_id text,
+  teams_delivery_status text not null default 'not_sent',
+  teams_delivery_at timestamptz,
+  teams_delivery_error text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -31,6 +34,9 @@ select setval(
   (select count(*) > 0 from support_cases)
 );
 alter table support_cases alter column case_number set not null;
+alter table support_cases add column if not exists teams_delivery_status text not null default 'not_sent';
+alter table support_cases add column if not exists teams_delivery_at timestamptz;
+alter table support_cases add column if not exists teams_delivery_error text;
 
 create table if not exists messages (
   id text primary key,

@@ -7,12 +7,14 @@ const statuses: CaseStatus[] = [
   "new",
   "analyzing",
   "awaiting_tech",
+  "assigned",
   "tech_replied",
   "analyzing_solution",
   "resolved",
   "sent_to_customer",
   "closed",
   "awaiting_confirmation",
+  "awaiting_customer_info",
 ];
 
 export const caseRoutes = new Hono();
@@ -27,6 +29,19 @@ caseRoutes.get("/:id", async (c) => {
   }
 
   return c.json({ data: detail });
+});
+
+caseRoutes.post("/:id/accept", async (c) => {
+  return c.json({ data: await caseService.acceptCase(c.req.param("id")) });
+});
+
+caseRoutes.post("/:id/request-info", async (c) => {
+  const body = await readJsonObject(c);
+  const text = typeof body.text === "string" && body.text.trim()
+    ? body.text.trim()
+    : "กรุณาส่งรายละเอียดเพิ่มเติม เช่น ข้อความแจ้งเตือน ภาพหน้าจอ และเวลาที่เริ่มพบปัญหา เพื่อให้ทีมงานตรวจสอบต่อค่ะ";
+
+  return c.json({ data: await caseService.requestAdditionalInfo(c.req.param("id"), text) });
 });
 
 caseRoutes.patch("/:id/status", async (c) => {

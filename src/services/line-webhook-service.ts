@@ -107,7 +107,21 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
 
   const caseDetail = await store.getCaseDetail(supportCase.id);
   if (caseDetail) {
-    await teamsClient.notifyCase(caseDetail);
+    try {
+      await teamsClient.notifyCase(caseDetail);
+      await store.updateCase(supportCase.id, {
+        teamsDeliveryStatus: "accepted",
+        teamsDeliveryAt: new Date().toISOString(),
+        teamsDeliveryError: undefined,
+      });
+    } catch (error) {
+      await store.updateCase(supportCase.id, {
+        teamsDeliveryStatus: "failed",
+        teamsDeliveryAt: new Date().toISOString(),
+        teamsDeliveryError: error instanceof Error ? error.message : String(error),
+      });
+      console.error({ event: "teams_case_delivery_failed", caseId: supportCase.id, error: String(error) });
+    }
   }
 
   return {

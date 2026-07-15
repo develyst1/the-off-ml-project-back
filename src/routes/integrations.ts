@@ -22,7 +22,7 @@ integrationRoutes.post("/teams/notify", async (c) => {
     return c.json({ error: "case_not_found" }, 404);
   }
 
-  return c.json({ data: await teamsClient.notifyCase(detail) });
+  return c.json({ data: await caseService.notifyTeams(caseId) });
 });
 
 integrationRoutes.post("/line/reply", async (c) => {

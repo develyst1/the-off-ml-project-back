@@ -5,6 +5,56 @@ import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
 
 export const caseService = {
+  async acceptCase(caseId: string) {
+    const detail = await store.getCaseDetail(caseId);
+    if (!detail) throw new Error("Case not found");
+    return store.updateCase(caseId, { status: "assigned" });
+  },
+
+  async requestAdditionalInfo(caseId: string, text: string) {
+    const detail = await store.getCaseDetail(caseId);
+    if (!detail) throw new Error("Case not found");
+
+    await lineClient.reply({
+      lineUserId: detail.customer.lineUserId,
+      text,
+    });
+
+    await store.createMessage({
+      caseId,
+      direction: "outbound_customer",
+      channel: "line",
+      originalText: text,
+    });
+
+    await store.updateCase(caseId, { status: "awaiting_customer_info" });
+    return store.getCaseDetail(caseId);
+  },
+
+  async notifyTeams(caseId: string) {
+    const detail = await store.getCaseDetail(caseId);
+    if (!detail) {
+      throw new Error("Case not found");
+    }
+
+    try {
+      const result = await teamsClient.notifyCase(detail);
+      await store.updateCase(caseId, {
+        teamsDeliveryStatus: "accepted",
+        teamsDeliveryAt: new Date().toISOString(),
+        teamsDeliveryError: undefined,
+      });
+      return { ...result, case: await store.getCaseDetail(caseId) };
+    } catch (error) {
+      await store.updateCase(caseId, {
+        teamsDeliveryStatus: "failed",
+        teamsDeliveryAt: new Date().toISOString(),
+        teamsDeliveryError: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  },
+
   async intakeLineMessage(input: {
     lineUserId: string;
     displayName?: string;
@@ -56,7 +106,21 @@ export const caseService = {
       throw new Error("Case detail missing after intake");
     }
 
-    await teamsClient.notifyCase(detail);
+    try {
+      await teamsClient.notifyCase(detail);
+      await store.updateCase(supportCase.id, {
+        teamsDeliveryStatus: "accepted",
+        teamsDeliveryAt: new Date().toISOString(),
+        teamsDeliveryError: undefined,
+      });
+    } catch (error) {
+      await store.updateCase(supportCase.id, {
+        teamsDeliveryStatus: "failed",
+        teamsDeliveryAt: new Date().toISOString(),
+        teamsDeliveryError: error instanceof Error ? error.message : String(error),
+      });
+      console.error({ event: "teams_case_delivery_failed", caseId: supportCase.id, error: String(error) });
+    }
     return store.getCaseDetail(supportCase.id);
   },
 
@@ -65,6 +129,13 @@ export const caseService = {
     text: string;
     externalMessageId?: string;
   }) {
+    if (input.externalMessageId) {
+      const existingMessage = await store.getMessageByExternalMessageId(input.externalMessageId);
+      if (existingMessage) {
+        return store.getCaseDetail(existingMessage.caseId);
+      }
+    }
+
     const detail = await store.getCaseDetail(input.caseId);
     if (!detail) {
       throw new Error("Case not found");
