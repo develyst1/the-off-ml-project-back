@@ -91,7 +91,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       });
 
   if (relatedCase) {
-    const caseDetail = await caseService.appendLineMessageToCase({
+    const relatedResult = await caseService.appendLineMessageToCase({
       caseId: relatedCase.id,
       text: intakeText,
       externalMessageId: input.messageId,
@@ -107,13 +107,13 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
 
     await lineClient.replyToToken({
       replyToken: input.replyToken,
-      text: LINE_CONTINUATION_ACKNOWLEDGEMENT_TEXT,
+      text: relatedResult.continuationReply,
     });
 
     return {
       processed: true,
       duplicate: false,
-      caseDetail,
+      caseDetail: relatedResult.detail,
     };
   }
 

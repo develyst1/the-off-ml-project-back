@@ -96,6 +96,11 @@ export const caseService = {
       customerDisplayName: detail.customer.displayName,
       conversationContext: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
     });
+    const continuationReply = await aiCenterClient.generateLineContinuationReply({
+      originalCustomerText: detail.messages.find((message) => message.direction === "inbound_customer")?.originalText ?? input.text,
+      recentConversation: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
+      newCustomerText: input.text,
+    });
 
     await store.createAnalysis({
       caseId: input.caseId,
@@ -132,7 +137,7 @@ export const caseService = {
       console.error({ event: "teams_related_case_delivery_failed", caseId: input.caseId, error: String(error) });
     }
 
-    return store.getCaseDetail(input.caseId);
+    return { detail: await store.getCaseDetail(input.caseId), continuationReply };
   },
 
   async acceptCase(caseId: string) {

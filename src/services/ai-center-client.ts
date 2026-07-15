@@ -134,6 +134,48 @@ function parseJsonObject<T>(content: string, fallback: T): T {
 }
 
 export const aiCenterClient = {
+  async generateLineContinuationReply(input: { originalCustomerText: string; recentConversation: string[]; newCustomerText: string }) {
+    const fallback = "โอเคค่ะ เดี๋ยวช่วยตรวจสอบต่อให้นะคะ";
+
+    try {
+      const content = await chatWithAiCenter([
+        {
+          role: "system",
+          content: "คุณเป็นเจ้าหน้าที่ Tech Support ตอบลูกค้าทาง LINE เป็นภาษาไทยแบบสุภาพและเป็นกันเอง ตอบสั้นเพียง 1 ประโยค",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "write_continuation_acknowledgement",
+            rules: [
+              "ลงท้ายด้วย ค่ะ หรือ นะคะ",
+              "อ้างอิงบริบทจากข้อความก่อนหน้า",
+              "ไม่ต้องใช้คำว่า เคสเดิม หรือ ได้รับข้อมูลเพิ่มเติมแล้ว ซ้ำ ๆ",
+              "ห้ามแต่งผลการตรวจสอบ ห้ามรับปากว่าจะแก้ไขได้แน่นอน",
+              "ถ้าลูกค้าทำตามคำแนะนำแล้วแต่ยังไม่ได้ ให้ตอบรับและบอกว่าจะตรวจสอบต่อ",
+              "ตอบเป็นข้อความธรรมดาเท่านั้น ไม่ต้องใส่เครื่องหมายคำพูดและไม่ต้องใส่ JSON",
+            ],
+            originalCustomerText: input.originalCustomerText,
+            recentConversation: input.recentConversation,
+            newCustomerText: input.newCustomerText,
+          }),
+        },
+      ]);
+
+      const reply = content?.trim();
+      if (!reply || reply.length > 180 || reply.includes("http://") || reply.includes("https://")) return fallback;
+      const cleanedReply = reply.replace(/^['"]|['"]$/g, "").trim();
+      if (!/(ค่ะ|นะคะ)[.!?]?$/u.test(cleanedReply)) return fallback;
+      return cleanedReply;
+    } catch (error) {
+      console.error({
+        event: "ai_center_continuation_reply_failed",
+        message: error instanceof Error ? error.message : "Unexpected AI CENTER error",
+      });
+      return fallback;
+    }
+  },
+
   async analyzeCaseRelation(input: {
     originalCustomerText: string;
     caseCategory?: string;
