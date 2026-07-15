@@ -3,6 +3,7 @@ create table if not exists customers (
   id text primary key,
   line_user_id text not null unique,
   display_name text,
+  active_case_id text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -22,6 +23,8 @@ create table if not exists support_cases (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table customers add column if not exists active_case_id text;
 
 create sequence if not exists support_cases_case_number_seq;
 alter table support_cases add column if not exists case_number bigint;

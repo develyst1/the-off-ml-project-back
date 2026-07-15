@@ -186,7 +186,7 @@ export const aiCenterClient = {
     }
   },
 
-  async analyzeCustomerMessage(input: { text: string; customerDisplayName?: string }) {
+  async analyzeCustomerMessage(input: { text: string; customerDisplayName?: string; conversationContext?: string[] }) {
     const fallback = fallbackCustomerAnalysis(input.text);
     try {
       const content = await chatWithAiCenter([
@@ -209,6 +209,7 @@ export const aiCenterClient = {
             confidence: "number 0-100",
           },
           customerDisplayName: input.customerDisplayName,
+          conversationContext: input.conversationContext,
           text: input.text,
         }),
       },

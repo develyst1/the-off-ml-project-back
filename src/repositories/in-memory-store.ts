@@ -34,6 +34,7 @@ export class InMemoryStore implements CaseStore {
       id: createId("cus"),
       lineUserId: input.lineUserId,
       displayName: input.displayName,
+      activeCaseId: undefined,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -41,6 +42,14 @@ export class InMemoryStore implements CaseStore {
     this.customers.set(customer.id, customer);
     this.customersByLineUserId.set(customer.lineUserId, customer.id);
     return customer;
+  }
+
+  async setActiveCase(customerId: string, caseId?: string): Promise<Customer> {
+    const customer = this.customers.get(customerId);
+    if (!customer) throw new Error("Customer not found");
+    const updated = { ...customer, activeCaseId: caseId, updatedAt: nowIso() };
+    this.customers.set(customerId, updated);
+    return updated;
   }
 
   async createCase(input: { customerId: string; status?: CaseStatus; category?: string; confidenceScore?: number }): Promise<SupportCase> {

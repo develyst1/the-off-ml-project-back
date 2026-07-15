@@ -23,6 +23,7 @@ export type Customer = {
   id: string;
   lineUserId: string;
   displayName?: string;
+  activeCaseId?: string;
   createdAt: string;
   updatedAt: string;
 };

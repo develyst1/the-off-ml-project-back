@@ -11,6 +11,7 @@ type DbCustomer = {
   id: string;
   line_user_id: string;
   display_name: string | null;
+  active_case_id: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -79,6 +80,7 @@ function mapCustomer(row: DbCustomer): Customer {
     id: row.id,
     lineUserId: row.line_user_id,
     displayName: row.display_name ?? undefined,
+    activeCaseId: row.active_case_id ?? undefined,
     createdAt: dateIso(row.created_at),
     updatedAt: dateIso(row.updated_at),
   };
@@ -181,6 +183,15 @@ export class PostgresStore implements CaseStore {
       [id, input.lineUserId, input.displayName ?? null, timestamp],
     );
 
+    return mapCustomer(result.rows[0]);
+  }
+
+  async setActiveCase(customerId: string, caseId?: string): Promise<Customer> {
+    const result = await this.query<DbCustomer>(
+      `update customers set active_case_id = $2, updated_at = $3 where id = $1 returning *`,
+      [customerId, caseId ?? null, nowIso()],
+    );
+    if (!result.rows[0]) throw new Error("Customer not found");
     return mapCustomer(result.rows[0]);
   }
 

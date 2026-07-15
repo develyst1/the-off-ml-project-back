@@ -8,6 +8,10 @@ import { teamsClient } from "./teams-client";
 export const LINE_ACKNOWLEDGEMENT_TEXT =
   "รับเรื่องเรียบร้อยแล้วค่ะ ทีมงานกำลังตรวจสอบปัญหาให้คุณ";
 
+export const LINE_CONTINUATION_ACKNOWLEDGEMENT_TEXT = "ได้รับข้อมูลเพิ่มเติมแล้วค่ะ ทีมงานจะนำข้อมูลนี้ไปตรวจสอบต่อในเคสเดิม";
+export const LINE_CASE_CONFIRMATION_TEXT = "ข้อความนี้ดูเหมือนเป็นปัญหาใหม่ ต้องการเปิดเคสใหม่ หรือเพิ่มข้อมูลในเคสเดิมคะ?";
+export const LINE_FIRST_CASE_ACKNOWLEDGEMENT_TEXT = "รับเรื่องเรียบร้อยแล้วค่ะ ทีมงานกำลังตรวจสอบปัญหาให้คุณ";
+
 export type LineTextMessageInput = {
   lineUserId: string;
   messageId: string;
@@ -54,16 +58,42 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     displayName,
   });
 
-  const relatedCase = await caseService.findRelatedLineCase({
-    customerId: customer.id,
-    newText: input.text,
-    receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : undefined,
-  });
+  const activeCase = await caseService.getActiveLineCase(customer);
+  if (activeCase && customer.activeCaseId !== activeCase.id) {
+    await store.setActiveCase(customer.id, activeCase.id);
+  }
+  const confirmsNewCase = activeCase?.status === "awaiting_confirmation"
+    && /(ปัญหาใหม่|เรื่องใหม่|เคสใหม่|เปิดเคสใหม่|แยกเคส|new issue|new case)/i.test(input.text);
+  const intakeText = confirmsNewCase
+    ? activeCase?.messages.filter((message) => message.direction === "inbound_customer").at(-1)?.originalText ?? input.text
+    : input.text;
+  const confirmsExistingCase = activeCase?.status === "awaiting_confirmation"
+    && /(เคสเดิม|เรื่องเดิม|ข้อมูลเพิ่มเติม|ต่อเรื่องเดิม|same case|same issue)/i.test(input.text);
+
+  if (confirmsNewCase && activeCase) {
+    await store.createMessage({
+      caseId: activeCase.id,
+      direction: "inbound_customer",
+      channel: "line",
+      originalText: input.text,
+      externalMessageId: input.messageId,
+    });
+    await store.updateCase(activeCase.id, { status: "closed" });
+    await store.setActiveCase(customer.id);
+  }
+
+  const relatedCase = confirmsExistingCase
+    ? activeCase
+    : await caseService.findRelatedLineCase({
+        customerId: customer.id,
+        newText: intakeText,
+        receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : undefined,
+      });
 
   if (relatedCase) {
     const caseDetail = await caseService.appendLineMessageToCase({
       caseId: relatedCase.id,
-      text: input.text,
+      text: intakeText,
       externalMessageId: input.messageId,
     });
 
@@ -77,7 +107,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
 
     await lineClient.replyToToken({
       replyToken: input.replyToken,
-      text: LINE_ACKNOWLEDGEMENT_TEXT,
+      text: LINE_CONTINUATION_ACKNOWLEDGEMENT_TEXT,
     });
 
     return {
@@ -85,6 +115,17 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       duplicate: false,
       caseDetail,
     };
+  }
+
+  if (activeCase && !confirmsNewCase) {
+    const caseDetail = await caseService.requestCaseSplitConfirmation({
+      caseId: activeCase.id,
+      text: input.text,
+      externalMessageId: input.messageId,
+      relation: { confidence: 0, reason: "AI ตรวจพบว่าอาจเป็นหัวข้อใหม่ จึงรอให้ลูกค้ายืนยัน" },
+    });
+    await lineClient.replyToToken({ replyToken: input.replyToken, text: LINE_CASE_CONFIRMATION_TEXT });
+    return { processed: true, duplicate: false, caseDetail };
   }
 
   const supportCase = await store.createCase({
@@ -100,12 +141,12 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     caseId: supportCase.id,
     direction: "inbound_customer",
     channel: "line",
-    originalText: input.text,
+    originalText: intakeText,
     externalMessageId: input.messageId,
   });
 
   const analysis = await aiCenterClient.analyzeCustomerMessage({
-    text: input.text,
+    text: intakeText,
     customerDisplayName: customer.displayName,
   });
 
@@ -125,6 +166,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     priority: analysis.urgency,
     confidenceScore: analysis.confidence,
   });
+  await store.setActiveCase(customer.id, supportCase.id);
 
   console.log({
     event: "line_webhook_case_created",
@@ -136,7 +178,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
 
   await lineClient.replyToToken({
     replyToken: input.replyToken,
-    text: LINE_ACKNOWLEDGEMENT_TEXT,
+    text: LINE_FIRST_CASE_ACKNOWLEDGEMENT_TEXT,
   });
 
   const caseDetail = await store.getCaseDetail(supportCase.id);

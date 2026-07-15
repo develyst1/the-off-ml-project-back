@@ -5,9 +5,47 @@ import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
 
 export const caseService = {
+  async getActiveLineCase(customer: { id: string; activeCaseId?: string }) {
+    const activeStatuses = ["analyzing", "awaiting_tech", "assigned", "tech_replied", "analyzing_solution", "awaiting_customer_info", "awaiting_confirmation"];
+    if (customer.activeCaseId) {
+      const activeCase = await store.getCaseDetail(customer.activeCaseId);
+      if (activeCase && activeCase.customerId === customer.id && activeStatuses.includes(activeCase.status)) {
+        return activeCase;
+      }
+    }
+
+    return (await store.listCases())
+      .filter((item) => item.customerId === customer.id && activeStatuses.includes(item.status))
+      .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())[0];
+  },
+
+  async requestCaseSplitConfirmation(input: { caseId: string; text: string; relation: { confidence: number; reason: string }; externalMessageId?: string }) {
+    const detail = await store.getCaseDetail(input.caseId);
+    if (!detail) throw new Error("Case not found");
+
+    const message = await store.createMessage({
+      caseId: input.caseId,
+      direction: "inbound_customer",
+      channel: "line",
+      originalText: input.text,
+      externalMessageId: input.externalMessageId,
+    });
+    await store.createAnalysis({
+      caseId: input.caseId,
+      messageId: message.id,
+      analysisType: "case_match",
+      summary: input.relation.reason,
+      category: detail.category,
+      confidence: input.relation.confidence,
+      rawJson: { decision: "needs_confirmation", ...input.relation },
+    });
+    await store.updateCase(input.caseId, { status: "awaiting_confirmation" });
+    return store.getCaseDetail(input.caseId);
+  },
+
   async findRelatedLineCase(input: { customerId: string; newText: string; receivedAt?: string }) {
     const cases = (await store.listCases())
-      .filter((item) => item.customer.id === input.customerId)
+      .filter((item) => item.customer.id === input.customerId && ["analyzing", "awaiting_tech", "assigned", "tech_replied", "analyzing_solution", "awaiting_customer_info", "awaiting_confirmation"].includes(item.status))
       .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
     const candidate = cases[0];
     if (!candidate) return undefined;
@@ -56,6 +94,7 @@ export const caseService = {
     const analysis = await aiCenterClient.analyzeCustomerMessage({
       text: input.text,
       customerDisplayName: detail.customer.displayName,
+      conversationContext: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
     });
 
     await store.createAnalysis({
@@ -294,6 +333,7 @@ export const caseService = {
     });
 
     await store.updateCase(input.caseId, { status: "sent_to_customer" });
+    await store.setActiveCase(updatedDetail.customer.id);
     return store.getCaseDetail(input.caseId);
   },
 
