@@ -2,8 +2,32 @@ import { env } from "../config/env";
 import type { CaseDetail } from "../domain/types";
 
 export const teamsClient = {
+  getWebhookUrl() {
+    const value = env.TEAMS_WEBHOOK_URL?.trim();
+    if (!value) return undefined;
+    return value.replace(/^("|')|("|')$/g, "");
+  },
+
+  getStatus() {
+    const value = this.getWebhookUrl();
+    if (!value) {
+      return { connected: false, valid: false, mode: "mock" as const, reason: "TEAMS_WEBHOOK_URL is empty" };
+    }
+
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:") {
+        return { connected: true, valid: false, mode: "incoming_webhook" as const, reason: "TEAMS_WEBHOOK_URL must use HTTPS" };
+      }
+
+      return { connected: true, valid: true, mode: "incoming_webhook" as const, host: url.host };
+    } catch {
+      return { connected: true, valid: false, mode: "incoming_webhook" as const, reason: "TEAMS_WEBHOOK_URL is not a valid URL" };
+    }
+  },
+
   isConfigured() {
-    return Boolean(env.TEAMS_WEBHOOK_URL);
+    return this.getStatus().valid;
   },
 
   async notifyCase(caseDetail: CaseDetail): Promise<{ delivered: boolean; externalId?: string }> {
@@ -45,12 +69,17 @@ export const teamsClient = {
       ],
     };
 
-    if (!env.TEAMS_WEBHOOK_URL) {
+    const webhookUrl = this.getWebhookUrl();
+    if (!webhookUrl) {
       console.log("[teams:mock]", text);
       return { delivered: false };
     }
 
-    const response = await fetch(env.TEAMS_WEBHOOK_URL, {
+    if (!this.getStatus().valid) {
+      throw new Error(this.getStatus().reason ?? "TEAMS_WEBHOOK_URL is invalid");
+    }
+
+    const response = await fetch(webhookUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
