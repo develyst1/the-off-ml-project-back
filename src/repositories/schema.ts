@@ -54,6 +54,19 @@ alter table support_cases add column if not exists teams_sent_at timestamptz;
 alter table support_cases add column if not exists tech_replied_at timestamptz;
 alter table support_cases add column if not exists line_sent_at timestamptz;
 alter table support_cases add column if not exists line_delivered_at timestamptz;
+update support_cases set category = case upper(category)
+  when 'UNCATEGORIZED' then 'ยังไม่ระบุหมวดหมู่'
+  when 'LOGIN_ISSUE' then 'เข้าสู่ระบบไม่ได้'
+  when 'LOGIN_FAILURE' then 'เข้าสู่ระบบไม่ได้'
+  when 'NETWORK_ISSUE' then 'ปัญหาการเชื่อมต่อเครือข่าย'
+  when 'NETWORK_CONNECTIVITY' then 'ปัญหาการเชื่อมต่อเครือข่าย'
+  when 'CONNECTIVITY_ISSUE' then 'ปัญหาการเชื่อมต่อเครือข่าย'
+  when 'PASSWORD_RESET' then 'รีเซ็ตรหัสผ่าน'
+  when 'PASSWORD_RESET_FAILURE' then 'รีเซ็ตรหัสผ่านไม่สำเร็จ'
+  when 'PAYMENT_ISSUE' then 'ปัญหาการชำระเงิน'
+  when 'BLUE_SCREEN' then 'หน้าจอสีฟ้า (Blue Screen)'
+  else category end
+where category is not null;
 alter table support_cases alter column case_number type text using case_number::text;
 update support_cases
 set sequence_year = coalesce(sequence_year, extract(year from created_at)::integer),
@@ -124,6 +137,20 @@ create table if not exists solutions (
   validated_by_team boolean not null default false,
   created_at timestamptz not null default now()
 );
+
+update analyses set category = case upper(category)
+  when 'UNCATEGORIZED' then 'ยังไม่ระบุหมวดหมู่'
+  when 'LOGIN_ISSUE' then 'เข้าสู่ระบบไม่ได้'
+  when 'LOGIN_FAILURE' then 'เข้าสู่ระบบไม่ได้'
+  when 'NETWORK_ISSUE' then 'ปัญหาการเชื่อมต่อเครือข่าย'
+  when 'NETWORK_CONNECTIVITY' then 'ปัญหาการเชื่อมต่อเครือข่าย'
+  when 'CONNECTIVITY_ISSUE' then 'ปัญหาการเชื่อมต่อเครือข่าย'
+  when 'PASSWORD_RESET' then 'รีเซ็ตรหัสผ่าน'
+  when 'PASSWORD_RESET_FAILURE' then 'รีเซ็ตรหัสผ่านไม่สำเร็จ'
+  when 'PAYMENT_ISSUE' then 'ปัญหาการชำระเงิน'
+  when 'BLUE_SCREEN' then 'หน้าจอสีฟ้า (Blue Screen)'
+  else category end
+where category is not null;
 
 create table if not exists tech_agents (
   id text primary key,

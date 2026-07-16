@@ -1,4 +1,5 @@
 import { env } from "../config/env";
+import { normalizeCategory } from "../lib/category";
 
 type ChatRole = "system" | "user" | "assistant";
 
@@ -59,7 +60,7 @@ export type CaseRelationAnalysis = {
 function fallbackCustomerAnalysis(text: string): CustomerMessageAnalysis {
   return {
     summary: text.length > 120 ? `${text.slice(0, 117)}...` : text,
-    category: "uncategorized",
+    category: "ยังไม่ระบุหมวดหมู่",
     urgency: "medium",
     sentiment: "unknown",
     missingInformation: [],
@@ -74,7 +75,7 @@ function fallbackTechSolution(text: string): TechSolutionAnalysis {
     rootCause: undefined,
     solutionSteps: [text],
     rewrittenCustomerText: text,
-    category: "uncategorized",
+    category: "ยังไม่ระบุหมวดหมู่",
     confidence: 50,
   };
 }
@@ -245,7 +246,7 @@ export const aiCenterClient = {
           task: "analyze_customer_message",
           required_schema: {
             summary: "string",
-            category: "string",
+            category: "ชื่อหมวดหมู่ภาษาไทยที่เข้าใจง่าย เช่น เข้าสู่ระบบไม่ได้ หรือ ปัญหาการเชื่อมต่อเครือข่าย",
             urgency: "low | medium | high | critical",
             sentiment: "string",
             missingInformation: ["string"],
@@ -261,7 +262,11 @@ export const aiCenterClient = {
 
       if (!content) return fallback;
       const parsed = parseJsonObject<CustomerMessageAnalysis>(content, fallback);
-      return { ...parsed, status: parsed.confidence < 70 ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS" };
+      return {
+        ...parsed,
+        category: normalizeCategory(parsed.category),
+        status: parsed.confidence < 70 ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS",
+      };
     } catch (error) {
       console.error({
         event: "ai_center_customer_analysis_failed",
@@ -287,7 +292,7 @@ export const aiCenterClient = {
             rootCause: "string | undefined",
             solutionSteps: ["string"],
             rewrittenCustomerText: "string",
-            category: "string | undefined",
+            category: "ชื่อหมวดหมู่ภาษาไทยที่เข้าใจง่าย | undefined",
             confidence: "number 0-100",
           },
           originalCustomerText: input.originalCustomerText,
@@ -297,6 +302,7 @@ export const aiCenterClient = {
     ]);
 
     if (!content) return fallback;
-    return parseJsonObject<TechSolutionAnalysis>(content, fallback);
+    const parsed = parseJsonObject<TechSolutionAnalysis>(content, fallback);
+    return { ...parsed, category: normalizeCategory(parsed.category) };
   },
 };

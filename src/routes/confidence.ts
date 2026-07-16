@@ -15,7 +15,8 @@ confidenceRoutes.get("/suggestions", async (c) => {
       return {
         id: `match_${item.id}`,
         caseId: item.id,
-        customerName: item.customer.displayName ?? item.customer.lineUserId,
+        caseNumber: item.caseNumber,
+        customerName: item.customer.displayName ?? "ลูกค้า LINE",
         suggestedSolutionId: latestSolution?.id ?? "-",
         category: item.category ?? "-",
         originalText: customerMessage?.originalText ?? "",

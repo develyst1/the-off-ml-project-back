@@ -62,9 +62,13 @@ automationRoutes.get("/logs", async (c) => {
       .map((message) => ({
         id: message.id,
         time: message.createdAt,
-        customer: `LINE: ${item.customer.lineUserId}`,
+        caseNumber: item.caseNumber,
+        customer: item.customer.displayName ?? "ลูกค้า LINE",
         answerText: message.originalText,
-        solutionId: item.solutions.at(-1)?.id ?? "-",
+        solutionText:
+          item.solutions.at(-1)?.solutionSteps.join("\n") ||
+          item.solutions.at(-1)?.rewrittenCustomerText ||
+          item.solutions.at(-1)?.rawReplyText,
         teamsNotified: true,
       })),
   );

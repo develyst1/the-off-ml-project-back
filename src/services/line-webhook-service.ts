@@ -295,7 +295,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
 
   await store.updateCase(supportCase.id, {
     status: "awaiting_tech",
-    title: analysis.summary.slice(0, 50),
+    title: analysis.summary.trim(),
     aiStatus: analysis.status === "AI_FAILED" ? "AI_FAILED" : analysis.status === "AI_LOW_CONFIDENCE" ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS",
     aiAnalyzedAt: new Date().toISOString(),
     customerSentAt: input.timestamp ? new Date(input.timestamp).toISOString() : undefined,
@@ -314,7 +314,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     timestamp: input.timestamp,
   });
 
-  const acknowledgement = `รับเรื่องเรียบร้อยแล้วค่ะ\n\nหมายเลขเคส: ${supportCase.caseNumber}\nเรื่อง: ${analysis.summary.slice(0, 50)}\n\nทีมงานกำลังตรวจสอบให้นะคะ`;
+  const acknowledgement = `รับเรื่องเรียบร้อยแล้วค่ะ\n\nหมายเลขเคส: ${supportCase.caseNumber}\nเรื่อง: ${analysis.summary.trim()}\n\nทีมงานกำลังตรวจสอบให้นะคะ`;
   const acknowledgementDelivery = await lineClient.replyToToken({
     replyToken: input.replyToken,
     text: acknowledgement,

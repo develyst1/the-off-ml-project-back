@@ -8,7 +8,7 @@ export const caseService = {
   formatCaseTitle(detail: { title?: string; category?: string; messages: { direction: string; originalText: string }[] }) {
     if (detail.title?.trim()) return detail.title.trim();
     const original = detail.messages.find((message) => message.direction === "inbound_customer")?.originalText ?? detail.category ?? "Tech Support";
-    return original.trim().slice(0, 50);
+    return original.trim();
   },
 
   async getCustomerCases(customerId: string) {
@@ -190,7 +190,7 @@ export const caseService = {
     });
     await store.updateCase(input.caseId, {
       status: "awaiting_tech",
-      title: detail.title ?? analysis.summary.slice(0, 50),
+      title: detail.title ?? analysis.summary.trim(),
       aiStatus: analysis.status === "AI_FAILED" ? "AI_FAILED" : analysis.status === "AI_LOW_CONFIDENCE" ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS",
       aiAnalyzedAt: new Date().toISOString(),
       category: detail.category ?? analysis.category,
@@ -324,7 +324,7 @@ export const caseService = {
 
     await store.updateCase(supportCase.id, {
       status: "awaiting_tech",
-      title: analysis.summary.slice(0, 50),
+      title: analysis.summary.trim(),
       category: analysis.category,
       priority: analysis.urgency,
       confidenceScore: analysis.confidence,
