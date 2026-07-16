@@ -3,6 +3,7 @@ import { env } from "../config/env";
 import type { Analysis, CaseDetail, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore } from "./case-store";
+import { normalizeCaseMessage } from "./case-message-normalizer";
 import { schemaSql } from "./schema";
 
 const { Pool } = pg;
@@ -52,12 +53,25 @@ type DbMessage = {
   direction: Message["direction"];
   channel: Message["channel"];
   original_text: string;
+  display_text: string;
   sender_type: Message["senderType"];
+  content_type: NonNullable<Message["contentType"]>;
   message_type: Message["messageType"];
   delivery_status: Message["deliveryStatus"];
+  is_visible_to_customer: boolean;
+  parent_message_id: string | null;
+  source_message_id: string | null;
+  teams_message_id: string | null;
+  delivery_error: string | null;
+  retry_count: number;
+  last_retry_at: Date | null;
   webhook_event_id: string | null;
   normalized_text: string | null;
   received_at: Date | null;
+  processed_at: Date | null;
+  sent_at: Date | null;
+  delivered_at: Date | null;
+  failed_at: Date | null;
   external_message_id: string | null;
   created_at: Date;
 };
@@ -145,12 +159,25 @@ function mapMessage(row: DbMessage): Message {
     direction: row.direction,
     channel: row.channel,
     originalText: row.original_text,
+    displayText: row.display_text,
     senderType: row.sender_type,
+    contentType: row.content_type,
     messageType: row.message_type,
     deliveryStatus: row.delivery_status,
+    isVisibleToCustomer: row.is_visible_to_customer,
+    parentMessageId: row.parent_message_id ?? undefined,
+    sourceMessageId: row.source_message_id ?? undefined,
+    teamsMessageId: row.teams_message_id ?? undefined,
+    deliveryError: row.delivery_error ?? undefined,
+    retryCount: row.retry_count,
+    lastRetryAt: row.last_retry_at ? dateIso(row.last_retry_at) : undefined,
     webhookEventId: row.webhook_event_id ?? undefined,
     normalizedText: row.normalized_text ?? undefined,
     receivedAt: row.received_at ? dateIso(row.received_at) : undefined,
+    processedAt: row.processed_at ? dateIso(row.processed_at) : undefined,
+    sentAt: row.sent_at ? dateIso(row.sent_at) : undefined,
+    deliveredAt: row.delivered_at ? dateIso(row.delivered_at) : undefined,
+    failedAt: row.failed_at ? dateIso(row.failed_at) : undefined,
     externalMessageId: row.external_message_id ?? undefined,
     createdAt: dateIso(row.created_at),
   };
@@ -349,23 +376,38 @@ export class PostgresStore implements CaseStore {
   }
 
   async createMessage(input: Omit<Message, "id" | "createdAt">): Promise<Message> {
+    const message = normalizeCaseMessage(input);
     const result = await this.query<DbMessage>(
-      `insert into messages (id, case_id, direction, channel, original_text, sender_type, message_type, delivery_status, external_message_id, webhook_event_id, normalized_text, received_at, created_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      `insert into case_messages (id, case_id, direction, channel, sender_type, content_type, message_type, original_text, normalized_text, display_text, parent_message_id, source_message_id, is_visible_to_customer, external_message_id, webhook_event_id, teams_message_id, delivery_status, delivery_error, retry_count, last_retry_at, received_at, processed_at, sent_at, delivered_at, failed_at, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
        returning *`,
       [
         createId("msg"),
-        input.caseId,
-        input.direction,
-        input.channel,
-        input.originalText,
-        input.senderType ?? "SYSTEM",
-        input.messageType ?? "text",
-        input.deliveryStatus ?? "sent",
-        input.externalMessageId ?? null,
-        input.webhookEventId ?? null,
-        input.normalizedText ?? null,
-        input.receivedAt ?? null,
+        message.caseId,
+        message.direction,
+        message.channel,
+        message.senderType ?? "SYSTEM",
+        message.contentType,
+        message.messageType,
+        message.originalText,
+        message.normalizedText ?? null,
+        message.displayText,
+        message.parentMessageId ?? null,
+        message.sourceMessageId ?? null,
+        message.isVisibleToCustomer,
+        message.externalMessageId ?? null,
+        message.webhookEventId ?? null,
+        message.teamsMessageId ?? null,
+        message.deliveryStatus,
+        message.deliveryError ?? null,
+        message.retryCount,
+        message.lastRetryAt ?? null,
+        message.receivedAt ?? null,
+        message.processedAt ?? null,
+        message.sentAt ?? null,
+        message.deliveredAt ?? null,
+        message.failedAt ?? null,
+        nowIso(),
         nowIso(),
       ],
     );
@@ -373,9 +415,23 @@ export class PostgresStore implements CaseStore {
     return mapMessage(result.rows[0]);
   }
 
+  async updateMessage(id: string, patch: Partial<Pick<Message, "messageType" | "senderType" | "deliveryStatus">>): Promise<Message> {
+    const result = await this.query<DbMessage>(
+      `update case_messages
+       set sender_type = coalesce($2, sender_type),
+           message_type = coalesce($3, message_type),
+           delivery_status = coalesce($4, delivery_status)
+       where id = $1
+       returning *`,
+      [id, patch.senderType ?? null, patch.messageType ?? null, patch.deliveryStatus ?? null],
+    );
+    if (!result.rows[0]) throw new Error("Message not found");
+    return mapMessage(result.rows[0]);
+  }
+
   async getMessageByExternalMessageId(externalMessageId: string): Promise<Message | undefined> {
     const result = await this.query<DbMessage>(
-      "select * from messages where external_message_id = $1 limit 1",
+      "select * from case_messages where external_message_id = $1 limit 1",
       [externalMessageId],
     );
 
@@ -383,7 +439,7 @@ export class PostgresStore implements CaseStore {
   }
 
   async getMessageByWebhookEventId(webhookEventId: string): Promise<Message | undefined> {
-    const result = await this.query<DbMessage>("select * from messages where webhook_event_id = $1 limit 1", [webhookEventId]);
+    const result = await this.query<DbMessage>("select * from case_messages where webhook_event_id = $1 limit 1", [webhookEventId]);
     return result.rows[0] ? mapMessage(result.rows[0]) : undefined;
   }
 
@@ -452,7 +508,7 @@ export class PostgresStore implements CaseStore {
   private async buildCaseDetail(supportCase: SupportCase): Promise<CaseDetail | undefined> {
     const [customerResult, messageResult, analysisResult, solutionResult] = await Promise.all([
       this.query<DbCustomer>("select * from customers where id = $1", [supportCase.customerId]),
-      this.query<DbMessage>("select * from messages where case_id = $1 order by created_at asc", [supportCase.id]),
+      this.query<DbMessage>("select * from case_messages where case_id = $1 order by created_at asc", [supportCase.id]),
       this.query<DbAnalysis>("select * from analyses where case_id = $1 order by created_at asc", [supportCase.id]),
       this.query<DbSolution>("select * from solutions where case_id = $1 order by created_at asc", [supportCase.id]),
     ]);

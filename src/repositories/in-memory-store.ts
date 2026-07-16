@@ -1,6 +1,7 @@
 import type { Analysis, CaseDetail, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore } from "./case-store";
+import { normalizeCaseMessage } from "./case-message-normalizer";
 
 export class InMemoryStore implements CaseStore {
   private customers = new Map<string, Customer>();
@@ -111,13 +112,21 @@ export class InMemoryStore implements CaseStore {
 
   async createMessage(input: Omit<Message, "id" | "createdAt">): Promise<Message> {
     const message: Message = {
-      ...input,
+      ...normalizeCaseMessage(input),
       id: createId("msg"),
       createdAt: nowIso(),
     };
 
     this.messages.set(message.id, message);
     return message;
+  }
+
+  async updateMessage(id: string, patch: Partial<Pick<Message, "messageType" | "senderType" | "deliveryStatus">>): Promise<Message> {
+    const current = this.messages.get(id);
+    if (!current) throw new Error("Message not found");
+    const updated = { ...current, ...patch };
+    this.messages.set(id, updated);
+    return updated;
   }
 
   async getMessageByExternalMessageId(externalMessageId: string): Promise<Message | undefined> {

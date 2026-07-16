@@ -7,7 +7,7 @@ import { teamsClient } from "./teams-client";
 export const caseService = {
   formatCaseTitle(detail: { title?: string; category?: string; messages: { direction: string; originalText: string }[] }) {
     if (detail.title?.trim()) return detail.title.trim();
-    const original = detail.messages.find((message) => message.direction === "inbound_customer")?.originalText ?? detail.category ?? "Tech Support";
+    const original = detail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? detail.category ?? "Tech Support";
     return original.trim();
   },
 
@@ -74,7 +74,7 @@ export const caseService = {
     await store.setActiveCase(customerId, caseId);
     const text = `เปิดเคส ${detail.caseNumber} กลับมาแล้วค่ะ เดี๋ยวทีมงานช่วยตรวจสอบต่อให้นะคะ`;
     const delivery = await lineClient.reply({ lineUserId: detail.customer.lineUserId, text });
-    await store.createMessage({ caseId, direction: "outbound_customer", channel: "line", originalText: text, senderType: "BOT", deliveryStatus: delivery.delivered ? "delivered" : "pending" });
+    await store.createMessage({ caseId, direction: "outbound_customer", channel: "line", originalText: text, senderType: "BOT", messageType: "STATUS_UPDATE", deliveryStatus: delivery.delivered ? "delivered" : "pending" });
     return store.getCaseDetail(caseId);
   },
   async getActiveLineCase(customer: { id: string; activeCaseId?: string }) {
@@ -102,6 +102,7 @@ export const caseService = {
       originalText: input.text,
       externalMessageId: input.externalMessageId,
       senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
     });
     await store.createAnalysis({
       caseId: input.caseId,
@@ -123,7 +124,7 @@ export const caseService = {
     const candidate = cases[0];
     if (!candidate) return undefined;
 
-    const customerMessages = candidate.messages.filter((message) => message.direction === "inbound_customer");
+    const customerMessages = candidate.messages.filter((message) => message.senderType === "CUSTOMER");
     const originalCustomerText = customerMessages[0]?.originalText;
     if (!originalCustomerText) return undefined;
 
@@ -164,6 +165,7 @@ export const caseService = {
       originalText: input.text,
       externalMessageId: input.externalMessageId,
       senderType: "CUSTOMER",
+      messageType: "CUSTOMER_ADDITIONAL_INFO",
       normalizedText: input.text.trim().replace(/\s+/g, " "),
       webhookEventId: input.webhookEventId,
       receivedAt: input.receivedAt,
@@ -174,7 +176,7 @@ export const caseService = {
       conversationContext: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
     });
     const continuationReply = await aiCenterClient.generateLineContinuationReply({
-      originalCustomerText: detail.messages.find((message) => message.direction === "inbound_customer")?.originalText ?? input.text,
+      originalCustomerText: detail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? input.text,
       recentConversation: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
       newCustomerText: input.text,
     });
@@ -203,6 +205,15 @@ export const caseService = {
 
     try {
       await teamsClient.notifyCase(updatedDetail);
+      await store.createMessage({
+        caseId: input.caseId,
+        direction: "outbound_tech",
+        channel: "ms_teams",
+        originalText: `ส่งข้อมูลล่าสุดของเคส ${updatedDetail.caseNumber} ให้ทีม Tech Support ผ่าน Microsoft Teams แล้ว`,
+        senderType: "SYSTEM",
+        messageType: "CASE_FORWARDED",
+        deliveryStatus: "sent",
+      });
       await store.updateCase(input.caseId, {
         teamsDeliveryStatus: "accepted",
         teamsDeliveryAt: new Date().toISOString(),
@@ -236,7 +247,7 @@ export const caseService = {
     const question = await aiCenterClient.generateTargetedInfoRequest({
       caseTitle: caseService.formatCaseTitle(detail),
       category: detail.category,
-      originalCustomerText: detail.messages.find((message) => message.direction === "inbound_customer")?.originalText ?? "",
+      originalCustomerText: detail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? "",
       recentConversation: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
       requestedText: text,
     });
@@ -252,6 +263,7 @@ export const caseService = {
       channel: "line",
       originalText: messageText,
       senderType: "TECH",
+      messageType: "REQUEST_MORE_INFO",
       deliveryStatus: delivery.delivered ? "delivered" : "pending",
     });
 
@@ -272,6 +284,15 @@ export const caseService = {
 
     try {
       const result = await teamsClient.notifyCase(detail);
+      await store.createMessage({
+        caseId,
+        direction: "outbound_tech",
+        channel: "ms_teams",
+        originalText: `ส่งรายละเอียดเคส ${detail.caseNumber} ให้ทีม Tech Support ผ่าน Microsoft Teams แล้ว`,
+        senderType: "SYSTEM",
+        messageType: "CASE_FORWARDED",
+        deliveryStatus: "sent",
+      });
       await store.updateCase(caseId, {
         teamsDeliveryStatus: "accepted",
         teamsDeliveryAt: new Date().toISOString(),
@@ -344,6 +365,15 @@ export const caseService = {
 
     try {
       await teamsClient.notifyCase(detail);
+      await store.createMessage({
+        caseId: supportCase.id,
+        direction: "outbound_tech",
+        channel: "ms_teams",
+        originalText: `ส่งรายละเอียดเคส ${supportCase.caseNumber} ให้ทีม Tech Support ผ่าน Microsoft Teams แล้ว`,
+        senderType: "SYSTEM",
+        messageType: "CASE_FORWARDED",
+        deliveryStatus: "sent",
+      });
       await store.updateCase(supportCase.id, {
         teamsDeliveryStatus: "accepted",
         teamsDeliveryAt: new Date().toISOString(),
@@ -390,9 +420,10 @@ export const caseService = {
       originalText: input.text,
       externalMessageId: input.externalMessageId,
       senderType: "TECH",
+      messageType: "TECH_RAW_REPLY",
     });
 
-    const originalCustomerText = detail.messages.find((item) => item.direction === "inbound_customer")?.originalText;
+    const originalCustomerText = detail.messages.find((item) => item.senderType === "CUSTOMER")?.originalText;
     const messageReview = await aiCenterClient.reviewTechMessageForCustomer({
       caseNumber: detail.caseNumber,
       caseTitle: caseService.formatCaseTitle(detail),
@@ -412,6 +443,10 @@ export const caseService = {
       rawJson: messageReview,
     });
 
+    if (messageReview.messageType === "INTERNAL_NOTE") {
+      await store.updateMessage(message.id, { messageType: "INTERNAL_NOTE" });
+    }
+
     if (!messageReview.shouldSendToCustomer) {
       await store.updateCase(input.caseId, {
         status: messageReview.reviewFailed ? "awaiting_tech_review" : "assigned",
@@ -419,6 +454,19 @@ export const caseService = {
       });
       return store.getCaseDetail(input.caseId);
     }
+
+    const rewrittenMessage = await store.createMessage({
+      caseId: input.caseId,
+      direction: "INTERNAL",
+      channel: "system",
+      originalText: messageReview.rewrittenMessage,
+      senderType: "AI",
+      messageType: "AI_REWRITTEN_REPLY",
+      sourceMessageId: message.id,
+      parentMessageId: message.id,
+      isVisibleToCustomer: false,
+      deliveryStatus: "sent",
+    });
 
     const isResolution = messageReview.messageType === "RESOLUTION" || messageReview.messageType === "CLOSE_CASE" || input.closeAfterReply;
     let solutionAnalysis;
@@ -482,7 +530,16 @@ export const caseService = {
       direction: "outbound_customer",
       channel: "line",
       originalText: lineText,
-      senderType: "TECH",
+      senderType: "BOT",
+      messageType: closeCase
+        ? "CASE_CLOSED"
+        : messageReview.messageType === "REQUEST_MORE_INFO"
+          ? "REQUEST_MORE_INFO"
+          : messageReview.messageType === "RESOLUTION"
+            ? "RESOLUTION"
+            : "CUSTOMER_REPLY",
+      sourceMessageId: rewrittenMessage.id,
+      parentMessageId: message.id,
       deliveryStatus: delivery.delivered ? "delivered" : "pending",
     });
 

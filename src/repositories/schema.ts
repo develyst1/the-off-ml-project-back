@@ -207,4 +207,94 @@ create index if not exists analyses_case_id_idx on analyses(case_id);
 create index if not exists solutions_case_id_idx on solutions(case_id);
 create index if not exists confidence_matches_case_id_idx on confidence_matches(case_id);
 create index if not exists auto_answer_logs_case_id_idx on auto_answer_logs(case_id);
+
+-- `messages` remains intact as a rollback backup. New application writes use case_messages.
+create table if not exists case_messages (
+  id text primary key,
+  case_id text not null references support_cases(id) on delete cascade,
+  direction text not null,
+  channel text not null,
+  sender_type text not null,
+  content_type text not null default 'TEXT',
+  message_type text not null,
+  original_text text not null,
+  normalized_text text,
+  display_text text not null,
+  parent_message_id text references case_messages(id) on delete set null,
+  source_message_id text references case_messages(id) on delete set null,
+  is_visible_to_customer boolean not null default false,
+  external_message_id text,
+  webhook_event_id text,
+  teams_message_id text,
+  delivery_status text not null,
+  delivery_error text,
+  retry_count integer not null default 0,
+  last_retry_at timestamptz,
+  received_at timestamptz,
+  processed_at timestamptz,
+  sent_at timestamptz,
+  delivered_at timestamptz,
+  failed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+insert into case_messages (
+  id, case_id, direction, channel, sender_type, content_type, message_type,
+  original_text, normalized_text, display_text, is_visible_to_customer,
+  external_message_id, webhook_event_id, delivery_status, received_at,
+  processed_at, sent_at, failed_at, created_at, updated_at
+)
+select
+  m.id,
+  m.case_id,
+  case m.direction
+    when 'inbound_customer' then 'INBOUND'
+    when 'inbound_tech' then 'INBOUND'
+    when 'outbound_customer' then 'OUTBOUND'
+    else 'OUTBOUND'
+  end,
+  m.channel,
+  m.sender_type,
+  case when m.message_type = 'system' then 'SYSTEM_EVENT' else 'TEXT' end,
+  case
+    when m.direction = 'inbound_customer' and m.sender_type = 'CUSTOMER' then 'CUSTOMER_MESSAGE'
+    when m.direction = 'inbound_tech' and m.sender_type = 'TECH' then 'TECH_RAW_REPLY'
+    when m.direction = 'outbound_customer' and m.sender_type = 'BOT' and m.original_text like '%รับเรื่อง%' then 'CASE_ACKNOWLEDGEMENT'
+    when m.direction = 'outbound_customer' and m.sender_type = 'BOT' then 'CUSTOMER_REPLY'
+    when m.direction = 'outbound_customer' then 'CUSTOMER_REPLY'
+    else 'SYSTEM_EVENT'
+  end,
+  m.original_text,
+  m.normalized_text,
+  m.original_text,
+  case when m.direction = 'inbound_tech' then false else true end,
+  m.external_message_id,
+  m.webhook_event_id,
+  case
+    when m.direction in ('inbound_customer', 'inbound_tech') then 'PROCESSED'
+    when m.delivery_status = 'failed' then 'FAILED'
+    when m.delivery_status in ('sent', 'delivered') then 'API_ACCEPTED'
+    else 'PENDING'
+  end,
+  m.received_at,
+  case when m.direction in ('inbound_customer', 'inbound_tech') then m.created_at end,
+  case when m.direction like 'outbound_%' and m.delivery_status in ('sent', 'delivered') then m.created_at end,
+  case when m.delivery_status = 'failed' then m.created_at end,
+  m.created_at,
+  m.created_at
+from messages m
+on conflict (id) do nothing;
+
+create unique index if not exists case_messages_external_message_id_unique
+  on case_messages (external_message_id) where external_message_id is not null;
+create unique index if not exists case_messages_webhook_event_id_unique
+  on case_messages (webhook_event_id) where webhook_event_id is not null;
+create unique index if not exists case_messages_teams_message_id_unique
+  on case_messages (teams_message_id) where teams_message_id is not null;
+create index if not exists case_messages_case_created_at_idx on case_messages(case_id, created_at);
+create index if not exists case_messages_case_message_type_idx on case_messages(case_id, message_type);
+create index if not exists case_messages_delivery_status_idx on case_messages(delivery_status);
+create index if not exists case_messages_parent_message_id_idx on case_messages(parent_message_id);
+create index if not exists case_messages_source_message_id_idx on case_messages(source_message_id);
 `;

@@ -187,7 +187,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     && /(ปัญหาใหม่|เรื่องใหม่|เคสใหม่|เปิดเคสใหม่|แยกเคส|new issue|new case)/i.test(input.text);
   */
   const intakeText = confirmsNewCase
-    ? (forceNewCaseDetail ? input.text : activeCase?.messages.filter((message) => message.direction === "inbound_customer").at(-1)?.originalText ?? input.text)
+    ? (forceNewCaseDetail ? input.text : activeCase?.messages.filter((message) => message.senderType === "CUSTOMER").at(-1)?.originalText ?? input.text)
     : input.text;
   const confirmsExistingCase = activeCase?.status === "awaiting_confirmation"
     && /(เคสเดิม|เรื่องเดิม|ข้อมูลเพิ่มเติม|ต่อเรื่องเดิม|same case|same issue)/i.test(input.text);
@@ -236,6 +236,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       channel: "line",
       originalText: relatedResult.continuationReply,
       senderType: "BOT",
+      messageType: "CASE_ACKNOWLEDGEMENT",
       deliveryStatus: "sent",
     });
 
@@ -273,6 +274,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     originalText: intakeText,
     externalMessageId: input.messageId,
     senderType: "CUSTOMER",
+    messageType: "CUSTOMER_MESSAGE",
     normalizedText: normalizedText,
     webhookEventId: input.webhookEventId,
     receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
@@ -337,6 +339,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     channel: "line",
     originalText: acknowledgement,
     senderType: "BOT",
+    messageType: "CASE_ACKNOWLEDGEMENT",
     deliveryStatus: acknowledgementDelivery.delivered ? "delivered" : "pending",
   });
   await store.updateCase(supportCase.id, {
@@ -348,6 +351,15 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
   if (caseDetail) {
     try {
       await teamsClient.notifyCase(caseDetail);
+      await store.createMessage({
+        caseId: supportCase.id,
+        direction: "outbound_tech",
+        channel: "ms_teams",
+        originalText: `ส่งรายละเอียดเคส ${supportCase.caseNumber} ให้ทีม Tech Support ผ่าน Microsoft Teams แล้ว`,
+        senderType: "SYSTEM",
+        messageType: "CASE_FORWARDED",
+        deliveryStatus: "sent",
+      });
       await store.updateCase(supportCase.id, {
         teamsDeliveryStatus: "accepted",
         teamsDeliveryAt: new Date().toISOString(),

@@ -15,6 +15,9 @@ export type CaseStatus =
   | "awaiting_tech_review";
 
 export type MessageDirection =
+  | "INBOUND"
+  | "OUTBOUND"
+  | "INTERNAL"
   | "inbound_customer"
   | "outbound_customer"
   | "inbound_tech"
@@ -82,13 +85,43 @@ export type Message = {
   direction: MessageDirection;
   channel: MessageChannel;
   originalText: string;
-  senderType?: "CUSTOMER" | "BOT" | "TECH" | "SYSTEM";
-  messageType?: "text" | "system";
-  deliveryStatus?: "pending" | "sent" | "delivered" | "failed";
+  displayText?: string;
+  senderType?: "CUSTOMER" | "BOT" | "AI" | "TECH" | "SYSTEM";
+  contentType?: "TEXT" | "IMAGE" | "FILE" | "STICKER" | "LOCATION" | "SYSTEM_EVENT";
+  messageType?:
+    | "text"
+    | "system"
+    | "CUSTOMER_MESSAGE"
+    | "CASE_ACKNOWLEDGEMENT"
+    | "REQUEST_MORE_INFO"
+    | "CUSTOMER_ADDITIONAL_INFO"
+    | "TECH_RAW_REPLY"
+    | "AI_REWRITTEN_REPLY"
+    | "CUSTOMER_REPLY"
+    | "CASE_FORWARDED"
+    | "STATUS_UPDATE"
+    | "TECH_REPLY"
+    | "INTERNAL_NOTE"
+    | "CUSTOMER_REWRITE"
+    | "RESOLUTION"
+    | "CASE_REOPENED"
+    | "CASE_CLOSED";
+  deliveryStatus?: "RECEIVED" | "PROCESSING" | "PROCESSED" | "PENDING" | "SENT" | "API_ACCEPTED" | "DELIVERED" | "FAILED" | "SKIPPED" | "pending" | "sent" | "delivered" | "failed";
+  isVisibleToCustomer?: boolean;
+  parentMessageId?: string;
+  sourceMessageId?: string;
+  teamsMessageId?: string;
+  deliveryError?: string;
+  retryCount?: number;
+  lastRetryAt?: string;
   externalMessageId?: string;
   webhookEventId?: string;
   normalizedText?: string;
   receivedAt?: string;
+  processedAt?: string;
+  sentAt?: string;
+  deliveredAt?: string;
+  failedAt?: string;
   createdAt: string;
 };
 

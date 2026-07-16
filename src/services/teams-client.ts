@@ -32,7 +32,7 @@ export const teamsClient = {
 
   async notifyCase(caseDetail: CaseDetail): Promise<{ delivered: boolean; externalId?: string }> {
     const latestCustomerMessage = [...caseDetail.messages]
-      .filter((message) => message.direction === "inbound_customer")
+      .filter((message) => message.senderType === "CUSTOMER")
       .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
     const latestAnalysis = [...caseDetail.analyses]
       .filter((analysis) => analysis.analysisType === "customer_message")

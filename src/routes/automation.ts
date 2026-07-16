@@ -58,7 +58,7 @@ automationRoutes.get("/logs", async (c) => {
   const cases = await caseService.listCases();
   const logs = cases.flatMap((item) =>
     item.messages
-      .filter((message) => message.direction === "outbound_customer")
+      .filter((message) => message.direction === "OUTBOUND" && message.isVisibleToCustomer)
       .map((message) => ({
         id: message.id,
         time: message.createdAt,

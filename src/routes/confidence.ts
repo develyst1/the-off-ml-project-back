@@ -9,7 +9,7 @@ confidenceRoutes.get("/suggestions", async (c) => {
   const suggestions = cases
     .filter((item) => item.status === "awaiting_confirmation" || (item.confidenceScore ?? 0) >= 90)
     .map((item) => {
-      const customerMessage = item.messages.find((message) => message.direction === "inbound_customer");
+      const customerMessage = item.messages.find((message) => message.senderType === "CUSTOMER");
       const latestSolution = item.solutions.at(-1);
 
       return {

@@ -24,6 +24,12 @@ export const caseRoutes = new Hono();
 
 caseRoutes.get("/", async (c) => c.json({ data: await caseService.listCases() }));
 
+caseRoutes.get("/:id/messages", async (c) => {
+  const detail = await caseService.getCase(c.req.param("id"));
+  if (!detail) return c.json({ error: "case_not_found" }, 404);
+  return c.json({ data: detail.messages });
+});
+
 caseRoutes.get("/:id", async (c) => {
   const detail = await caseService.getCase(c.req.param("id"));
 
