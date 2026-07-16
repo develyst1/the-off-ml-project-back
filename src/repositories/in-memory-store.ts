@@ -121,7 +121,7 @@ export class InMemoryStore implements CaseStore {
     return message;
   }
 
-  async updateMessage(id: string, patch: Partial<Pick<Message, "messageType" | "senderType" | "deliveryStatus">>): Promise<Message> {
+  async updateMessage(id: string, patch: Partial<Pick<Message, "direction" | "messageType" | "senderType" | "deliveryStatus">>): Promise<Message> {
     const current = this.messages.get(id);
     if (!current) throw new Error("Message not found");
     const updated = { ...current, ...patch };

@@ -415,15 +415,17 @@ export class PostgresStore implements CaseStore {
     return mapMessage(result.rows[0]);
   }
 
-  async updateMessage(id: string, patch: Partial<Pick<Message, "messageType" | "senderType" | "deliveryStatus">>): Promise<Message> {
+  async updateMessage(id: string, patch: Partial<Pick<Message, "direction" | "messageType" | "senderType" | "deliveryStatus">>): Promise<Message> {
     const result = await this.query<DbMessage>(
       `update case_messages
-       set sender_type = coalesce($2, sender_type),
-           message_type = coalesce($3, message_type),
-           delivery_status = coalesce($4, delivery_status)
+       set direction = coalesce($2, direction),
+           sender_type = coalesce($3, sender_type),
+           message_type = coalesce($4, message_type),
+           delivery_status = coalesce($5, delivery_status),
+           updated_at = now()
        where id = $1
        returning *`,
-      [id, patch.senderType ?? null, patch.messageType ?? null, patch.deliveryStatus ?? null],
+      [id, patch.direction ?? null, patch.senderType ?? null, patch.messageType ?? null, patch.deliveryStatus ?? null],
     );
     if (!result.rows[0]) throw new Error("Message not found");
     return mapMessage(result.rows[0]);

@@ -208,7 +208,7 @@ create index if not exists solutions_case_id_idx on solutions(case_id);
 create index if not exists confidence_matches_case_id_idx on confidence_matches(case_id);
 create index if not exists auto_answer_logs_case_id_idx on auto_answer_logs(case_id);
 
--- `messages` remains intact as a rollback backup. New application writes use case_messages.
+-- The legacy messages table remains intact as a rollback backup. New application writes use case_messages.
 create table if not exists case_messages (
   id text primary key,
   case_id text not null references support_cases(id) on delete cascade,

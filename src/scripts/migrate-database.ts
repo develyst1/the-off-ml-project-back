@@ -14,7 +14,17 @@ const pool = new Pool({
 
 try {
   await pool.query(schemaSql);
-  console.log("Database migration completed: support_cases.case_number is ready.");
+  const [{ rows: legacyRows }, { rows: caseMessageRows }, { rows: unclearRows }] = await Promise.all([
+    pool.query<{ count: string }>("select count(*)::text as count from messages"),
+    pool.query<{ count: string }>("select count(*)::text as count from case_messages"),
+    pool.query<{ count: string }>("select count(*)::text as count from case_messages where message_type = 'SYSTEM_EVENT'"),
+  ]);
+  console.log(JSON.stringify({
+    migrated: true,
+    legacyMessages: Number(legacyRows[0]?.count ?? 0),
+    caseMessages: Number(caseMessageRows[0]?.count ?? 0),
+    needsReview: Number(unclearRows[0]?.count ?? 0),
+  }));
 } finally {
   await pool.end();
 }

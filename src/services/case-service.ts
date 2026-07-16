@@ -5,7 +5,7 @@ import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
 
 export const caseService = {
-  formatCaseTitle(detail: { title?: string; category?: string; messages: { direction: string; originalText: string }[] }) {
+  formatCaseTitle(detail: { title?: string; category?: string; messages: { direction: string; originalText: string; senderType?: string }[] }) {
     if (detail.title?.trim()) return detail.title.trim();
     const original = detail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? detail.category ?? "Tech Support";
     return original.trim();
@@ -444,7 +444,7 @@ export const caseService = {
     });
 
     if (messageReview.messageType === "INTERNAL_NOTE") {
-      await store.updateMessage(message.id, { messageType: "INTERNAL_NOTE" });
+      await store.updateMessage(message.id, { direction: "INTERNAL", messageType: "INTERNAL_NOTE", deliveryStatus: "PROCESSED" });
     }
 
     if (!messageReview.shouldSendToCustomer) {

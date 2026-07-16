@@ -8,7 +8,7 @@ export type CaseStore = {
   createCase(input: { customerId: string; status?: CaseStatus; title?: string; category?: string; confidenceScore?: number }): Promise<SupportCase>;
   updateCase(id: string, patch: Partial<Omit<SupportCase, "id" | "customerId" | "createdAt">>): Promise<SupportCase>;
   createMessage(input: Omit<Message, "id" | "createdAt">): Promise<Message>;
-  updateMessage(id: string, patch: Partial<Pick<Message, "messageType" | "senderType" | "deliveryStatus">>): Promise<Message>;
+  updateMessage(id: string, patch: Partial<Pick<Message, "direction" | "messageType" | "senderType" | "deliveryStatus">>): Promise<Message>;
   getMessageByExternalMessageId(externalMessageId: string): Promise<Message | undefined>;
   getMessageByWebhookEventId(webhookEventId: string): Promise<Message | undefined>;
   createAnalysis(input: Omit<Analysis, "id" | "createdAt">): Promise<Analysis>;

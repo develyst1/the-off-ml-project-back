@@ -105,7 +105,8 @@ export type Message = {
     | "CUSTOMER_REWRITE"
     | "RESOLUTION"
     | "CASE_REOPENED"
-    | "CASE_CLOSED";
+    | "CASE_CLOSED"
+    | "SYSTEM_EVENT";
   deliveryStatus?: "RECEIVED" | "PROCESSING" | "PROCESSED" | "PENDING" | "SENT" | "API_ACCEPTED" | "DELIVERED" | "FAILED" | "SKIPPED" | "pending" | "sent" | "delivered" | "failed";
   isVisibleToCustomer?: boolean;
   parentMessageId?: string;

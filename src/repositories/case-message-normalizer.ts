@@ -7,7 +7,7 @@ const legacyDirection: Record<string, "INBOUND" | "OUTBOUND" | "INTERNAL"> = {
   outbound_tech: "OUTBOUND",
 };
 
-function inferredMessageType(input: Omit<Message, "id" | "createdAt">) {
+function inferredMessageType(input: Omit<Message, "id" | "createdAt">): NonNullable<Message["messageType"]> {
   if (input.messageType) return input.messageType;
   if (input.senderType === "CUSTOMER") return "CUSTOMER_MESSAGE";
   if (input.senderType === "TECH") return "TECH_RAW_REPLY";
@@ -15,7 +15,7 @@ function inferredMessageType(input: Omit<Message, "id" | "createdAt">) {
   return "SYSTEM_EVENT";
 }
 
-function normalizeDeliveryStatus(direction: "INBOUND" | "OUTBOUND" | "INTERNAL", value?: Message["deliveryStatus"]) {
+function normalizeDeliveryStatus(direction: "INBOUND" | "OUTBOUND" | "INTERNAL", value?: Message["deliveryStatus"]): NonNullable<Message["deliveryStatus"]> {
   if (direction === "INBOUND") return "RECEIVED";
   if (direction === "INTERNAL") return "PROCESSED";
   if (value === "failed") return "FAILED";
