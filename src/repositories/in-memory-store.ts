@@ -1,4 +1,4 @@
-import type { Analysis, CaseDetail, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { Analysis, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore } from "./case-store";
 import { normalizeCaseMessage } from "./case-message-normalizer";
@@ -11,6 +11,7 @@ export class InMemoryStore implements CaseStore {
   private messages = new Map<string, Message>();
   private analyses = new Map<string, Analysis>();
   private solutions = new Map<string, Solution>();
+  private caseMatchLogs = new Map<string, CaseMatchLog>();
 
   async upsertCustomer(input: { lineUserId: string; displayName?: string }): Promise<Customer> {
     const existingId = this.customersByLineUserId.get(input.lineUserId);
@@ -157,6 +158,20 @@ export class InMemoryStore implements CaseStore {
 
     this.solutions.set(solution.id, solution);
     return solution;
+  }
+
+  async createCaseMatchLog(input: Omit<CaseMatchLog, "id" | "createdAt">): Promise<CaseMatchLog> {
+    const log: CaseMatchLog = { ...input, id: createId("match"), createdAt: nowIso() };
+    this.caseMatchLogs.set(log.id, log);
+    return log;
+  }
+
+  async updateCaseMatchLogDecision(id: string, finalUserDecision: NonNullable<CaseMatchLog["finalUserDecision"]>): Promise<CaseMatchLog> {
+    const current = this.caseMatchLogs.get(id);
+    if (!current) throw new Error("Case match log not found");
+    const updated = { ...current, finalUserDecision };
+    this.caseMatchLogs.set(id, updated);
+    return updated;
   }
 
   async listCases(): Promise<CaseDetail[]> {

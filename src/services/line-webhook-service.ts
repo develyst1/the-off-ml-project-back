@@ -69,8 +69,179 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
   const ambiguousNewCaseCommand = /^(เคสไหม|เปิดเคสไหม|เคสใหม|แคสใหม่)$/i.test(input.text.trim());
   const hasNewCaseIntent = /(เปิดเคสใหม่|สร้างเคสใหม่|แจ้งเรื่องใหม่|เคสใหม่|ปัญหาใหม่|เรื่องใหม่)/i.test(normalizedText);
   let forceNewCaseDetail = false;
+  let pendingNewCaseText: string | undefined;
+  let intakeMessageId = input.messageId;
+  let intakeWebhookEventId = input.webhookEventId;
+  let intakeReceivedAt = input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt;
+  let intakeNormalizedText = normalizedText;
 
-  if (customer.conversationState === "WAITING_NEW_CASE_CONFIRMATION") {
+  const pendingHistoryMatch = customer.pendingCaseSelection?.mode === "case_history_match"
+    ? customer.pendingCaseSelection
+    : undefined;
+  if (pendingHistoryMatch) {
+    const isExpired = !pendingHistoryMatch.expiresAt || new Date(pendingHistoryMatch.expiresAt).getTime() <= Date.now();
+    const matchedCaseId = pendingHistoryMatch.matchedCaseId ?? pendingHistoryMatch.selectedCaseId;
+
+    if (isExpired) {
+      await caseService.resolvePendingCaseHistoryMatch({
+        customerId: customer.id,
+        selection: pendingHistoryMatch,
+        decision: "expired",
+      });
+      const refreshedMatch = await caseService.matchLineMessageAgainstHistory({
+        customerId: customer.id,
+        text: pendingHistoryMatch.pendingText ?? input.text,
+        externalMessageId: pendingHistoryMatch.externalMessageId,
+        webhookEventId: pendingHistoryMatch.webhookEventId,
+        receivedAt: pendingHistoryMatch.receivedAt,
+      });
+      if (refreshedMatch.action === "ask_customer") {
+        await lineClient.replyToToken({
+          replyToken: input.replyToken,
+          text: refreshedMatch.prompt!,
+          quickReplies: [
+            { label: "คุยต่อเคสเดิม", text: "เคสเดิม" },
+            { label: "เปิดเคสใหม่", text: "เคสใหม่" },
+          ],
+        });
+        return { processed: true, duplicate: false, caseDetail: undefined };
+      }
+      forceNewCaseDetail = true;
+      pendingNewCaseText = pendingHistoryMatch.pendingText ?? input.text;
+      intakeMessageId = pendingHistoryMatch.externalMessageId ?? input.messageId;
+      intakeWebhookEventId = pendingHistoryMatch.webhookEventId ?? input.webhookEventId;
+      intakeReceivedAt = pendingHistoryMatch.receivedAt ?? intakeReceivedAt;
+      intakeNormalizedText = pendingNewCaseText.trim().replace(/\s+/g, " ");
+    } else {
+      const choosesNewCase = newCaseCommand || /^(เปิดเป็นเคสใหม่|สร้างเรื่องใหม่)$/i.test(input.text.trim());
+      const choosesExistingCase = /(เคสเดิม|เรื่องเดิม|คุยต่อ|เพิ่มข้อมูล|ต่อเรื่องเดิม|continue_existing_case)/i.test(input.text);
+
+      if (choosesNewCase && pendingHistoryMatch.pendingText) {
+        await caseService.resolvePendingCaseHistoryMatch({
+          customerId: customer.id,
+          selection: pendingHistoryMatch,
+          decision: "create_new_case",
+        });
+        forceNewCaseDetail = true;
+        pendingNewCaseText = pendingHistoryMatch.pendingText;
+        intakeMessageId = pendingHistoryMatch.externalMessageId ?? input.messageId;
+        intakeWebhookEventId = pendingHistoryMatch.webhookEventId ?? input.webhookEventId;
+        intakeReceivedAt = pendingHistoryMatch.receivedAt ?? intakeReceivedAt;
+        intakeNormalizedText = pendingNewCaseText.trim().replace(/\s+/g, " ");
+      } else if (choosesExistingCase && matchedCaseId && pendingHistoryMatch.pendingText) {
+        const matchedCase = await caseService.getCase(matchedCaseId);
+        if (!matchedCase || matchedCase.customerId !== customer.id) {
+          await caseService.resolvePendingCaseHistoryMatch({
+            customerId: customer.id,
+            selection: pendingHistoryMatch,
+            decision: "expired",
+          });
+          await lineClient.replyToToken({ replyToken: input.replyToken, text: "ไม่พบเคสที่เลือกแล้วค่ะ กรุณาส่งรายละเอียดปัญหาอีกครั้งนะคะ" });
+          return { processed: true, duplicate: false, caseDetail: undefined };
+        }
+
+        await caseService.resolvePendingCaseHistoryMatch({
+          customerId: customer.id,
+          selection: pendingHistoryMatch,
+          decision: "continue_existing_case",
+        });
+        if (["closed", "resolved", "sent_to_customer"].includes(matchedCase.status)) {
+          await store.updateCase(matchedCase.id, { status: "reopened" });
+        }
+        await store.setActiveCase(customer.id, matchedCase.id);
+        const relatedResult = await caseService.appendLineMessageToCase({
+          caseId: matchedCase.id,
+          text: pendingHistoryMatch.pendingText,
+          externalMessageId: pendingHistoryMatch.externalMessageId,
+          webhookEventId: pendingHistoryMatch.webhookEventId,
+          receivedAt: pendingHistoryMatch.receivedAt,
+        });
+        const reply = `ได้เลยค่ะ จะคุยต่อในเคส ${matchedCase.caseNumber} นะคะ ทีมงานได้รับข้อมูลเพิ่มเติมแล้วค่ะ`;
+        await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
+        await store.createMessage({
+          caseId: matchedCase.id,
+          direction: "outbound_customer",
+          channel: "line",
+          originalText: reply,
+          senderType: "BOT",
+          messageType: "CASE_ACKNOWLEDGEMENT",
+          deliveryStatus: "sent",
+        });
+        return { processed: true, duplicate: false, caseDetail: relatedResult.detail };
+      } else {
+        const matchedCase = matchedCaseId ? await caseService.getCase(matchedCaseId) : undefined;
+        const caseLabel = matchedCase ? `\nหมายเลขเคส: ${matchedCase.caseNumber}\nเรื่อง: ${caseService.formatCaseTitle(matchedCase)}\n` : "";
+        await lineClient.replyToToken({
+          replyToken: input.replyToken,
+          text: `ต้องการคุยต่อในเคสเดิม หรือเปิดเป็นเคสใหม่คะ?${caseLabel}\nตอบ “เคสเดิม” หรือ “เคสใหม่” ได้เลยค่ะ`,
+          quickReplies: [
+            { label: "คุยต่อเคสเดิม", text: "เคสเดิม" },
+            { label: "เปิดเคสใหม่", text: "เคสใหม่" },
+          ],
+        });
+        return { processed: true, duplicate: false, caseDetail: undefined };
+      }
+    }
+  }
+
+  const pendingSplit = customer.pendingCaseSelection?.mode === "case_split_confirmation"
+    ? customer.pendingCaseSelection
+    : undefined;
+  if (
+    (pendingSplit?.externalMessageId && pendingSplit.externalMessageId === input.messageId)
+    || (pendingSplit?.webhookEventId && input.webhookEventId && pendingSplit.webhookEventId === input.webhookEventId)
+  ) {
+    return { processed: false, duplicate: true };
+  }
+
+  if (pendingSplit) {
+    const confirmsNewCaseSplit = newCaseCommand || /^(ใช่|ใช่ค่ะ|ตกลง|ยืนยัน)$/i.test(input.text.trim());
+    const confirmsExistingCaseSplit = /(เคสเดิม|เรื่องเดิม|เพิ่มข้อมูล|ต่อเรื่องเดิม|same case|same issue)/i.test(input.text);
+    const sourceCaseId = pendingSplit.selectedCaseId ?? pendingSplit.candidateCaseIds[0];
+
+    if (confirmsNewCaseSplit && sourceCaseId && pendingSplit.pendingText) {
+      forceNewCaseDetail = true;
+      pendingNewCaseText = pendingSplit.pendingText;
+      intakeMessageId = pendingSplit.externalMessageId ?? input.messageId;
+      intakeWebhookEventId = pendingSplit.webhookEventId ?? input.webhookEventId;
+      intakeReceivedAt = pendingSplit.receivedAt ?? intakeReceivedAt;
+      intakeNormalizedText = pendingSplit.pendingText.trim().replace(/\s+/g, " ");
+      await store.setPendingCaseSelection(customer.id);
+      await store.setConversationState(customer.id, "IDLE");
+      await store.updateCase(sourceCaseId, { status: pendingSplit.previousCaseStatus ?? "awaiting_tech" });
+    } else if (confirmsExistingCaseSplit && sourceCaseId && pendingSplit.pendingText) {
+      await store.setPendingCaseSelection(customer.id);
+      await store.setConversationState(customer.id, "ACTIVE_CASE_CONVERSATION");
+      await store.updateCase(sourceCaseId, { status: pendingSplit.previousCaseStatus ?? "awaiting_tech" });
+      await store.setActiveCase(customer.id, sourceCaseId);
+      const relatedResult = await caseService.appendLineMessageToCase({
+        caseId: sourceCaseId,
+        text: pendingSplit.pendingText,
+        externalMessageId: pendingSplit.externalMessageId,
+        webhookEventId: pendingSplit.webhookEventId,
+        receivedAt: pendingSplit.receivedAt,
+      });
+      await lineClient.replyToToken({ replyToken: input.replyToken, text: relatedResult.continuationReply });
+      await store.createMessage({
+        caseId: sourceCaseId,
+        direction: "outbound_customer",
+        channel: "line",
+        originalText: relatedResult.continuationReply,
+        senderType: "BOT",
+        messageType: "CASE_ACKNOWLEDGEMENT",
+        deliveryStatus: "sent",
+      });
+      return { processed: true, duplicate: false, caseDetail: relatedResult.detail };
+    } else if (!confirmsNewCaseSplit) {
+      await lineClient.replyToToken({
+        replyToken: input.replyToken,
+        text: "ข้อความก่อนหน้านี้ต้องการเปิดเคสใหม่หรือเพิ่มข้อมูลในเคสเดิมคะ? ตอบ “เคสใหม่” หรือ “เคสเดิม” ได้เลยค่ะ",
+      });
+      return { processed: true, duplicate: false, caseDetail: undefined };
+    }
+  }
+
+  if (!forceNewCaseDetail && customer.conversationState === "WAITING_NEW_CASE_CONFIRMATION") {
     if (/^(ใช่|ใช่ค่ะ|ตกลง|ยืนยัน)$/i.test(input.text.trim())) {
       await store.setConversationState(customer.id, "WAITING_NEW_CASE_DETAIL");
       await lineClient.replyToToken({ replyToken: input.replyToken, text: "ได้ค่ะ รบกวนบอกอาการหรือปัญหาที่พบได้เลยนะคะ" });
@@ -85,7 +256,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     return { processed: true, duplicate: false, caseDetail: undefined };
   }
 
-  if (customer.conversationState === "WAITING_NEW_CASE_DETAIL") {
+  if (!forceNewCaseDetail && customer.conversationState === "WAITING_NEW_CASE_DETAIL") {
     if (newCaseCommand || ambiguousNewCaseCommand || normalizedText.length < 8) {
       await lineClient.replyToToken({ replyToken: input.replyToken, text: "ได้ค่ะ รบกวนบอกอาการหรือปัญหาที่พบได้เลยนะคะ" });
       return { processed: true, duplicate: false, caseDetail: undefined };
@@ -96,7 +267,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     await store.setConversationState(customer.id, "WAITING_NEW_CASE_CONFIRMATION");
     await lineClient.replyToToken({ replyToken: input.replyToken, text: "ต้องการแจ้งปัญหาใหม่ หรือสอบถามเรื่องเดิมคะ? ตอบ “ใช่” หากต้องการแจ้งปัญหาใหม่ค่ะ" });
     return { processed: true, duplicate: false, caseDetail: undefined };
-  } else if (ambiguousNewCaseCommand || newCaseCommand || (hasNewCaseIntent && normalizedText.length < 18)) {
+  } else if (!forceNewCaseDetail && (ambiguousNewCaseCommand || newCaseCommand || (hasNewCaseIntent && normalizedText.length < 18))) {
     await store.setConversationState(customer.id, "WAITING_NEW_CASE_DETAIL");
     await lineClient.replyToToken({ replyToken: input.replyToken, text: "ได้ค่ะ รบกวนบอกอาการหรือปัญหาที่พบได้เลยนะคะ" });
     return { processed: true, duplicate: false, caseDetail: undefined };
@@ -104,7 +275,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     forceNewCaseDetail = true;
   }
 
-  const isNewCaseRequest = forceNewCaseDetail;
+  let isNewCaseRequest = forceNewCaseDetail;
   if (isNewCaseRequest && customer.pendingCaseSelection) {
     await store.setPendingCaseSelection(customer.id);
   }
@@ -183,12 +354,31 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
   if (activeCase && customer.activeCaseId !== activeCase.id) {
     await store.setActiveCase(customer.id, activeCase.id);
   }
+  if (!isNewCaseRequest) {
+    const historyMatch = await caseService.matchLineMessageAgainstHistory({
+      customerId: customer.id,
+      text: input.text,
+      externalMessageId: input.messageId,
+      webhookEventId: input.webhookEventId,
+      receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
+    });
+    if (historyMatch.action === "ask_customer") {
+      await lineClient.replyToToken({
+        replyToken: input.replyToken,
+        text: historyMatch.prompt!,
+        quickReplies: [
+          { label: "คุยต่อเคสเดิม", text: "เคสเดิม" },
+          { label: "เปิดเคสใหม่", text: "เคสใหม่" },
+        ],
+      });
+      return { processed: true, duplicate: false, caseDetail: undefined };
+    }
+    isNewCaseRequest = true;
+  }
   const confirmsNewCase = isNewCaseRequest; /*
     && /(ปัญหาใหม่|เรื่องใหม่|เคสใหม่|เปิดเคสใหม่|แยกเคส|new issue|new case)/i.test(input.text);
   */
-  const intakeText = confirmsNewCase
-    ? (forceNewCaseDetail ? input.text : activeCase?.messages.filter((message) => message.senderType === "CUSTOMER").at(-1)?.originalText ?? input.text)
-    : input.text;
+  const intakeText = pendingNewCaseText ?? input.text;
   const confirmsExistingCase = activeCase?.status === "awaiting_confirmation"
     && /(เคสเดิม|เรื่องเดิม|ข้อมูลเพิ่มเติม|ต่อเรื่องเดิม|same case|same issue)/i.test(input.text);
 
@@ -252,6 +442,8 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       caseId: activeCase.id,
       text: input.text,
       externalMessageId: input.messageId,
+      webhookEventId: input.webhookEventId,
+      receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
       relation: { confidence: 0, reason: "AI ตรวจพบว่าอาจเป็นหัวข้อใหม่ จึงรอให้ลูกค้ายืนยัน" },
     });
     await lineClient.replyToToken({ replyToken: input.replyToken, text: LINE_CASE_CONFIRMATION_TEXT });
@@ -272,12 +464,12 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     direction: "inbound_customer",
     channel: "line",
     originalText: intakeText,
-    externalMessageId: input.messageId,
+    externalMessageId: intakeMessageId,
     senderType: "CUSTOMER",
     messageType: "CUSTOMER_MESSAGE",
-    normalizedText: normalizedText,
-    webhookEventId: input.webhookEventId,
-    receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
+    normalizedText: intakeNormalizedText,
+    webhookEventId: intakeWebhookEventId,
+    receivedAt: intakeReceivedAt,
   });
 
   const analysis = await aiCenterClient.analyzeCustomerMessage({
@@ -309,13 +501,27 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     title: analysis.caseTitle,
     aiStatus: analysis.status === "AI_FAILED" ? "AI_FAILED" : analysis.status === "AI_LOW_CONFIDENCE" ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS",
     aiAnalyzedAt: new Date().toISOString(),
-    customerSentAt: input.timestamp ? new Date(input.timestamp).toISOString() : undefined,
+    customerSentAt: intakeReceivedAt,
     systemReceivedAt: input.systemReceivedAt,
     category: analysis.category,
     priority: analysis.urgency,
     confidenceScore: analysis.confidence,
   });
   await store.setActiveCase(customer.id, supportCase.id);
+
+  if (pendingNewCaseText) {
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INTERNAL",
+      channel: "system",
+      originalText: `ลูกค้ายืนยันเปิดเคสใหม่จากข้อความก่อนหน้า: ${input.text}`,
+      externalMessageId: input.messageId,
+      webhookEventId: input.webhookEventId,
+      senderType: "SYSTEM",
+      messageType: "SYSTEM_EVENT",
+      deliveryStatus: "PROCESSED",
+    });
+  }
 
   console.log({
     event: "line_webhook_case_created",

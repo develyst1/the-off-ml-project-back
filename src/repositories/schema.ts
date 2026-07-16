@@ -298,6 +298,21 @@ create index if not exists case_messages_delivery_status_idx on case_messages(de
 create index if not exists case_messages_parent_message_id_idx on case_messages(parent_message_id);
 create index if not exists case_messages_source_message_id_idx on case_messages(source_message_id);
 
+create table if not exists case_match_logs (
+  id text primary key,
+  customer_id text not null references customers(id) on delete cascade,
+  incoming_message text not null,
+  candidate_case_ids jsonb not null default '[]'::jsonb,
+  ai_intent text not null,
+  matched_case_id text,
+  confidence numeric not null,
+  reason text not null,
+  final_user_decision text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists case_match_logs_customer_created_at_idx on case_match_logs(customer_id, created_at desc);
+
 -- New application records live in case_messages. Repoint legacy foreign keys after
 -- case_messages is available so existing databases migrate without losing history.
 do $$

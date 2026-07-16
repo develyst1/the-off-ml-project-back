@@ -1,6 +1,6 @@
 import pg from "pg";
 import { env } from "../config/env";
-import type { Analysis, CaseDetail, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { Analysis, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore } from "./case-store";
 import { normalizeCaseMessage } from "./case-message-normalizer";
@@ -97,6 +97,19 @@ type DbSolution = {
   rewritten_customer_text: string;
   confidence: string | number;
   validated_by_team: boolean;
+  created_at: Date;
+};
+
+type DbCaseMatchLog = {
+  id: string;
+  customer_id: string;
+  incoming_message: string;
+  candidate_case_ids: string[];
+  ai_intent: CaseMatchLog["aiIntent"];
+  matched_case_id: string | null;
+  confidence: string | number;
+  reason: string;
+  final_user_decision: CaseMatchLog["finalUserDecision"] | null;
   created_at: Date;
 };
 
@@ -207,6 +220,21 @@ function mapSolution(row: DbSolution): Solution {
     rewrittenCustomerText: row.rewritten_customer_text,
     confidence: Number(row.confidence),
     validatedByTeam: row.validated_by_team,
+    createdAt: dateIso(row.created_at),
+  };
+}
+
+function mapCaseMatchLog(row: DbCaseMatchLog): CaseMatchLog {
+  return {
+    id: row.id,
+    customerId: row.customer_id,
+    incomingMessage: row.incoming_message,
+    candidateCaseIds: row.candidate_case_ids ?? [],
+    aiIntent: row.ai_intent,
+    matchedCaseId: row.matched_case_id ?? undefined,
+    confidence: Number(row.confidence),
+    reason: row.reason,
+    finalUserDecision: row.final_user_decision ?? undefined,
     createdAt: dateIso(row.created_at),
   };
 }
@@ -488,6 +516,37 @@ export class PostgresStore implements CaseStore {
     );
 
     return mapSolution(result.rows[0]);
+  }
+
+  async createCaseMatchLog(input: Omit<CaseMatchLog, "id" | "createdAt">): Promise<CaseMatchLog> {
+    const result = await this.query<DbCaseMatchLog>(
+      `insert into case_match_logs (
+        id, customer_id, incoming_message, candidate_case_ids, ai_intent,
+        matched_case_id, confidence, reason, final_user_decision, created_at
+      ) values ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10) returning *`,
+      [
+        createId("match"),
+        input.customerId,
+        input.incomingMessage,
+        JSON.stringify(input.candidateCaseIds),
+        input.aiIntent,
+        input.matchedCaseId ?? null,
+        input.confidence,
+        input.reason,
+        input.finalUserDecision ?? null,
+        nowIso(),
+      ],
+    );
+    return mapCaseMatchLog(result.rows[0]);
+  }
+
+  async updateCaseMatchLogDecision(id: string, finalUserDecision: NonNullable<CaseMatchLog["finalUserDecision"]>): Promise<CaseMatchLog> {
+    const result = await this.query<DbCaseMatchLog>(
+      "update case_match_logs set final_user_decision = $2 where id = $1 returning *",
+      [id, finalUserDecision],
+    );
+    if (!result.rows[0]) throw new Error("Case match log not found");
+    return mapCaseMatchLog(result.rows[0]);
   }
 
   async listCases(): Promise<CaseDetail[]> {

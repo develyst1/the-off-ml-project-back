@@ -37,9 +37,32 @@ export type Customer = {
 };
 
 export type PendingCaseSelection = {
-  mode: "choose" | "confirm";
+  mode: "choose" | "confirm" | "case_split_confirmation" | "case_history_match";
   candidateCaseIds: string[];
   selectedCaseId?: string;
+  pendingText?: string;
+  previousCaseStatus?: CaseStatus;
+  externalMessageId?: string;
+  webhookEventId?: string;
+  receivedAt?: string;
+  matchedCaseId?: string;
+  matchConfidence?: number;
+  matchReason?: string;
+  matchLogId?: string;
+  expiresAt?: string;
+  createdAt: string;
+};
+
+export type CaseMatchLog = {
+  id: string;
+  customerId: string;
+  incomingMessage: string;
+  candidateCaseIds: string[];
+  aiIntent: "CONTINUE_CASE" | "NEW_CASE" | "UNCERTAIN";
+  matchedCaseId?: string;
+  confidence: number;
+  reason: string;
+  finalUserDecision?: "continue_existing_case" | "create_new_case" | "auto_new_case" | "expired";
   createdAt: string;
 };
 

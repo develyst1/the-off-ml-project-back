@@ -70,6 +70,30 @@ export type CaseRelationAnalysis = {
   reason: string;
 };
 
+export type CaseHistoryCandidate = {
+  caseId: string;
+  caseNumber: string;
+  title?: string;
+  summary?: string;
+  category?: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  latestCustomerMessage?: string;
+  latestSolution?: string;
+  keywords: string[];
+};
+
+export type CaseHistoryMatchDecision = {
+  intent: "CONTINUE_CASE" | "NEW_CASE" | "UNCERTAIN";
+  matchedCaseId?: string;
+  matchedCaseNumber?: string;
+  confidence: number;
+  reason: string;
+  interpretedProblem: string;
+  isSameProblem: boolean;
+};
+
 function fallbackCustomerAnalysis(text: string): CustomerMessageAnalysis {
   return {
     summary: text.length > 120 ? `${text.slice(0, 117)}...` : text,
@@ -129,6 +153,22 @@ function fallbackCaseRelation(input: { caseStatus?: string }): CaseRelationAnaly
       ? "ลูกค้ากำลังตอบกลับจากคำขอข้อมูลเพิ่มเติมของเคสเดิม"
       : "ยังไม่มีผลวิเคราะห์ความเกี่ยวข้องจาก AI CENTER",
   };
+}
+
+function fallbackCaseHistoryMatch(): CaseHistoryMatchDecision {
+  return {
+    intent: "NEW_CASE",
+    confidence: 0,
+    reason: "AI_CENTER_UNAVAILABLE",
+    interpretedProblem: "",
+    isSameProblem: false,
+  };
+}
+
+function normalizeMatchConfidence(value: unknown) {
+  const numberValue = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numberValue)) return 0;
+  return Math.max(0, Math.min(1, numberValue > 1 ? numberValue / 100 : numberValue));
 }
 
 function buildChatPayload(messages: ChatMessage[]): AiCenterChatRequest {
@@ -281,6 +321,68 @@ export const aiCenterClient = {
     } catch (error) {
       console.error({
         event: "ai_center_case_relation_failed",
+        message: error instanceof Error ? error.message : "Unexpected AI CENTER error",
+      });
+      return fallback;
+    }
+  },
+
+  async matchCustomerCaseHistory(input: { newCustomerText: string; candidates: CaseHistoryCandidate[] }): Promise<CaseHistoryMatchDecision> {
+    const fallback = fallbackCaseHistoryMatch();
+    if (input.candidates.length === 0) return fallback;
+
+    try {
+      const content = await chatWithAiCenter([
+        {
+          role: "system",
+          content: "คุณเป็น AI สำหรับตัดสินความเกี่ยวข้องของข้อความลูกค้าและประวัติเคส ตอบเป็น JSON เท่านั้น",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "match_customer_message_to_case_history",
+            rules: [
+              "พิจารณาเฉพาะ candidateCases ที่ backend ส่งให้เท่านั้น",
+              "ห้ามสร้างหรือเดา caseId และ caseNumber ใหม่",
+              "CONTINUE_CASE ใช้เมื่อข้อความเป็นปัญหาเดิมหรือข้อมูลต่อเนื่องของเคสเดียวกัน",
+              "NEW_CASE ใช้เมื่อไม่เกี่ยวข้องกับ candidate ใด",
+              "UNCERTAIN ใช้เมื่อมีความกำกวมและมี candidate ที่ใกล้เคียงจริง",
+              "ต้องใช้เนื้อหา ปัญหา หมวดหมู่ สถานะ และเวลาประกอบ ไม่ใช้เวลาเพียงอย่างเดียว",
+            ],
+            required_schema: {
+              intent: "CONTINUE_CASE | NEW_CASE | UNCERTAIN",
+              matchedCaseId: "candidate caseId or null",
+              matchedCaseNumber: "candidate caseNumber or null",
+              confidence: "number 0-1",
+              reason: "string",
+              interpretedProblem: "string",
+              isSameProblem: "boolean",
+            },
+            newCustomerText: input.newCustomerText,
+            candidateCases: input.candidates,
+          }),
+        },
+      ]);
+
+      if (!content) return fallback;
+      const parsed = parseJsonObject<Partial<CaseHistoryMatchDecision>>(content, fallback);
+      const intent = parsed.intent === "CONTINUE_CASE" || parsed.intent === "UNCERTAIN" || parsed.intent === "NEW_CASE"
+        ? parsed.intent
+        : "NEW_CASE";
+      const matched = input.candidates.find((candidate) => candidate.caseId === parsed.matchedCaseId);
+
+      return {
+        intent: matched ? intent : "NEW_CASE",
+        matchedCaseId: matched?.caseId,
+        matchedCaseNumber: matched?.caseNumber,
+        confidence: normalizeMatchConfidence(parsed.confidence),
+        reason: typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : fallback.reason,
+        interpretedProblem: typeof parsed.interpretedProblem === "string" ? parsed.interpretedProblem.trim() : "",
+        isSameProblem: Boolean(parsed.isSameProblem) && Boolean(matched),
+      };
+    } catch (error) {
+      console.error({
+        event: "ai_center_case_history_match_failed",
         message: error instanceof Error ? error.message : "Unexpected AI CENTER error",
       });
       return fallback;

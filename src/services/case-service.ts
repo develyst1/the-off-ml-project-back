@@ -1,8 +1,60 @@
 import type { CaseDetail, CaseStatus, MessageChannel, PendingCaseSelection } from "../domain/types";
+import { env } from "../config/env";
 import { store } from "../repositories/store";
-import { aiCenterClient } from "./ai-center-client";
+import { aiCenterClient, type CaseHistoryCandidate, type CaseHistoryMatchDecision } from "./ai-center-client";
 import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
+
+const CLOSED_CASE_STATUSES: CaseStatus[] = ["closed", "resolved", "sent_to_customer"];
+const RECENT_CLOSED_CASE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+
+type CaseHistoryMatchResult = {
+  action: "ask_customer" | "create_new_case";
+  decision: CaseHistoryMatchDecision;
+  matchedCase?: CaseDetail;
+  prompt?: string;
+};
+
+function latestByCreatedAt<T extends { createdAt: string }>(items: T[]) {
+  return [...items].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+}
+
+function buildCandidateKeywords(detail: CaseDetail) {
+  return [...new Set(`${detail.title ?? ""} ${detail.category ?? ""}`
+    .toLocaleLowerCase()
+    .split(/[^\p{L}\p{N}_-]+/u)
+    .filter((value) => value.length >= 2)
+    .slice(0, 12))];
+}
+
+function buildCaseHistoryCandidate(detail: CaseDetail): CaseHistoryCandidate {
+  const latestCustomerMessage = latestByCreatedAt(detail.messages.filter((message) => message.senderType === "CUSTOMER"));
+  const latestSolution = latestByCreatedAt(detail.solutions);
+  const latestAnalysis = latestByCreatedAt(detail.analyses.filter((analysis) => analysis.analysisType === "customer_message"));
+
+  return {
+    caseId: detail.id,
+    caseNumber: detail.caseNumber,
+    title: detail.title,
+    summary: latestAnalysis?.summary?.slice(0, 500),
+    category: detail.category,
+    status: detail.status,
+    createdAt: detail.createdAt,
+    updatedAt: detail.updatedAt,
+    latestCustomerMessage: latestCustomerMessage?.originalText.slice(0, 500),
+    latestSolution: latestSolution?.rewrittenCustomerText.slice(0, 500),
+    keywords: buildCandidateKeywords(detail),
+  };
+}
+
+function isRecentClosedCase(detail: CaseDetail) {
+  return !CLOSED_CASE_STATUSES.includes(detail.status)
+    || Date.now() - new Date(detail.updatedAt).getTime() <= RECENT_CLOSED_CASE_MAX_AGE_MS;
+}
+
+function isPendingExpired(selection: PendingCaseSelection) {
+  return !selection.expiresAt || new Date(selection.expiresAt).getTime() <= Date.now();
+}
 
 export const caseService = {
   formatCaseTitle(detail: { title?: string; category?: string; messages: { direction: string; originalText: string; senderType?: string }[] }) {
@@ -91,27 +143,108 @@ export const caseService = {
       .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())[0];
   },
 
-  async requestCaseSplitConfirmation(input: { caseId: string; text: string; relation: { confidence: number; reason: string }; externalMessageId?: string }) {
+  async getCaseHistoryCandidates(customerId: string) {
+    return (await this.getCustomerCases(customerId))
+      .filter(isRecentClosedCase)
+      .slice(0, env.CASE_MATCH_CANDIDATE_LIMIT);
+  },
+
+  async matchLineMessageAgainstHistory(input: {
+    customerId: string;
+    text: string;
+    externalMessageId?: string;
+    webhookEventId?: string;
+    receivedAt?: string;
+  }): Promise<CaseHistoryMatchResult> {
+    const cases = await this.getCaseHistoryCandidates(input.customerId);
+    const candidates = cases.map(buildCaseHistoryCandidate);
+    const decision = await aiCenterClient.matchCustomerCaseHistory({
+      newCustomerText: input.text,
+      candidates,
+    });
+    const matchedCase = decision.matchedCaseId
+      ? cases.find((item) => item.id === decision.matchedCaseId)
+      : undefined;
+    const shouldAskCustomer = Boolean(
+      matchedCase
+      && decision.confidence >= env.CASE_MATCH_CONFIDENCE_THRESHOLD
+      && (
+        (decision.intent === "CONTINUE_CASE" && decision.isSameProblem)
+        || decision.intent === "UNCERTAIN"
+      ),
+    );
+    const log = await store.createCaseMatchLog({
+      customerId: input.customerId,
+      incomingMessage: input.text,
+      candidateCaseIds: candidates.map((candidate) => candidate.caseId),
+      aiIntent: decision.intent,
+      matchedCaseId: matchedCase?.id,
+      confidence: decision.confidence,
+      reason: decision.reason,
+      finalUserDecision: shouldAskCustomer ? undefined : "auto_new_case",
+    });
+
+    if (!shouldAskCustomer || !matchedCase) {
+      return { action: "create_new_case", decision, matchedCase };
+    }
+
+    const expiresAt = new Date(Date.now() + env.CASE_MATCH_PENDING_TTL_MINUTES * 60 * 1000).toISOString();
+    await store.setPendingCaseSelection(input.customerId, {
+      mode: "case_history_match",
+      candidateCaseIds: candidates.map((candidate) => candidate.caseId),
+      selectedCaseId: matchedCase.id,
+      matchedCaseId: matchedCase.id,
+      pendingText: input.text,
+      matchConfidence: decision.confidence,
+      matchReason: decision.reason,
+      matchLogId: log.id,
+      externalMessageId: input.externalMessageId,
+      webhookEventId: input.webhookEventId,
+      receivedAt: input.receivedAt,
+      expiresAt,
+      createdAt: new Date().toISOString(),
+    });
+
+    const isClosed = CLOSED_CASE_STATUSES.includes(matchedCase.status);
+    const prompt = isClosed
+      ? `ปัญหานี้คล้ายกับเคส ${matchedCase.caseNumber} ที่ปิดไปแล้วค่ะ\nเรื่อง: ${this.formatCaseTitle(matchedCase)}\n\nต้องการตรวจสอบต่อจากเคสเดิม หรือเปิดเป็นเคสใหม่คะ? ตอบ “เคสเดิม” หรือ “เคสใหม่” ได้เลยค่ะ`
+      : `ดูเหมือนปัญหานี้อาจเกี่ยวข้องกับเคสเดิมค่ะ\nหมายเลขเคส: ${matchedCase.caseNumber}\nเรื่อง: ${this.formatCaseTitle(matchedCase)}\n\nต้องการคุยต่อในเคสเดิม หรือเปิดเป็นเคสใหม่คะ? ตอบ “เคสเดิม” หรือ “เคสใหม่” ได้เลยค่ะ`;
+
+    return { action: "ask_customer", decision, matchedCase, prompt };
+  },
+
+  async resolvePendingCaseHistoryMatch(input: {
+    customerId: string;
+    selection: PendingCaseSelection;
+    decision: "continue_existing_case" | "create_new_case" | "expired";
+  }) {
+    if (input.selection.matchLogId) {
+      await store.updateCaseMatchLogDecision(input.selection.matchLogId, input.decision);
+    }
+    await store.setPendingCaseSelection(input.customerId);
+  },
+
+  async requestCaseSplitConfirmation(input: {
+    caseId: string;
+    text: string;
+    relation: { confidence: number; reason: string };
+    externalMessageId?: string;
+    webhookEventId?: string;
+    receivedAt?: string;
+  }) {
     const detail = await store.getCaseDetail(input.caseId);
     if (!detail) throw new Error("Case not found");
 
-    const message = await store.createMessage({
-      caseId: input.caseId,
-      direction: "inbound_customer",
-      channel: "line",
-      originalText: input.text,
+    await store.setPendingCaseSelection(detail.customerId, {
+      mode: "case_split_confirmation",
+      candidateCaseIds: [detail.id],
+      selectedCaseId: detail.id,
+      pendingText: input.text,
+      previousCaseStatus: detail.status,
       externalMessageId: input.externalMessageId,
-      senderType: "CUSTOMER",
-      messageType: "CUSTOMER_MESSAGE",
-    });
-    await store.createAnalysis({
-      caseId: input.caseId,
-      messageId: message.id,
-      analysisType: "case_match",
-      summary: input.relation.reason,
-      category: detail.category,
-      confidence: input.relation.confidence,
-      rawJson: { decision: "needs_confirmation", ...input.relation },
+      webhookEventId: input.webhookEventId,
+      receivedAt: input.receivedAt,
+      createdAt: new Date().toISOString(),
     });
     await store.updateCase(input.caseId, { status: "awaiting_confirmation" });
     return store.getCaseDetail(input.caseId);

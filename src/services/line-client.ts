@@ -21,7 +21,11 @@ export const lineClient = {
     return profile.displayName ? { displayName: profile.displayName, pictureUrl: profile.pictureUrl } : undefined;
   },
 
-  async replyToToken(input: { replyToken: string | undefined; text: string }): Promise<{ delivered: boolean }> {
+  async replyToToken(input: {
+    replyToken: string | undefined;
+    text: string;
+    quickReplies?: { label: string; text: string }[];
+  }): Promise<{ delivered: boolean }> {
     if (!input.replyToken) {
       return { delivered: false };
     }
@@ -39,7 +43,20 @@ export const lineClient = {
       },
       body: JSON.stringify({
         replyToken: input.replyToken,
-        messages: [{ type: "text", text: input.text }],
+        messages: [{
+          type: "text",
+          text: input.text,
+          ...(input.quickReplies?.length
+            ? {
+                quickReply: {
+                  items: input.quickReplies.slice(0, 13).map((reply) => ({
+                    type: "action",
+                    action: { type: "message", label: reply.label, text: reply.text },
+                  })),
+                },
+              }
+            : {}),
+        }],
       }),
     });
 
