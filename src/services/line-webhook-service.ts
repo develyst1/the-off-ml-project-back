@@ -58,6 +58,14 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     displayName,
   });
 
+  // Explicitly starting a new case must never enter the old-case selection flow.
+  const explicitNewCaseRequest = /(เปิดเคสใหม่|สร้างเคสใหม่|ปัญหาใหม่|เรื่องใหม่|แยกเคส)/i.test(input.text);
+  const thaiExplicitNewCase = /(\u0e40\u0e1b\u0e34\u0e14\u0e04\u0e2a\u0e43\u0e2b\u0e21\u0e48|\u0e2a\u0e23\u0e49\u0e32\u0e07\u0e40\u0e04\u0e2a\u0e43\u0e2b\u0e21\u0e48|\u0e1b\u0e31\u0e0d\u0e2b\u0e32\u0e43\u0e2b\u0e21\u0e48|\u0e40\u0e23\u0e37\u0e48\u0e2d\u0e07\u0e43\u0e2b\u0e21\u0e48|\u0e41\u0e22\u0e01\u0e40\u0e04\u0e2a)/i.test(input.text);
+  const isNewCaseRequest = thaiExplicitNewCase || input.text.includes("\u0e40\u0e1b\u0e34\u0e14\u0e40\u0e04\u0e2a\u0e43\u0e2b\u0e21\u0e48");
+  if (isNewCaseRequest && customer.pendingCaseSelection) {
+    await store.setPendingCaseSelection(customer.id);
+  }
+
   const pendingSelection = customer.pendingCaseSelection;
   if (pendingSelection?.mode === "confirm" && pendingSelection.selectedCaseId) {
     if (/^(ใช่|ใช่ค่ะ|ใช่ครับ|ตกลง|ยืนยัน)$/i.test(input.text.trim())) {
@@ -86,8 +94,8 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     }
   }
 
-  const reopenIntent = /(เปิดเคส|เปิดเรื่อง|ปัญหาเดิม|เรื่องที่แจ้ง|ยังไม่หาย|เคสที่\s*\d+)/i.test(input.text);
-  if (reopenIntent) {
+  const reopenIntent = !explicitNewCaseRequest && /(เปิดเคส|เปิดเรื่อง|ปัญหาเดิม|เรื่องที่แจ้ง|ยังไม่หาย|เคสที่\s*\d+)/i.test(input.text);
+  if (reopenIntent && !isNewCaseRequest) {
     const ordinalMatch = input.text.match(/เคสที่\s*(\d+)/i);
     if (ordinalMatch) {
       const ordinalCases = (await caseService.getCustomerCases(customer.id))
@@ -130,8 +138,9 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
   if (activeCase && customer.activeCaseId !== activeCase.id) {
     await store.setActiveCase(customer.id, activeCase.id);
   }
-  const confirmsNewCase = activeCase?.status === "awaiting_confirmation"
+  const confirmsNewCase = isNewCaseRequest; /*
     && /(ปัญหาใหม่|เรื่องใหม่|เคสใหม่|เปิดเคสใหม่|แยกเคส|new issue|new case)/i.test(input.text);
+  */
   const intakeText = confirmsNewCase
     ? activeCase?.messages.filter((message) => message.direction === "inbound_customer").at(-1)?.originalText ?? input.text
     : input.text;
