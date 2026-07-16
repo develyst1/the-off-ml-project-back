@@ -12,7 +12,6 @@ teamsWebhookRoutes.post("/", async (c) => {
   const action = optionalString(body, "action") ?? (nestedData ? optionalString(nestedData, "action") : undefined);
   const caseId = optionalString(body, "caseId") ?? (nestedData ? optionalString(nestedData, "caseId") : undefined);
   const caseNumberText = optionalString(body, "caseNumber") ?? (nestedData ? optionalString(nestedData, "caseNumber") : undefined);
-  const caseNumber = caseNumberText ? Number(caseNumberText) : undefined;
   const text = optionalString(body, "text")
     ?? optionalString(body, "techReplyText")
     ?? optionalString(body, "requestInfoText")
@@ -22,13 +21,13 @@ teamsWebhookRoutes.post("/", async (c) => {
   const requestInfoText = optionalString(body, "requestInfoText")
     ?? (nestedData ? optionalString(nestedData, "requestInfoText") : undefined);
 
-  if (!caseId && (!caseNumberText || !Number.isInteger(caseNumber))) {
+  if (!caseId && !caseNumberText) {
     return c.json({ error: "caseId_or_caseNumber_is_required" }, 400);
   }
 
   const resolvedCase = caseId
     ? await caseService.getCase(caseId)
-    : await caseService.getCaseByNumber(caseNumber as number);
+    : await caseService.getCaseByNumber(caseNumberText as string);
 
   if (!resolvedCase) {
     return c.json({ error: "case_not_found" }, 404);
@@ -40,6 +39,7 @@ teamsWebhookRoutes.post("/", async (c) => {
         caseId: resolvedCase.id,
         text: text ?? requiredString(body, "text"),
         externalMessageId: optionalString(body, "eventId"),
+        closeAfterReply: action === "close",
       });
 
   return c.json({ data: result });

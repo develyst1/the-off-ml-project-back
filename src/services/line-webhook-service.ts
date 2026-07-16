@@ -58,6 +58,74 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     displayName,
   });
 
+  const pendingSelection = customer.pendingCaseSelection;
+  if (pendingSelection?.mode === "confirm" && pendingSelection.selectedCaseId) {
+    if (/^(ใช่|ใช่ค่ะ|ใช่ครับ|ตกลง|ยืนยัน)$/i.test(input.text.trim())) {
+      const reopened = await caseService.reopenCase(customer.id, pendingSelection.selectedCaseId);
+      return { processed: true, duplicate: false, caseDetail: reopened };
+    }
+    if (/^(ไม่ใช่|ไม่ใช่ค่ะ|ไม่ใช่ครับ|ยกเลิก)$/i.test(input.text.trim())) {
+      await store.setPendingCaseSelection(customer.id);
+      const candidates = await caseService.getCustomerCases(customer.id);
+      const latest = candidates.slice(0, 3);
+      if (latest.length > 0) {
+        await caseService.setPendingCaseSelection(customer.id, latest.map((item) => item.id));
+        await lineClient.replyToToken({ replyToken: input.replyToken, text: caseService.selectionPrompt(latest) });
+        return { processed: true, duplicate: false, caseDetail: undefined };
+      }
+    }
+  }
+
+  if (pendingSelection?.mode === "choose" && /^[1-3]$/.test(input.text.trim())) {
+    const selectedCaseId = pendingSelection.candidateCaseIds[Number(input.text.trim()) - 1];
+    const selectedCase = selectedCaseId ? await caseService.getCase(selectedCaseId) : undefined;
+    if (selectedCase && selectedCase.customerId === customer.id) {
+      await caseService.setPendingCaseSelection(customer.id, pendingSelection.candidateCaseIds, selectedCase.id);
+      await lineClient.replyToToken({ replyToken: input.replyToken, text: caseService.confirmationPrompt(selectedCase) });
+      return { processed: true, duplicate: false, caseDetail: undefined };
+    }
+  }
+
+  const reopenIntent = /(เปิดเคส|เปิดเรื่อง|ปัญหาเดิม|เรื่องที่แจ้ง|ยังไม่หาย|เคสที่\s*\d+)/i.test(input.text);
+  if (reopenIntent) {
+    const ordinalMatch = input.text.match(/เคสที่\s*(\d+)/i);
+    if (ordinalMatch) {
+      const ordinalCases = (await caseService.getCustomerCases(customer.id))
+        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+      const selected = ordinalCases[Number(ordinalMatch[1]) - 1];
+      if (selected) {
+        await caseService.setPendingCaseSelection(customer.id, [selected.id], selected.id);
+        await lineClient.replyToToken({ replyToken: input.replyToken, text: caseService.confirmationPrompt(selected) });
+        return { processed: true, duplicate: false, caseDetail: undefined };
+      }
+    }
+
+    const candidates = await caseService.findReopenCandidates(customer.id, input.text);
+    if (candidates.length > 0) {
+      await caseService.setPendingCaseSelection(customer.id, candidates.map((item) => item.id));
+      await lineClient.replyToToken({ replyToken: input.replyToken, text: caseService.selectionPrompt(candidates) });
+      return { processed: true, duplicate: false, caseDetail: undefined };
+    }
+  }
+
+  const caseNumberMatch = input.text.match(/\bOFF-\d{4}-\d+\b/i);
+  if (caseNumberMatch) {
+    const referencedCase = await caseService.getCaseByNumber(caseNumberMatch[0]);
+    if (referencedCase && referencedCase.customerId === customer.id) {
+      await store.updateCase(referencedCase.id, { status: "reopened" });
+      const relatedResult = await caseService.appendLineMessageToCase({
+        caseId: referencedCase.id,
+        text: input.text,
+        externalMessageId: input.messageId,
+      });
+      await lineClient.replyToToken({
+        replyToken: input.replyToken,
+        text: `เข้าใจแล้วค่ะ เดี๋ยวเปิดเคส ${referencedCase.caseNumber} กลับมาตรวจสอบต่อให้นะคะ`,
+      });
+      return { processed: true, duplicate: false, caseDetail: relatedResult.detail };
+    }
+  }
+
   const activeCase = await caseService.getActiveLineCase(customer);
   if (activeCase && customer.activeCaseId !== activeCase.id) {
     await store.setActiveCase(customer.id, activeCase.id);
@@ -110,6 +178,15 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       text: relatedResult.continuationReply,
     });
 
+    await store.createMessage({
+      caseId: relatedCase.id,
+      direction: "outbound_customer",
+      channel: "line",
+      originalText: relatedResult.continuationReply,
+      senderType: "BOT",
+      deliveryStatus: "sent",
+    });
+
     return {
       processed: true,
       duplicate: false,
@@ -143,6 +220,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     channel: "line",
     originalText: intakeText,
     externalMessageId: input.messageId,
+    senderType: "CUSTOMER",
   });
 
   const analysis = await aiCenterClient.analyzeCustomerMessage({
@@ -162,6 +240,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
 
   await store.updateCase(supportCase.id, {
     status: "awaiting_tech",
+    title: analysis.summary.slice(0, 50),
     category: analysis.category,
     priority: analysis.urgency,
     confidenceScore: analysis.confidence,
@@ -176,9 +255,19 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     timestamp: input.timestamp,
   });
 
-  await lineClient.replyToToken({
+  const acknowledgement = `รับเรื่องเรียบร้อยแล้วค่ะ\n\nหมายเลขเคส: ${supportCase.caseNumber}\nเรื่อง: ${analysis.summary.slice(0, 50)}\n\nทีมงานกำลังตรวจสอบให้นะคะ`;
+  const acknowledgementDelivery = await lineClient.replyToToken({
     replyToken: input.replyToken,
-    text: LINE_FIRST_CASE_ACKNOWLEDGEMENT_TEXT,
+    text: acknowledgement,
+  });
+
+  await store.createMessage({
+    caseId: supportCase.id,
+    direction: "outbound_customer",
+    channel: "line",
+    originalText: acknowledgement,
+    senderType: "BOT",
+    deliveryStatus: acknowledgementDelivery.delivered ? "delivered" : "pending",
   });
 
   const caseDetail = await store.getCaseDetail(supportCase.id);

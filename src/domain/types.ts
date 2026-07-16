@@ -8,6 +8,8 @@ export type CaseStatus =
   | "resolved"
   | "sent_to_customer"
   | "closed"
+  | "reopened"
+  | "in_progress"
   | "awaiting_customer_info"
   | "awaiting_confirmation";
 
@@ -24,14 +26,25 @@ export type Customer = {
   lineUserId: string;
   displayName?: string;
   activeCaseId?: string;
+  pendingCaseSelection?: PendingCaseSelection;
   createdAt: string;
   updatedAt: string;
 };
 
+export type PendingCaseSelection = {
+  mode: "choose" | "confirm";
+  candidateCaseIds: string[];
+  selectedCaseId?: string;
+  createdAt: string;
+};
+
 export type SupportCase = {
   id: string;
-  caseNumber: number;
+  caseNumber: string;
+  sequenceNumber: number;
+  sequenceYear: number;
   customerId: string;
+  title?: string;
   teamsDeliveryStatus?: "not_sent" | "accepted" | "failed";
   teamsDeliveryAt?: string;
   teamsDeliveryError?: string;
@@ -50,6 +63,9 @@ export type Message = {
   direction: MessageDirection;
   channel: MessageChannel;
   originalText: string;
+  senderType?: "CUSTOMER" | "BOT" | "TECH" | "SYSTEM";
+  messageType?: "text" | "system";
+  deliveryStatus?: "pending" | "sent" | "delivered" | "failed";
   externalMessageId?: string;
   createdAt: string;
 };

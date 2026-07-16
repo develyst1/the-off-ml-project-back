@@ -4,14 +4,18 @@ create table if not exists customers (
   line_user_id text not null unique,
   display_name text,
   active_case_id text,
+  pending_case_selection jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 create table if not exists support_cases (
   id text primary key,
-  case_number bigint,
+  case_number text,
+  sequence_number bigint,
+  sequence_year integer,
   customer_id text not null references customers(id),
+  title text,
   status text not null,
   category text,
   priority text,
@@ -25,17 +29,30 @@ create table if not exists support_cases (
 );
 
 alter table customers add column if not exists active_case_id text;
+alter table customers add column if not exists pending_case_selection jsonb;
 
-create sequence if not exists support_cases_case_number_seq;
-alter table support_cases add column if not exists case_number bigint;
+alter table support_cases add column if not exists sequence_number bigint;
+alter table support_cases add column if not exists sequence_year integer;
+alter table support_cases add column if not exists title text;
+alter table support_cases alter column case_number type text using case_number::text;
 update support_cases
-set case_number = nextval('support_cases_case_number_seq')
-where case_number is null;
-select setval(
-  'support_cases_case_number_seq',
-  coalesce((select max(case_number) from support_cases), 1),
-  (select count(*) > 0 from support_cases)
+set sequence_year = coalesce(sequence_year, extract(year from created_at)::integer),
+    sequence_number = coalesce(sequence_number, nullif(substring(case_number from '([0-9]+)$'), '')::bigint)
+where sequence_year is null or sequence_number is null;
+update support_cases
+set case_number = 'OFF-' || sequence_year::text || '-' || lpad(sequence_number::text, 5, '0')
+where case_number is null or case_number not like 'OFF-%';
+create table if not exists case_number_counters (
+  sequence_year integer primary key,
+  next_number bigint not null
 );
+insert into case_number_counters (sequence_year, next_number)
+select sequence_year, coalesce(max(sequence_number), 0) + 1
+from support_cases
+where sequence_year is not null and sequence_number is not null
+group by sequence_year
+on conflict (sequence_year) do update
+set next_number = greatest(case_number_counters.next_number, excluded.next_number);
 alter table support_cases alter column case_number set not null;
 alter table support_cases add column if not exists teams_delivery_status text not null default 'not_sent';
 alter table support_cases add column if not exists teams_delivery_at timestamptz;
@@ -47,9 +64,16 @@ create table if not exists messages (
   direction text not null,
   channel text not null,
   original_text text not null,
+  sender_type text not null default 'SYSTEM',
+  message_type text not null default 'text',
+  delivery_status text not null default 'sent',
   external_message_id text,
   created_at timestamptz not null default now()
 );
+
+alter table messages add column if not exists sender_type text not null default 'SYSTEM';
+alter table messages add column if not exists message_type text not null default 'text';
+alter table messages add column if not exists delivery_status text not null default 'sent';
 
 create table if not exists analyses (
   id text primary key,

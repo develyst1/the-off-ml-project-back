@@ -1,4 +1,4 @@
-import type { Analysis, CaseDetail, CaseStatus, Customer, Message, Solution, SupportCase } from "../domain/types";
+import type { Analysis, CaseDetail, CaseStatus, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore } from "./case-store";
 
@@ -6,7 +6,7 @@ export class InMemoryStore implements CaseStore {
   private customers = new Map<string, Customer>();
   private customersByLineUserId = new Map<string, string>();
   private cases = new Map<string, SupportCase>();
-  private nextCaseNumber = 1;
+  private nextCaseNumbers = new Map<number, number>();
   private messages = new Map<string, Message>();
   private analyses = new Map<string, Analysis>();
   private solutions = new Map<string, Solution>();
@@ -52,12 +52,26 @@ export class InMemoryStore implements CaseStore {
     return updated;
   }
 
-  async createCase(input: { customerId: string; status?: CaseStatus; category?: string; confidenceScore?: number }): Promise<SupportCase> {
+  async setPendingCaseSelection(customerId: string, selection?: PendingCaseSelection): Promise<Customer> {
+    const customer = this.customers.get(customerId);
+    if (!customer) throw new Error("Customer not found");
+    const updated = { ...customer, pendingCaseSelection: selection, updatedAt: nowIso() };
+    this.customers.set(customerId, updated);
+    return updated;
+  }
+
+  async createCase(input: { customerId: string; status?: CaseStatus; title?: string; category?: string; confidenceScore?: number }): Promise<SupportCase> {
     const timestamp = nowIso();
+    const sequenceYear = new Date().getUTCFullYear();
+    const sequenceNumber = this.nextCaseNumbers.get(sequenceYear) ?? 1;
+    this.nextCaseNumbers.set(sequenceYear, sequenceNumber + 1);
     const supportCase: SupportCase = {
       id: createId("case"),
-      caseNumber: this.nextCaseNumber++,
+      caseNumber: `OFF-${sequenceYear}-${String(sequenceNumber).padStart(5, "0")}`,
+      sequenceNumber,
+      sequenceYear,
       customerId: input.customerId,
+      title: input.title,
       status: input.status ?? "new",
       category: input.category,
       confidenceScore: input.confidenceScore,

@@ -40,6 +40,8 @@ export const teamsClient = {
 
     const text = [
       `New Off ML Project case: เคส ${caseDetail.caseNumber}`,
+      `Case number: ${caseDetail.caseNumber}`,
+      `Title: ${caseDetail.title ?? latestAnalysis?.summary ?? "-"}`,
       `Customer: ${caseDetail.customer.displayName ?? caseDetail.customer.lineUserId}`,
       `Original: ${latestCustomerMessage?.originalText ?? "-"}`,
       `Summary: ${latestAnalysis?.summary ?? "-"}`,
@@ -49,6 +51,7 @@ export const teamsClient = {
 
     const data = {
       caseNumber: caseDetail.caseNumber,
+      caseTitle: caseDetail.title ?? latestAnalysis?.summary ?? "-",
       caseId: caseDetail.id,
       customerName: caseDetail.customer.displayName ?? caseDetail.customer.lineUserId,
       originalText: latestCustomerMessage?.originalText ?? "-",
@@ -66,6 +69,7 @@ export const teamsClient = {
         { type: "FactSet", facts: [
           { title: "Customer", value: data.customerName },
           { title: "Case ID", value: data.caseId },
+          { title: "Case title", value: data.caseTitle },
           { title: "Category", value: data.category },
           { title: "AI confidence", value: `${data.confidence}%` },
         ] },

@@ -1,6 +1,6 @@
 import pg from "pg";
 import { env } from "../config/env";
-import type { Analysis, CaseDetail, CaseStatus, Customer, Message, Solution, SupportCase } from "../domain/types";
+import type { Analysis, CaseDetail, CaseStatus, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore } from "./case-store";
 import { schemaSql } from "./schema";
@@ -12,14 +12,18 @@ type DbCustomer = {
   line_user_id: string;
   display_name: string | null;
   active_case_id: string | null;
+  pending_case_selection: PendingCaseSelection | null;
   created_at: Date;
   updated_at: Date;
 };
 
 type DbCase = {
   id: string;
-  case_number: number | string;
+  case_number: string;
+  sequence_number: number | string;
+  sequence_year: number;
   customer_id: string;
+  title: string | null;
   status: CaseStatus;
   category: string | null;
   priority: SupportCase["priority"] | null;
@@ -38,6 +42,9 @@ type DbMessage = {
   direction: Message["direction"];
   channel: Message["channel"];
   original_text: string;
+  sender_type: Message["senderType"];
+  message_type: Message["messageType"];
+  delivery_status: Message["deliveryStatus"];
   external_message_id: string | null;
   created_at: Date;
 };
@@ -81,6 +88,7 @@ function mapCustomer(row: DbCustomer): Customer {
     lineUserId: row.line_user_id,
     displayName: row.display_name ?? undefined,
     activeCaseId: row.active_case_id ?? undefined,
+    pendingCaseSelection: row.pending_case_selection ?? undefined,
     createdAt: dateIso(row.created_at),
     updatedAt: dateIso(row.updated_at),
   };
@@ -89,8 +97,11 @@ function mapCustomer(row: DbCustomer): Customer {
 function mapCase(row: DbCase): SupportCase {
   return {
     id: row.id,
-    caseNumber: Number(row.case_number),
+    caseNumber: row.case_number,
+    sequenceNumber: Number(row.sequence_number),
+    sequenceYear: Number(row.sequence_year),
     customerId: row.customer_id,
+    title: row.title ?? undefined,
     status: row.status,
     category: row.category ?? undefined,
     priority: row.priority ?? undefined,
@@ -111,6 +122,9 @@ function mapMessage(row: DbMessage): Message {
     direction: row.direction,
     channel: row.channel,
     originalText: row.original_text,
+    senderType: row.sender_type,
+    messageType: row.message_type,
+    deliveryStatus: row.delivery_status,
     externalMessageId: row.external_message_id ?? undefined,
     createdAt: dateIso(row.created_at),
   };
@@ -195,21 +209,52 @@ export class PostgresStore implements CaseStore {
     return mapCustomer(result.rows[0]);
   }
 
+  async setPendingCaseSelection(customerId: string, selection?: PendingCaseSelection): Promise<Customer> {
+    const result = await this.query<DbCustomer>(
+      `update customers set pending_case_selection = $2::jsonb, updated_at = $3 where id = $1 returning *`,
+      [customerId, selection ? JSON.stringify(selection) : null, nowIso()],
+    );
+    if (!result.rows[0]) throw new Error("Customer not found");
+    return mapCustomer(result.rows[0]);
+  }
+
   async createCase(input: {
     customerId: string;
     status?: CaseStatus;
+    title?: string;
     category?: string;
     confidenceScore?: number;
   }): Promise<SupportCase> {
-    const timestamp = nowIso();
-    const result = await this.query<DbCase>(
-      `insert into support_cases (id, case_number, customer_id, status, category, confidence_score, created_at, updated_at)
-       values ($1, nextval('support_cases_case_number_seq'), $2, $3, $4, $5, $6, $6)
-       returning *`,
-      [createId("case"), input.customerId, input.status ?? "new", input.category ?? null, input.confidenceScore ?? null, timestamp],
-    );
-
-    return mapCase(result.rows[0]);
+    await this.ready();
+    const client = await this.pool.connect();
+    const year = new Date().getUTCFullYear();
+    try {
+      await client.query("begin");
+      await client.query(
+        `insert into case_number_counters (sequence_year, next_number) values ($1, 1) on conflict (sequence_year) do nothing`,
+        [year],
+      );
+      const counter = await client.query<{ next_number: string }>(
+        "select next_number from case_number_counters where sequence_year = $1 for update",
+        [year],
+      );
+      const sequenceNumber = Number(counter.rows[0]?.next_number ?? 1);
+      const caseNumber = `OFF-${year}-${String(sequenceNumber).padStart(5, "0")}`;
+      await client.query("update case_number_counters set next_number = $2 where sequence_year = $1", [year, sequenceNumber + 1]);
+      const result = await client.query<DbCase>(
+        `insert into support_cases (id, case_number, sequence_number, sequence_year, customer_id, title, status, category, confidence_score, created_at, updated_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+         returning *`,
+        [createId("case"), caseNumber, sequenceNumber, year, input.customerId, input.title ?? null, input.status ?? "new", input.category ?? null, input.confidenceScore ?? null, nowIso()],
+      );
+      await client.query("commit");
+      return mapCase(result.rows[0]);
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async updateCase(id: string, patch: Partial<Omit<SupportCase, "id" | "customerId" | "createdAt">>): Promise<SupportCase> {
@@ -221,19 +266,21 @@ export class PostgresStore implements CaseStore {
     const result = await this.query<DbCase>(
       `update support_cases set
          status = $2,
-         category = $3,
-         priority = $4,
-         confidence_score = $5,
-         teams_thread_id = $6,
-         teams_delivery_status = $7,
-         teams_delivery_at = $8,
-         teams_delivery_error = $9,
-         updated_at = $10
+         title = $3,
+         category = $4,
+         priority = $5,
+         confidence_score = $6,
+         teams_thread_id = $7,
+         teams_delivery_status = $8,
+         teams_delivery_at = $9,
+         teams_delivery_error = $10,
+         updated_at = $11
        where id = $1
        returning *`,
       [
         id,
         patch.status ?? current.status,
+        patch.title ?? current.title,
         patch.category ?? current.category,
         patch.priority ?? current.priority,
         patch.confidenceScore ?? current.confidence_score,
@@ -250,8 +297,8 @@ export class PostgresStore implements CaseStore {
 
   async createMessage(input: Omit<Message, "id" | "createdAt">): Promise<Message> {
     const result = await this.query<DbMessage>(
-      `insert into messages (id, case_id, direction, channel, original_text, external_message_id, created_at)
-       values ($1, $2, $3, $4, $5, $6, $7)
+      `insert into messages (id, case_id, direction, channel, original_text, sender_type, message_type, delivery_status, external_message_id, created_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        returning *`,
       [
         createId("msg"),
@@ -259,6 +306,9 @@ export class PostgresStore implements CaseStore {
         input.direction,
         input.channel,
         input.originalText,
+        input.senderType ?? "SYSTEM",
+        input.messageType ?? "text",
+        input.deliveryStatus ?? "sent",
         input.externalMessageId ?? null,
         nowIso(),
       ],

@@ -13,6 +13,8 @@ const statuses: CaseStatus[] = [
   "resolved",
   "sent_to_customer",
   "closed",
+  "reopened",
+  "in_progress",
   "awaiting_confirmation",
   "awaiting_customer_info",
 ];
@@ -52,6 +54,18 @@ caseRoutes.post("/:id/reply", async (c) => {
       caseId: c.req.param("id"),
       text: requiredString(body, "text"),
       channel: "system",
+    }),
+  });
+});
+
+caseRoutes.post("/:id/close", async (c) => {
+  const body = await readJsonObject(c);
+  return c.json({
+    data: await caseService.receiveTeamsReply({
+      caseId: c.req.param("id"),
+      text: requiredString(body, "text"),
+      channel: "system",
+      closeAfterReply: true,
     }),
   });
 });
