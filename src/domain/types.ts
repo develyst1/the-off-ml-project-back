@@ -27,6 +27,7 @@ export type Customer = {
   displayName?: string;
   activeCaseId?: string;
   pendingCaseSelection?: PendingCaseSelection;
+  conversationState?: ConversationState;
   createdAt: string;
   updatedAt: string;
 };
@@ -38,6 +39,14 @@ export type PendingCaseSelection = {
   createdAt: string;
 };
 
+export type ConversationState =
+  | "IDLE"
+  | "WAITING_NEW_CASE_CONFIRMATION"
+  | "WAITING_NEW_CASE_DETAIL"
+  | "WAITING_CASE_SELECTION"
+  | "WAITING_REOPEN_CONFIRMATION"
+  | "ACTIVE_CASE_CONVERSATION";
+
 export type SupportCase = {
   id: string;
   caseNumber: string;
@@ -45,6 +54,15 @@ export type SupportCase = {
   sequenceYear: number;
   customerId: string;
   title?: string;
+  aiStatus?: "AI_SUCCESS" | "AI_LOW_CONFIDENCE" | "AI_FAILED";
+  dataStatus?: "COMPLETE" | "DATA_INCOMPLETE";
+  customerSentAt?: string;
+  systemReceivedAt?: string;
+  aiAnalyzedAt?: string;
+  teamsSentAt?: string;
+  techRepliedAt?: string;
+  lineSentAt?: string;
+  lineDeliveredAt?: string;
   teamsDeliveryStatus?: "not_sent" | "accepted" | "failed";
   teamsDeliveryAt?: string;
   teamsDeliveryError?: string;
@@ -67,6 +85,9 @@ export type Message = {
   messageType?: "text" | "system";
   deliveryStatus?: "pending" | "sent" | "delivered" | "failed";
   externalMessageId?: string;
+  webhookEventId?: string;
+  normalizedText?: string;
+  receivedAt?: string;
   createdAt: string;
 };
 

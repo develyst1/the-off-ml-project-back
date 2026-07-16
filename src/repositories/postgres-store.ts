@@ -1,6 +1,6 @@
 import pg from "pg";
 import { env } from "../config/env";
-import type { Analysis, CaseDetail, CaseStatus, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { Analysis, CaseDetail, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore } from "./case-store";
 import { schemaSql } from "./schema";
@@ -13,6 +13,7 @@ type DbCustomer = {
   display_name: string | null;
   active_case_id: string | null;
   pending_case_selection: PendingCaseSelection | null;
+  conversation_state: ConversationState;
   created_at: Date;
   updated_at: Date;
 };
@@ -24,6 +25,15 @@ type DbCase = {
   sequence_year: number;
   customer_id: string;
   title: string | null;
+  ai_status: SupportCase["aiStatus"] | null;
+  data_status: SupportCase["dataStatus"];
+  customer_sent_at: Date | null;
+  system_received_at: Date | null;
+  ai_analyzed_at: Date | null;
+  teams_sent_at: Date | null;
+  tech_replied_at: Date | null;
+  line_sent_at: Date | null;
+  line_delivered_at: Date | null;
   status: CaseStatus;
   category: string | null;
   priority: SupportCase["priority"] | null;
@@ -45,6 +55,9 @@ type DbMessage = {
   sender_type: Message["senderType"];
   message_type: Message["messageType"];
   delivery_status: Message["deliveryStatus"];
+  webhook_event_id: string | null;
+  normalized_text: string | null;
+  received_at: Date | null;
   external_message_id: string | null;
   created_at: Date;
 };
@@ -89,6 +102,7 @@ function mapCustomer(row: DbCustomer): Customer {
     displayName: row.display_name ?? undefined,
     activeCaseId: row.active_case_id ?? undefined,
     pendingCaseSelection: row.pending_case_selection ?? undefined,
+    conversationState: row.conversation_state,
     createdAt: dateIso(row.created_at),
     updatedAt: dateIso(row.updated_at),
   };
@@ -102,6 +116,15 @@ function mapCase(row: DbCase): SupportCase {
     sequenceYear: Number(row.sequence_year),
     customerId: row.customer_id,
     title: row.title ?? undefined,
+    aiStatus: row.ai_status ?? undefined,
+    dataStatus: row.data_status ?? "COMPLETE",
+    customerSentAt: row.customer_sent_at ? dateIso(row.customer_sent_at) : undefined,
+    systemReceivedAt: row.system_received_at ? dateIso(row.system_received_at) : undefined,
+    aiAnalyzedAt: row.ai_analyzed_at ? dateIso(row.ai_analyzed_at) : undefined,
+    teamsSentAt: row.teams_sent_at ? dateIso(row.teams_sent_at) : undefined,
+    techRepliedAt: row.tech_replied_at ? dateIso(row.tech_replied_at) : undefined,
+    lineSentAt: row.line_sent_at ? dateIso(row.line_sent_at) : undefined,
+    lineDeliveredAt: row.line_delivered_at ? dateIso(row.line_delivered_at) : undefined,
     status: row.status,
     category: row.category ?? undefined,
     priority: row.priority ?? undefined,
@@ -125,6 +148,9 @@ function mapMessage(row: DbMessage): Message {
     senderType: row.sender_type,
     messageType: row.message_type,
     deliveryStatus: row.delivery_status,
+    webhookEventId: row.webhook_event_id ?? undefined,
+    normalizedText: row.normalized_text ?? undefined,
+    receivedAt: row.received_at ? dateIso(row.received_at) : undefined,
     externalMessageId: row.external_message_id ?? undefined,
     createdAt: dateIso(row.created_at),
   };
@@ -218,6 +244,15 @@ export class PostgresStore implements CaseStore {
     return mapCustomer(result.rows[0]);
   }
 
+  async setConversationState(customerId: string, state: ConversationState): Promise<Customer> {
+    const result = await this.query<DbCustomer>(
+      `update customers set conversation_state = $2, updated_at = $3 where id = $1 returning *`,
+      [customerId, state, nowIso()],
+    );
+    if (!result.rows[0]) throw new Error("Customer not found");
+    return mapCustomer(result.rows[0]);
+  }
+
   async createCase(input: {
     customerId: string;
     status?: CaseStatus;
@@ -267,20 +302,38 @@ export class PostgresStore implements CaseStore {
       `update support_cases set
          status = $2,
          title = $3,
-         category = $4,
-         priority = $5,
-         confidence_score = $6,
-         teams_thread_id = $7,
-         teams_delivery_status = $8,
-         teams_delivery_at = $9,
-         teams_delivery_error = $10,
-         updated_at = $11
+         ai_status = $4,
+         data_status = $5,
+         customer_sent_at = $6,
+         system_received_at = $7,
+         ai_analyzed_at = $8,
+         teams_sent_at = $9,
+         tech_replied_at = $10,
+         line_sent_at = $11,
+         line_delivered_at = $12,
+         category = $13,
+         priority = $14,
+         confidence_score = $15,
+         teams_thread_id = $16,
+         teams_delivery_status = $17,
+         teams_delivery_at = $18,
+         teams_delivery_error = $19,
+         updated_at = $20
        where id = $1
        returning *`,
       [
         id,
         patch.status ?? current.status,
         patch.title ?? current.title,
+        patch.aiStatus ?? current.ai_status,
+        patch.dataStatus ?? current.data_status,
+        patch.customerSentAt ?? current.customer_sent_at,
+        patch.systemReceivedAt ?? current.system_received_at,
+        patch.aiAnalyzedAt ?? current.ai_analyzed_at,
+        patch.teamsSentAt ?? current.teams_sent_at,
+        patch.techRepliedAt ?? current.tech_replied_at,
+        patch.lineSentAt ?? current.line_sent_at,
+        patch.lineDeliveredAt ?? current.line_delivered_at,
         patch.category ?? current.category,
         patch.priority ?? current.priority,
         patch.confidenceScore ?? current.confidence_score,
@@ -297,8 +350,8 @@ export class PostgresStore implements CaseStore {
 
   async createMessage(input: Omit<Message, "id" | "createdAt">): Promise<Message> {
     const result = await this.query<DbMessage>(
-      `insert into messages (id, case_id, direction, channel, original_text, sender_type, message_type, delivery_status, external_message_id, created_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `insert into messages (id, case_id, direction, channel, original_text, sender_type, message_type, delivery_status, external_message_id, webhook_event_id, normalized_text, received_at, created_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        returning *`,
       [
         createId("msg"),
@@ -310,6 +363,9 @@ export class PostgresStore implements CaseStore {
         input.messageType ?? "text",
         input.deliveryStatus ?? "sent",
         input.externalMessageId ?? null,
+        input.webhookEventId ?? null,
+        input.normalizedText ?? null,
+        input.receivedAt ?? null,
         nowIso(),
       ],
     );
@@ -323,6 +379,11 @@ export class PostgresStore implements CaseStore {
       [externalMessageId],
     );
 
+    return result.rows[0] ? mapMessage(result.rows[0]) : undefined;
+  }
+
+  async getMessageByWebhookEventId(webhookEventId: string): Promise<Message | undefined> {
+    const result = await this.query<DbMessage>("select * from messages where webhook_event_id = $1 limit 1", [webhookEventId]);
     return result.rows[0] ? mapMessage(result.rows[0]) : undefined;
   }
 

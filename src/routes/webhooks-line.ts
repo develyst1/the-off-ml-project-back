@@ -10,6 +10,7 @@ type LineWebhookPayload = {
 
 type LineWebhookEvent = {
   type: string;
+  webhookEventId?: string;
   replyToken?: string;
   timestamp?: number;
   source?: {
@@ -86,8 +87,22 @@ export function createLineWebhookRoutes(dependencies: LineWebhookDependencies = 
       const lineUserId = event.source?.userId;
       const messageId = event.message.id;
       const text = event.message.text;
+      const originalMessage = text?.trim();
+      const systemReceivedAt = new Date().toISOString();
 
-      if (!lineUserId || !messageId || !text) {
+      console.log({
+        event: "line_message_received",
+        webhookEventId: event.webhookEventId,
+        lineMessageId: messageId,
+        lineUserId,
+        messageType: event.message.type,
+        hasText: Boolean(originalMessage),
+        textLength: originalMessage?.length ?? 0,
+        customerSentAt: event.timestamp ? new Date(event.timestamp).toISOString() : undefined,
+        systemReceivedAt,
+      });
+
+      if (!lineUserId || !messageId || !originalMessage) {
         skipped += 1;
         console.warn({
           event: "line_webhook_missing_required_fields",
@@ -98,13 +113,18 @@ export function createLineWebhookRoutes(dependencies: LineWebhookDependencies = 
         continue;
       }
 
-      const result = await handleTextMessage({
+      const messageInput: LineTextMessageInput = {
         lineUserId,
         messageId,
-        text,
+        text: originalMessage,
         replyToken: event.replyToken,
         timestamp: event.timestamp,
-      });
+      };
+      if (handleTextMessage === receiveLineTextMessage) {
+        messageInput.webhookEventId = event.webhookEventId;
+        messageInput.systemReceivedAt = systemReceivedAt;
+      }
+      const result = await handleTextMessage(messageInput);
 
       if (typeof result === "object" && result && "duplicate" in result && result.duplicate === true) {
         duplicates += 1;

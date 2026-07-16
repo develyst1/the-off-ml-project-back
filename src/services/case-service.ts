@@ -153,7 +153,7 @@ export const caseService = {
     return relation.related ? candidate : undefined;
   },
 
-  async appendLineMessageToCase(input: { caseId: string; text: string; externalMessageId?: string }) {
+  async appendLineMessageToCase(input: { caseId: string; text: string; externalMessageId?: string; webhookEventId?: string; receivedAt?: string }) {
     const detail = await store.getCaseDetail(input.caseId);
     if (!detail) throw new Error("Case not found");
 
@@ -164,6 +164,9 @@ export const caseService = {
       originalText: input.text,
       externalMessageId: input.externalMessageId,
       senderType: "CUSTOMER",
+      normalizedText: input.text.trim().replace(/\s+/g, " "),
+      webhookEventId: input.webhookEventId,
+      receivedAt: input.receivedAt,
     });
     const analysis = await aiCenterClient.analyzeCustomerMessage({
       text: input.text,
@@ -188,6 +191,8 @@ export const caseService = {
     await store.updateCase(input.caseId, {
       status: "awaiting_tech",
       title: detail.title ?? analysis.summary.slice(0, 50),
+      aiStatus: analysis.status === "AI_FAILED" ? "AI_FAILED" : analysis.status === "AI_LOW_CONFIDENCE" ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS",
+      aiAnalyzedAt: new Date().toISOString(),
       category: detail.category ?? analysis.category,
       priority: analysis.urgency,
       confidenceScore: analysis.confidence,
@@ -201,6 +206,7 @@ export const caseService = {
       await store.updateCase(input.caseId, {
         teamsDeliveryStatus: "accepted",
         teamsDeliveryAt: new Date().toISOString(),
+        teamsSentAt: new Date().toISOString(),
         teamsDeliveryError: undefined,
       });
     } catch (error) {
@@ -208,6 +214,7 @@ export const caseService = {
         teamsDeliveryStatus: "failed",
         teamsDeliveryAt: new Date().toISOString(),
         teamsDeliveryError: error instanceof Error ? error.message : String(error),
+        dataStatus: error instanceof Error && error.message.startsWith("DATA_INCOMPLETE") ? "DATA_INCOMPLETE" : undefined,
       });
       console.error({ event: "teams_related_case_delivery_failed", caseId: input.caseId, error: String(error) });
     }
@@ -241,6 +248,11 @@ export const caseService = {
       deliveryStatus: delivery.delivered ? "delivered" : "pending",
     });
 
+    await store.updateCase(caseId, {
+      lineSentAt: new Date().toISOString(),
+      lineDeliveredAt: delivery.delivered ? new Date().toISOString() : undefined,
+    });
+
     await store.updateCase(caseId, { status: "awaiting_customer_info" });
     return store.getCaseDetail(caseId);
   },
@@ -256,6 +268,7 @@ export const caseService = {
       await store.updateCase(caseId, {
         teamsDeliveryStatus: "accepted",
         teamsDeliveryAt: new Date().toISOString(),
+        teamsSentAt: new Date().toISOString(),
         teamsDeliveryError: undefined,
       });
       return { ...result, case: await store.getCaseDetail(caseId) };
@@ -264,6 +277,7 @@ export const caseService = {
         teamsDeliveryStatus: "failed",
         teamsDeliveryAt: new Date().toISOString(),
         teamsDeliveryError: error instanceof Error ? error.message : String(error),
+        dataStatus: error instanceof Error && error.message.startsWith("DATA_INCOMPLETE") ? "DATA_INCOMPLETE" : undefined,
       });
       throw error;
     }
@@ -326,6 +340,7 @@ export const caseService = {
       await store.updateCase(supportCase.id, {
         teamsDeliveryStatus: "accepted",
         teamsDeliveryAt: new Date().toISOString(),
+        teamsSentAt: new Date().toISOString(),
         teamsDeliveryError: undefined,
       });
     } catch (error) {
@@ -333,6 +348,7 @@ export const caseService = {
         teamsDeliveryStatus: "failed",
         teamsDeliveryAt: new Date().toISOString(),
         teamsDeliveryError: error instanceof Error ? error.message : String(error),
+        dataStatus: error instanceof Error && error.message.startsWith("DATA_INCOMPLETE") ? "DATA_INCOMPLETE" : undefined,
       });
       console.error({ event: "teams_case_delivery_failed", caseId: supportCase.id, error: String(error) });
     }
@@ -399,6 +415,7 @@ export const caseService = {
 
     await store.updateCase(input.caseId, {
       status: "resolved",
+      techRepliedAt: new Date().toISOString(),
       category: solutionAnalysis.category ?? detail.category,
       title: detail.title ?? solutionAnalysis.category ?? undefined,
     });
@@ -426,6 +443,10 @@ export const caseService = {
     });
 
     await store.updateCase(input.caseId, { status: input.closeAfterReply ? "closed" : "sent_to_customer" });
+    await store.updateCase(input.caseId, {
+      lineSentAt: new Date().toISOString(),
+      lineDeliveredAt: delivery.delivered ? new Date().toISOString() : undefined,
+    });
     await store.setActiveCase(updatedDetail.customer.id, input.closeAfterReply ? undefined : input.caseId);
     return store.getCaseDetail(input.caseId);
   },

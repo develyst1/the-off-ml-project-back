@@ -38,15 +38,19 @@ export const teamsClient = {
       .filter((analysis) => analysis.analysisType === "customer_message")
       .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
 
+    if (!latestCustomerMessage?.originalText?.trim()) {
+      throw new Error("DATA_INCOMPLETE: customer message is missing");
+    }
+
     const text = [
       `New Off ML Project case: เคส ${caseDetail.caseNumber}`,
       `Case number: ${caseDetail.caseNumber}`,
       `Title: ${caseDetail.title ?? latestAnalysis?.summary ?? "-"}`,
       `Customer: ${caseDetail.customer.displayName ?? caseDetail.customer.lineUserId}`,
       `Original: ${latestCustomerMessage?.originalText ?? "-"}`,
-      `Summary: ${latestAnalysis?.summary ?? "-"}`,
+      `Summary: ${caseDetail.aiStatus === "AI_FAILED" ? "AI วิเคราะห์ไม่สำเร็จ" : latestAnalysis?.summary ?? "-"}`,
       `Category: ${latestAnalysis?.category ?? "-"}`,
-      `Confidence: ${latestAnalysis?.confidence ?? 0}%`,
+      `Confidence: ${caseDetail.aiStatus === "AI_FAILED" ? "ไม่พร้อมใช้งาน" : `${latestAnalysis?.confidence ?? 0}%`}`,
     ].join("\n");
 
     const data = {
@@ -55,9 +59,10 @@ export const teamsClient = {
       caseId: caseDetail.id,
       customerName: caseDetail.customer.displayName ?? caseDetail.customer.lineUserId,
       originalText: latestCustomerMessage?.originalText ?? "-",
-      summary: latestAnalysis?.summary ?? "-",
+      summary: caseDetail.aiStatus === "AI_FAILED" ? "AI วิเคราะห์ไม่สำเร็จ" : latestAnalysis?.summary ?? "-",
       category: latestAnalysis?.category ?? "-",
       confidence: latestAnalysis?.confidence ?? 0,
+      aiStatus: caseDetail.aiStatus ?? "AI_SUCCESS",
     };
 
     const card = {

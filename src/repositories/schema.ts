@@ -5,6 +5,7 @@ create table if not exists customers (
   display_name text,
   active_case_id text,
   pending_case_selection jsonb,
+  conversation_state text not null default 'IDLE',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -16,6 +17,15 @@ create table if not exists support_cases (
   sequence_year integer,
   customer_id text not null references customers(id),
   title text,
+  ai_status text,
+  data_status text not null default 'COMPLETE',
+  customer_sent_at timestamptz,
+  system_received_at timestamptz,
+  ai_analyzed_at timestamptz,
+  teams_sent_at timestamptz,
+  tech_replied_at timestamptz,
+  line_sent_at timestamptz,
+  line_delivered_at timestamptz,
   status text not null,
   category text,
   priority text,
@@ -30,10 +40,20 @@ create table if not exists support_cases (
 
 alter table customers add column if not exists active_case_id text;
 alter table customers add column if not exists pending_case_selection jsonb;
+alter table customers add column if not exists conversation_state text not null default 'IDLE';
 
 alter table support_cases add column if not exists sequence_number bigint;
 alter table support_cases add column if not exists sequence_year integer;
 alter table support_cases add column if not exists title text;
+alter table support_cases add column if not exists ai_status text;
+alter table support_cases add column if not exists data_status text not null default 'COMPLETE';
+alter table support_cases add column if not exists customer_sent_at timestamptz;
+alter table support_cases add column if not exists system_received_at timestamptz;
+alter table support_cases add column if not exists ai_analyzed_at timestamptz;
+alter table support_cases add column if not exists teams_sent_at timestamptz;
+alter table support_cases add column if not exists tech_replied_at timestamptz;
+alter table support_cases add column if not exists line_sent_at timestamptz;
+alter table support_cases add column if not exists line_delivered_at timestamptz;
 alter table support_cases alter column case_number type text using case_number::text;
 update support_cases
 set sequence_year = coalesce(sequence_year, extract(year from created_at)::integer),
@@ -68,12 +88,18 @@ create table if not exists messages (
   message_type text not null default 'text',
   delivery_status text not null default 'sent',
   external_message_id text,
+  webhook_event_id text,
+  normalized_text text,
+  received_at timestamptz,
   created_at timestamptz not null default now()
 );
 
 alter table messages add column if not exists sender_type text not null default 'SYSTEM';
 alter table messages add column if not exists message_type text not null default 'text';
 alter table messages add column if not exists delivery_status text not null default 'sent';
+alter table messages add column if not exists webhook_event_id text;
+alter table messages add column if not exists normalized_text text;
+alter table messages add column if not exists received_at timestamptz;
 
 create table if not exists analyses (
   id text primary key,
@@ -149,6 +175,7 @@ create index if not exists support_cases_created_at_idx on support_cases(created
 create unique index if not exists support_cases_case_number_uidx on support_cases(case_number);
 create index if not exists messages_case_id_idx on messages(case_id);
 create unique index if not exists messages_external_message_id_uidx on messages(external_message_id) where external_message_id is not null;
+create unique index if not exists messages_webhook_event_id_uidx on messages(webhook_event_id) where webhook_event_id is not null;
 create index if not exists analyses_case_id_idx on analyses(case_id);
 create index if not exists solutions_case_id_idx on solutions(case_id);
 create index if not exists confidence_matches_case_id_idx on confidence_matches(case_id);

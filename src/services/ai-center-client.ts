@@ -39,6 +39,7 @@ export type CustomerMessageAnalysis = {
   missingInformation: string[];
   suggestedTeamNote: string;
   confidence: number;
+  status?: "AI_SUCCESS" | "AI_LOW_CONFIDENCE" | "AI_FAILED";
 };
 
 export type TechSolutionAnalysis = {
@@ -64,6 +65,7 @@ function fallbackCustomerAnalysis(text: string): CustomerMessageAnalysis {
     missingInformation: [],
     suggestedTeamNote: "ตรวจสอบรายละเอียดเคสและตอบกลับวิธีแก้ไขใน MS Teams",
     confidence: 50,
+    status: "AI_FAILED",
   };
 }
 
@@ -258,7 +260,8 @@ export const aiCenterClient = {
     ]);
 
       if (!content) return fallback;
-      return parseJsonObject<CustomerMessageAnalysis>(content, fallback);
+      const parsed = parseJsonObject<CustomerMessageAnalysis>(content, fallback);
+      return { ...parsed, status: parsed.confidence < 70 ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS" };
     } catch (error) {
       console.error({
         event: "ai_center_customer_analysis_failed",

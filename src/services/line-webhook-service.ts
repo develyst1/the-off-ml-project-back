@@ -19,6 +19,8 @@ export type LineTextMessageInput = {
   displayName?: string;
   replyToken?: string;
   timestamp?: number;
+  webhookEventId?: string;
+  systemReceivedAt?: string;
 };
 
 export type LineTextMessageResult =
@@ -34,11 +36,13 @@ export type LineTextMessageResult =
 
 export async function receiveLineTextMessage(input: LineTextMessageInput): Promise<LineTextMessageResult> {
   const existingMessage = await store.getMessageByExternalMessageId(input.messageId);
-  if (existingMessage) {
+  const existingWebhook = input.webhookEventId ? await store.getMessageByWebhookEventId(input.webhookEventId) : undefined;
+  if (existingMessage || existingWebhook) {
     console.log({
       event: "line_webhook_duplicate_message",
       lineUserId: input.lineUserId,
       lineMessageId: input.messageId,
+      webhookEventId: input.webhookEventId,
     });
 
     return { processed: false, duplicate: true };
@@ -58,10 +62,49 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     displayName,
   });
 
-  // Explicitly starting a new case must never enter the old-case selection flow.
-  const explicitNewCaseRequest = /(เปิดเคสใหม่|สร้างเคสใหม่|ปัญหาใหม่|เรื่องใหม่|แยกเคส)/i.test(input.text);
-  const thaiExplicitNewCase = /(\u0e40\u0e1b\u0e34\u0e14\u0e04\u0e2a\u0e43\u0e2b\u0e21\u0e48|\u0e2a\u0e23\u0e49\u0e32\u0e07\u0e40\u0e04\u0e2a\u0e43\u0e2b\u0e21\u0e48|\u0e1b\u0e31\u0e0d\u0e2b\u0e32\u0e43\u0e2b\u0e21\u0e48|\u0e40\u0e23\u0e37\u0e48\u0e2d\u0e07\u0e43\u0e2b\u0e21\u0e48|\u0e41\u0e22\u0e01\u0e40\u0e04\u0e2a)/i.test(input.text);
-  const isNewCaseRequest = thaiExplicitNewCase || input.text.includes("\u0e40\u0e1b\u0e34\u0e14\u0e40\u0e04\u0e2a\u0e43\u0e2b\u0e21\u0e48");
+  const normalizedText = input.text.trim().replace(/\s+/g, " ")
+    .replace(/แคส/g, "เคส")
+    .replace(/เคด/g, "เคส");
+  const newCaseCommand = /^(เปิดเคสใหม่|สร้างเคสใหม่|แจ้งเรื่องใหม่|เคสใหม่|เปิดเคส|เปิดใหม่|ใหม่|เอาใหม่|ขอเคส)$/i.test(normalizedText);
+  const ambiguousNewCaseCommand = /^(เคสไหม|เปิดเคสไหม|เคสใหม|แคสใหม่)$/i.test(input.text.trim());
+  const hasNewCaseIntent = /(เปิดเคสใหม่|สร้างเคสใหม่|แจ้งเรื่องใหม่|เคสใหม่|ปัญหาใหม่|เรื่องใหม่)/i.test(normalizedText);
+  let forceNewCaseDetail = false;
+
+  if (customer.conversationState === "WAITING_NEW_CASE_CONFIRMATION") {
+    if (/^(ใช่|ใช่ค่ะ|ตกลง|ยืนยัน)$/i.test(input.text.trim())) {
+      await store.setConversationState(customer.id, "WAITING_NEW_CASE_DETAIL");
+      await lineClient.replyToToken({ replyToken: input.replyToken, text: "ได้ค่ะ รบกวนบอกอาการหรือปัญหาที่พบได้เลยนะคะ" });
+      return { processed: true, duplicate: false, caseDetail: undefined };
+    }
+    if (/^(ไม่ใช่|ไม่ใช่ค่ะ|ยกเลิก)$/i.test(input.text.trim())) {
+      await store.setConversationState(customer.id, "IDLE");
+      await lineClient.replyToToken({ replyToken: input.replyToken, text: "ได้ค่ะ สามารถพิมพ์หมายเลขเคสหรือหัวข้อที่ต้องการสอบถามได้เลยนะคะ" });
+      return { processed: true, duplicate: false, caseDetail: undefined };
+    }
+    await lineClient.replyToToken({ replyToken: input.replyToken, text: "ต้องการแจ้งปัญหาใหม่ใช่ไหมคะ? ตอบ “ใช่” หรือ “ไม่ใช่” ได้เลยค่ะ" });
+    return { processed: true, duplicate: false, caseDetail: undefined };
+  }
+
+  if (customer.conversationState === "WAITING_NEW_CASE_DETAIL") {
+    if (newCaseCommand || ambiguousNewCaseCommand || normalizedText.length < 8) {
+      await lineClient.replyToToken({ replyToken: input.replyToken, text: "ได้ค่ะ รบกวนบอกอาการหรือปัญหาที่พบได้เลยนะคะ" });
+      return { processed: true, duplicate: false, caseDetail: undefined };
+    }
+    forceNewCaseDetail = true;
+    await store.setConversationState(customer.id, "IDLE");
+  } else if (/ไหม$/i.test(input.text.trim()) && ambiguousNewCaseCommand) {
+    await store.setConversationState(customer.id, "WAITING_NEW_CASE_CONFIRMATION");
+    await lineClient.replyToToken({ replyToken: input.replyToken, text: "ต้องการแจ้งปัญหาใหม่ หรือสอบถามเรื่องเดิมคะ? ตอบ “ใช่” หากต้องการแจ้งปัญหาใหม่ค่ะ" });
+    return { processed: true, duplicate: false, caseDetail: undefined };
+  } else if (ambiguousNewCaseCommand || newCaseCommand || (hasNewCaseIntent && normalizedText.length < 18)) {
+    await store.setConversationState(customer.id, "WAITING_NEW_CASE_DETAIL");
+    await lineClient.replyToToken({ replyToken: input.replyToken, text: "ได้ค่ะ รบกวนบอกอาการหรือปัญหาที่พบได้เลยนะคะ" });
+    return { processed: true, duplicate: false, caseDetail: undefined };
+  } else if (hasNewCaseIntent) {
+    forceNewCaseDetail = true;
+  }
+
+  const isNewCaseRequest = forceNewCaseDetail;
   if (isNewCaseRequest && customer.pendingCaseSelection) {
     await store.setPendingCaseSelection(customer.id);
   }
@@ -94,7 +137,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     }
   }
 
-  const reopenIntent = !explicitNewCaseRequest && /(เปิดเคส|เปิดเรื่อง|ปัญหาเดิม|เรื่องที่แจ้ง|ยังไม่หาย|เคสที่\s*\d+)/i.test(input.text);
+  const reopenIntent = !isNewCaseRequest && /(เปิดเคส|เปิดเรื่อง|ปัญหาเดิม|เรื่องที่แจ้ง|ยังไม่หาย|เคสที่\s*\d+)/i.test(input.text);
   if (reopenIntent && !isNewCaseRequest) {
     const ordinalMatch = input.text.match(/เคสที่\s*(\d+)/i);
     if (ordinalMatch) {
@@ -125,6 +168,8 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
         caseId: referencedCase.id,
         text: input.text,
         externalMessageId: input.messageId,
+        webhookEventId: input.webhookEventId,
+        receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
       });
       await lineClient.replyToToken({
         replyToken: input.replyToken,
@@ -142,7 +187,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     && /(ปัญหาใหม่|เรื่องใหม่|เคสใหม่|เปิดเคสใหม่|แยกเคส|new issue|new case)/i.test(input.text);
   */
   const intakeText = confirmsNewCase
-    ? activeCase?.messages.filter((message) => message.direction === "inbound_customer").at(-1)?.originalText ?? input.text
+    ? (forceNewCaseDetail ? input.text : activeCase?.messages.filter((message) => message.direction === "inbound_customer").at(-1)?.originalText ?? input.text)
     : input.text;
   const confirmsExistingCase = activeCase?.status === "awaiting_confirmation"
     && /(เคสเดิม|เรื่องเดิม|ข้อมูลเพิ่มเติม|ต่อเรื่องเดิม|same case|same issue)/i.test(input.text);
@@ -172,6 +217,8 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       caseId: relatedCase.id,
       text: intakeText,
       externalMessageId: input.messageId,
+      webhookEventId: input.webhookEventId,
+      receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
     });
 
     console.log({
@@ -230,6 +277,9 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     originalText: intakeText,
     externalMessageId: input.messageId,
     senderType: "CUSTOMER",
+    normalizedText: normalizedText,
+    webhookEventId: input.webhookEventId,
+    receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
   });
 
   const analysis = await aiCenterClient.analyzeCustomerMessage({
@@ -250,6 +300,10 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
   await store.updateCase(supportCase.id, {
     status: "awaiting_tech",
     title: analysis.summary.slice(0, 50),
+    aiStatus: analysis.status === "AI_FAILED" ? "AI_FAILED" : analysis.status === "AI_LOW_CONFIDENCE" ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS",
+    aiAnalyzedAt: new Date().toISOString(),
+    customerSentAt: input.timestamp ? new Date(input.timestamp).toISOString() : undefined,
+    systemReceivedAt: input.systemReceivedAt,
     category: analysis.category,
     priority: analysis.urgency,
     confidenceScore: analysis.confidence,
@@ -278,6 +332,10 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     senderType: "BOT",
     deliveryStatus: acknowledgementDelivery.delivered ? "delivered" : "pending",
   });
+  await store.updateCase(supportCase.id, {
+    lineSentAt: new Date().toISOString(),
+    lineDeliveredAt: acknowledgementDelivery.delivered ? new Date().toISOString() : undefined,
+  });
 
   const caseDetail = await store.getCaseDetail(supportCase.id);
   if (caseDetail) {
@@ -286,6 +344,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       await store.updateCase(supportCase.id, {
         teamsDeliveryStatus: "accepted",
         teamsDeliveryAt: new Date().toISOString(),
+        teamsSentAt: new Date().toISOString(),
         teamsDeliveryError: undefined,
       });
     } catch (error) {
@@ -293,6 +352,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
         teamsDeliveryStatus: "failed",
         teamsDeliveryAt: new Date().toISOString(),
         teamsDeliveryError: error instanceof Error ? error.message : String(error),
+        dataStatus: error instanceof Error && error.message.startsWith("DATA_INCOMPLETE") ? "DATA_INCOMPLETE" : undefined,
       });
       console.error({ event: "teams_case_delivery_failed", caseId: supportCase.id, error: String(error) });
     }

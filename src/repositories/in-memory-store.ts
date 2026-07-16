@@ -1,4 +1,4 @@
-import type { Analysis, CaseDetail, CaseStatus, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { Analysis, CaseDetail, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore } from "./case-store";
 
@@ -35,6 +35,7 @@ export class InMemoryStore implements CaseStore {
       lineUserId: input.lineUserId,
       displayName: input.displayName,
       activeCaseId: undefined,
+      conversationState: "IDLE",
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -56,6 +57,14 @@ export class InMemoryStore implements CaseStore {
     const customer = this.customers.get(customerId);
     if (!customer) throw new Error("Customer not found");
     const updated = { ...customer, pendingCaseSelection: selection, updatedAt: nowIso() };
+    this.customers.set(customerId, updated);
+    return updated;
+  }
+
+  async setConversationState(customerId: string, state: ConversationState): Promise<Customer> {
+    const customer = this.customers.get(customerId);
+    if (!customer) throw new Error("Customer not found");
+    const updated = { ...customer, conversationState: state, updatedAt: nowIso() };
     this.customers.set(customerId, updated);
     return updated;
   }
@@ -113,6 +122,10 @@ export class InMemoryStore implements CaseStore {
 
   async getMessageByExternalMessageId(externalMessageId: string): Promise<Message | undefined> {
     return [...this.messages.values()].find((message) => message.externalMessageId === externalMessageId);
+  }
+
+  async getMessageByWebhookEventId(webhookEventId: string): Promise<Message | undefined> {
+    return [...this.messages.values()].find((message) => message.webhookEventId === webhookEventId);
   }
 
   async createAnalysis(input: Omit<Analysis, "id" | "createdAt">): Promise<Analysis> {
