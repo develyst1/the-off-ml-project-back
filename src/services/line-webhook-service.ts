@@ -193,18 +193,14 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     && /(เคสเดิม|เรื่องเดิม|ข้อมูลเพิ่มเติม|ต่อเรื่องเดิม|same case|same issue)/i.test(input.text);
 
   if (confirmsNewCase && activeCase) {
-    await store.createMessage({
-      caseId: activeCase.id,
-      direction: "inbound_customer",
-      channel: "line",
-      originalText: input.text,
-      externalMessageId: input.messageId,
-    });
-    await store.updateCase(activeCase.id, { status: "closed" });
+    // The detail message belongs to the new case, not the previous one.
+    // Keeping the old case open also preserves its own conversation history.
     await store.setActiveCase(customer.id);
   }
 
-  const relatedCase = confirmsExistingCase
+  const relatedCase = confirmsNewCase
+    ? undefined
+    : confirmsExistingCase
     ? activeCase
     : await caseService.findRelatedLineCase({
         customerId: customer.id,
