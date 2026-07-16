@@ -468,9 +468,10 @@ export const caseService = {
       deliveryStatus: "sent",
     });
 
-    const isResolution = messageReview.messageType === "RESOLUTION" || messageReview.messageType === "CLOSE_CASE" || input.closeAfterReply;
+    const shouldExtractSolution = ["CUSTOMER_REPLY", "RESOLUTION", "CLOSE_CASE"].includes(messageReview.messageType)
+      || input.closeAfterReply;
     let solutionAnalysis;
-    if (isResolution) {
+    if (shouldExtractSolution) {
       await store.updateCase(input.caseId, { status: "analyzing_solution" });
       solutionAnalysis = await aiCenterClient.analyzeTechSolution({
         techReplyText: input.text,

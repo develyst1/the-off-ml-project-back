@@ -332,7 +332,8 @@ export const aiCenterClient = {
 
   async analyzeTechSolution(input: { techReplyText: string; originalCustomerText?: string }) {
     const fallback = fallbackTechSolution(input.techReplyText);
-    const content = await chatWithAiCenter([
+    try {
+      const content = await chatWithAiCenter([
       {
         role: "system",
         content:
@@ -355,9 +356,13 @@ export const aiCenterClient = {
       },
     ]);
 
-    if (!content) return fallback;
-    const parsed = parseJsonObject<TechSolutionAnalysis>(content, fallback);
-    return { ...parsed, category: normalizeCategory(parsed.category) };
+      if (!content) return fallback;
+      const parsed = parseJsonObject<TechSolutionAnalysis>(content, fallback);
+      return { ...parsed, category: normalizeCategory(parsed.category) };
+    } catch (error) {
+      console.error({ event: "ai_center_tech_solution_analysis_failed", message: String(error) });
+      return fallback;
+    }
   },
 
   async generateTargetedInfoRequest(input: {
@@ -424,6 +429,8 @@ export const aiCenterClient = {
             task: "review_tech_message_for_customer",
             rules: [
               "เลือก messageType จาก CUSTOMER_REPLY, REQUEST_MORE_INFO, INTERNAL_NOTE, STATUS_UPDATE, RESOLUTION, CLOSE_CASE",
+              "ถ้ามีขั้นตอนหรือคำแนะนำให้ลูกค้าลองแก้ปัญหา ให้เลือก CUSTOMER_REPLY, RESOLUTION หรือ CLOSE_CASE ไม่ใช่ STATUS_UPDATE",
+              "ใช้ STATUS_UPDATE เฉพาะข้อความแจ้งความคืบหน้าที่ไม่มีแนวทางแก้ปัญหาให้ลูกค้าทำ",
               "ถ้าเป็นข้อความภายในทีมหรือคำสั่ง เช่น ช่วยตรวจสอบให้หน่อย ให้ shouldSendToCustomer=false",
               "หากส่งได้ ให้เรียบเรียงใหม่เป็นไทยสุภาพ กระชับ 1-3 ประโยค และใช้ ค่ะ หรือ นะคะ",
               "ห้ามใช้ ครับ ห้ามเปลี่ยนความหมาย ห้ามแต่งผลตรวจสอบ และห้ามรับปากว่าแก้ได้แน่นอน",
