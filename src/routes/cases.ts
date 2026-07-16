@@ -46,9 +46,21 @@ caseRoutes.post("/:id/accept", async (c) => {
 
 caseRoutes.post("/:id/request-info", async (c) => {
   const body = await readJsonObject(c);
-  const text = typeof body.text === "string" && body.text.trim() ? body.text.trim() : "";
+  const text = requiredString(body, "text");
+  const sourceMessageId = typeof body.sourceMessageId === "string" && body.sourceMessageId.trim()
+    ? body.sourceMessageId.trim()
+    : undefined;
 
-  return c.json({ data: await caseService.requestAdditionalInfo(c.req.param("id"), text) });
+  return c.json({ data: await caseService.requestAdditionalInfo(c.req.param("id"), text, sourceMessageId) });
+});
+
+caseRoutes.post("/:id/rewrite-request-info", async (c) => {
+  const body = await readJsonObject(c);
+  try {
+    return c.json({ data: await caseService.rewriteAdditionalInfoRequest(c.req.param("id"), requiredString(body, "text")) });
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "AI ไม่สามารถเรียบเรียงข้อความได้ในขณะนี้" }, 503);
+  }
 });
 
 caseRoutes.post("/:id/reply", async (c) => {

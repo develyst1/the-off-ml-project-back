@@ -60,6 +60,10 @@ export type TechMessageReview = {
   reviewFailed?: boolean;
 };
 
+export type InfoRequestRewrite = {
+  rewrittenMessage: string;
+};
+
 export type CaseRelationAnalysis = {
   related: boolean;
   confidence: number;
@@ -405,6 +409,57 @@ export const aiCenterClient = {
     } catch (error) {
       console.error({ event: "ai_center_info_request_failed", message: String(error) });
       return fallback;
+    }
+  },
+
+  async rewriteAdditionalInfoRequest(input: {
+    caseNumber: string;
+    caseTitle: string;
+    caseSummary: string;
+    originalCustomerMessage: string;
+    conversationHistory: string[];
+    customerProvidedInformation: string[];
+    previouslyRequestedInformation: string[];
+    rawSupportMessage: string;
+    currentCaseStatus: string;
+  }): Promise<InfoRequestRewrite> {
+    try {
+      const content = await chatWithAiCenter([
+        {
+          role: "system",
+          content:
+            "คุณมีหน้าที่เรียบเรียงข้อความจากทีม Tech Support เพื่อขอข้อมูลเพิ่มเติมจากลูกค้าผ่าน LINE ตอบกลับเป็น JSON เท่านั้น",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "rewrite_customer_information_request",
+            rules: [
+              "รักษาความหมายและเจตนาของข้อความจากทีม Tech Support",
+              "ใช้เฉพาะบริบทของเคสนี้ ห้ามปะปนข้อมูลจากเคสอื่น",
+              "ใช้ภาษาไทยสุภาพ เป็นธรรมชาติ เข้าใจง่าย และลงท้ายด้วย ค่ะ หรือ นะคะ",
+              "ความยาว 1-3 ประโยค ถามเฉพาะข้อมูลที่ต้องการให้ชัดเจน ไม่เกิน 3 รายการ",
+              "ห้ามถามข้อมูลที่ลูกค้าให้มาแล้วหรือที่เคยขอไปแล้ว เว้นแต่ข้อมูลนั้นยังไม่ครบ",
+              "ห้ามเพิ่มข้อมูลหรือคำขอที่ทีมไม่ได้ระบุ ห้ามรับปากว่าจะแก้ปัญหาได้แน่นอน",
+              "ห้ามอธิบายการทำงานของ AI และส่งกลับเฉพาะข้อความพร้อมแสดงให้ลูกค้า",
+            ],
+            required_schema: { rewrittenMessage: "string" },
+            ...input,
+          }),
+        },
+      ]);
+
+      if (!content) throw new Error("AI_CENTER_EMPTY_RESPONSE");
+      const parsed = parseJsonObject<InfoRequestRewrite>(content, { rewrittenMessage: "" });
+      const rewrittenMessage = parsed.rewrittenMessage?.trim();
+      if (!rewrittenMessage || rewrittenMessage.length > 600 || !/(ค่ะ|นะคะ)[.!?]?$/u.test(rewrittenMessage)) {
+        throw new Error("AI_CENTER_INVALID_REWRITE");
+      }
+
+      return { rewrittenMessage };
+    } catch (error) {
+      console.error({ event: "ai_center_info_request_rewrite_failed", message: String(error) });
+      throw new Error("AI ไม่สามารถเรียบเรียงข้อความได้ในขณะนี้ คุณยังสามารถแก้ไขและส่งข้อความเดิมได้");
     }
   },
 

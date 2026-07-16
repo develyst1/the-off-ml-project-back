@@ -240,17 +240,74 @@ export const caseService = {
     return store.getCaseDetail(caseId);
   },
 
-  async requestAdditionalInfo(caseId: string, text: string) {
+  async rewriteAdditionalInfoRequest(caseId: string, rawSupportMessage: string) {
     const detail = await store.getCaseDetail(caseId);
     if (!detail) throw new Error("Case not found");
+    const rawText = rawSupportMessage.trim();
+    if (!rawText) throw new Error("กรุณากรอกข้อความที่ต้องการให้ AI เรียบเรียง");
 
-    const question = await aiCenterClient.generateTargetedInfoRequest({
-      caseTitle: caseService.formatCaseTitle(detail),
-      category: detail.category,
-      originalCustomerText: detail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? "",
-      recentConversation: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
-      requestedText: text,
+    const rawMessage = await store.createMessage({
+      caseId,
+      direction: "INTERNAL",
+      channel: "system",
+      originalText: rawText,
+      senderType: "TECH",
+      messageType: "TECH_RAW_REPLY",
+      isVisibleToCustomer: false,
     });
+
+    const customerMessages = detail.messages.filter((message) => message.senderType === "CUSTOMER");
+    const previousRequests = detail.messages.filter((message) => message.messageType === "REQUEST_MORE_INFO");
+    const caseSummary = detail.analyses
+      .filter((analysis) => analysis.analysisType === "customer_message")
+      .at(-1)?.summary ?? "";
+
+    const rewrite = await aiCenterClient.rewriteAdditionalInfoRequest({
+      caseNumber: detail.caseNumber,
+      caseTitle: caseService.formatCaseTitle(detail),
+      caseSummary,
+      originalCustomerMessage: customerMessages[0]?.originalText ?? "",
+      conversationHistory: detail.messages.slice(-12).map((message) => `${message.senderType ?? message.direction}: ${message.originalText}`),
+      customerProvidedInformation: customerMessages.map((message) => message.originalText),
+      previouslyRequestedInformation: previousRequests.map((message) => message.originalText),
+      rawSupportMessage: rawText,
+      currentCaseStatus: detail.status,
+    });
+
+    const rewrittenMessage = await store.createMessage({
+      caseId,
+      direction: "INTERNAL",
+      channel: "system",
+      originalText: rewrite.rewrittenMessage,
+      senderType: "AI",
+      messageType: "AI_REWRITTEN_REPLY",
+      sourceMessageId: rawMessage.id,
+      isVisibleToCustomer: false,
+    });
+
+    return { rewrittenMessage: rewrite.rewrittenMessage, rawMessageId: rawMessage.id, rewrittenMessageId: rewrittenMessage.id };
+  },
+
+  async requestAdditionalInfo(caseId: string, text: string, sourceMessageId?: string) {
+    const detail = await store.getCaseDetail(caseId);
+    if (!detail) throw new Error("Case not found");
+    const question = text.trim();
+    if (!question) throw new Error("กรุณากรอกข้อความที่จะส่งให้ลูกค้า");
+
+    let sourceId = sourceMessageId;
+    if (!sourceId) {
+      const rawMessage = await store.createMessage({
+        caseId,
+        direction: "INTERNAL",
+        channel: "system",
+        originalText: question,
+        senderType: "TECH",
+        messageType: "TECH_RAW_REPLY",
+        isVisibleToCustomer: false,
+      });
+      sourceId = rawMessage.id;
+    }
+
     const messageText = `ขอข้อมูลเพิ่มเติมสำหรับเคส ${detail.caseNumber}\nเรื่อง: ${caseService.formatCaseTitle(detail)}\n\n${question}`;
     const delivery = await lineClient.reply({
       lineUserId: detail.customer.lineUserId,
@@ -264,6 +321,8 @@ export const caseService = {
       originalText: messageText,
       senderType: "TECH",
       messageType: "REQUEST_MORE_INFO",
+      sourceMessageId: sourceId,
+      isVisibleToCustomer: true,
       deliveryStatus: delivery.delivered ? "delivered" : "pending",
     });
 
