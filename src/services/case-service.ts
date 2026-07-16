@@ -190,7 +190,7 @@ export const caseService = {
     });
     await store.updateCase(input.caseId, {
       status: "awaiting_tech",
-      title: detail.title ?? analysis.summary.trim(),
+      title: detail.title ?? analysis.caseTitle,
       aiStatus: analysis.status === "AI_FAILED" ? "AI_FAILED" : analysis.status === "AI_LOW_CONFIDENCE" ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS",
       aiAnalyzedAt: new Date().toISOString(),
       category: detail.category ?? analysis.category,
@@ -233,7 +233,14 @@ export const caseService = {
     const detail = await store.getCaseDetail(caseId);
     if (!detail) throw new Error("Case not found");
 
-    const messageText = `ขอข้อมูลเพิ่มเติมสำหรับเคส ${detail.caseNumber}\nเรื่อง: ${caseService.formatCaseTitle(detail)}\n\n${text}`;
+    const question = await aiCenterClient.generateTargetedInfoRequest({
+      caseTitle: caseService.formatCaseTitle(detail),
+      category: detail.category,
+      originalCustomerText: detail.messages.find((message) => message.direction === "inbound_customer")?.originalText ?? "",
+      recentConversation: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
+      requestedText: text,
+    });
+    const messageText = `ขอข้อมูลเพิ่มเติมสำหรับเคส ${detail.caseNumber}\nเรื่อง: ${caseService.formatCaseTitle(detail)}\n\n${question}`;
     const delivery = await lineClient.reply({
       lineUserId: detail.customer.lineUserId,
       text: messageText,
@@ -324,7 +331,7 @@ export const caseService = {
 
     await store.updateCase(supportCase.id, {
       status: "awaiting_tech",
-      title: analysis.summary.trim(),
+      title: analysis.caseTitle,
       category: analysis.category,
       priority: analysis.urgency,
       confidenceScore: analysis.confidence,
@@ -385,39 +392,74 @@ export const caseService = {
       senderType: "TECH",
     });
 
-    await store.updateCase(input.caseId, { status: "analyzing_solution" });
-
     const originalCustomerText = detail.messages.find((item) => item.direction === "inbound_customer")?.originalText;
-    const solutionAnalysis = await aiCenterClient.analyzeTechSolution({
-      techReplyText: input.text,
-      originalCustomerText,
+    const messageReview = await aiCenterClient.reviewTechMessageForCustomer({
+      caseNumber: detail.caseNumber,
+      caseTitle: caseService.formatCaseTitle(detail),
+      customerOriginalMessage: originalCustomerText ?? "",
+      conversationHistory: detail.messages.slice(-8).map((item) => `${item.direction}: ${item.originalText}`),
+      techMessage: input.text,
+      currentCaseStatus: detail.status,
     });
 
     await store.createAnalysis({
       caseId: input.caseId,
       messageId: message.id,
-      analysisType: "tech_solution",
-      summary: solutionAnalysis.solutionSteps.join("\n"),
-      category: solutionAnalysis.category,
-      confidence: solutionAnalysis.confidence,
-      rawJson: solutionAnalysis,
+      analysisType: "tech_message_review",
+      summary: messageReview.reason,
+      category: detail.category,
+      confidence: messageReview.reviewFailed ? 0 : 100,
+      rawJson: messageReview,
     });
 
-    await store.createSolution({
-      caseId: input.caseId,
-      rawReplyText: input.text,
-      rootCause: solutionAnalysis.rootCause,
-      solutionSteps: solutionAnalysis.solutionSteps,
-      rewrittenCustomerText: solutionAnalysis.rewrittenCustomerText,
-      confidence: solutionAnalysis.confidence,
-      validatedByTeam: true,
-    });
+    if (!messageReview.shouldSendToCustomer) {
+      await store.updateCase(input.caseId, {
+        status: messageReview.reviewFailed ? "awaiting_tech_review" : "assigned",
+        techRepliedAt: new Date().toISOString(),
+      });
+      return store.getCaseDetail(input.caseId);
+    }
 
+    const isResolution = messageReview.messageType === "RESOLUTION" || messageReview.messageType === "CLOSE_CASE" || input.closeAfterReply;
+    let solutionAnalysis;
+    if (isResolution) {
+      await store.updateCase(input.caseId, { status: "analyzing_solution" });
+      solutionAnalysis = await aiCenterClient.analyzeTechSolution({
+        techReplyText: input.text,
+        originalCustomerText,
+      });
+      await store.createAnalysis({
+        caseId: input.caseId,
+        messageId: message.id,
+        analysisType: "tech_solution",
+        summary: solutionAnalysis.solutionSteps.join("\n"),
+        category: solutionAnalysis.category,
+        confidence: solutionAnalysis.confidence,
+        rawJson: solutionAnalysis,
+      });
+      await store.createSolution({
+        caseId: input.caseId,
+        rawReplyText: input.text,
+        rootCause: solutionAnalysis.rootCause,
+        solutionSteps: solutionAnalysis.solutionSteps,
+        rewrittenCustomerText: messageReview.rewrittenMessage,
+        confidence: solutionAnalysis.confidence,
+        validatedByTeam: true,
+      });
+    }
+
+    const closeCase = input.closeAfterReply || messageReview.messageType === "CLOSE_CASE";
+    const nextStatus: CaseStatus = messageReview.messageType === "REQUEST_MORE_INFO"
+      ? "awaiting_customer_info"
+      : closeCase
+        ? "closed"
+        : messageReview.messageType === "STATUS_UPDATE"
+          ? "in_progress"
+          : "sent_to_customer";
     await store.updateCase(input.caseId, {
-      status: "resolved",
+      status: nextStatus,
       techRepliedAt: new Date().toISOString(),
-      category: solutionAnalysis.category ?? detail.category,
-      title: detail.title ?? solutionAnalysis.category ?? undefined,
+      category: solutionAnalysis?.category ?? detail.category,
     });
 
     const updatedDetail = await store.getCaseDetail(input.caseId);
@@ -425,9 +467,11 @@ export const caseService = {
       throw new Error("Case detail missing after Teams reply");
     }
 
-    const lineText = input.closeAfterReply
-      ? `ปิดเคส ${updatedDetail.caseNumber}\nเรื่อง: ${caseService.formatCaseTitle(updatedDetail)}\n\n${solutionAnalysis.rewrittenCustomerText}\n\nทีมงานดำเนินการในเรื่องนี้เรียบร้อยแล้ว จึงขอปิดเคสนี้นะคะ\nหากยังพบปัญหา สามารถตอบกลับพร้อมแจ้งหมายเลขเคส ${updatedDetail.caseNumber} ได้เลยค่ะ`
-      : `อัปเดตเคส ${updatedDetail.caseNumber}\nเรื่อง: ${caseService.formatCaseTitle(updatedDetail)}\n\n${solutionAnalysis.rewrittenCustomerText}`;
+    const lineText = closeCase
+      ? `ปิดเคส ${updatedDetail.caseNumber}\nเรื่อง: ${caseService.formatCaseTitle(updatedDetail)}\n\n${messageReview.rewrittenMessage}\n\nหากยังพบปัญหา สามารถตอบกลับพร้อมแจ้งหมายเลขเคส ${updatedDetail.caseNumber} ได้เลยค่ะ`
+      : messageReview.messageType === "REQUEST_MORE_INFO"
+        ? `ขอข้อมูลเพิ่มเติมสำหรับเคส ${updatedDetail.caseNumber}\nเรื่อง: ${caseService.formatCaseTitle(updatedDetail)}\n\n${messageReview.rewrittenMessage}`
+        : `อัปเดตเคส ${updatedDetail.caseNumber}\nเรื่อง: ${caseService.formatCaseTitle(updatedDetail)}\n\n${messageReview.rewrittenMessage}`;
     const delivery = await lineClient.reply({
       lineUserId: updatedDetail.customer.lineUserId,
       text: lineText,
@@ -442,12 +486,11 @@ export const caseService = {
       deliveryStatus: delivery.delivered ? "delivered" : "pending",
     });
 
-    await store.updateCase(input.caseId, { status: input.closeAfterReply ? "closed" : "sent_to_customer" });
     await store.updateCase(input.caseId, {
       lineSentAt: new Date().toISOString(),
       lineDeliveredAt: delivery.delivered ? new Date().toISOString() : undefined,
     });
-    await store.setActiveCase(updatedDetail.customer.id, input.closeAfterReply ? undefined : input.caseId);
+    await store.setActiveCase(updatedDetail.customer.id, closeCase ? undefined : input.caseId);
     return store.getCaseDetail(input.caseId);
   },
 

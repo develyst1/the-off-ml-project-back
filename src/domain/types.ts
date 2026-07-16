@@ -11,7 +11,8 @@ export type CaseStatus =
   | "reopened"
   | "in_progress"
   | "awaiting_customer_info"
-  | "awaiting_confirmation";
+  | "awaiting_confirmation"
+  | "awaiting_tech_review";
 
 export type MessageDirection =
   | "inbound_customer"
@@ -95,7 +96,7 @@ export type Analysis = {
   id: string;
   caseId: string;
   messageId: string;
-  analysisType: "customer_message" | "tech_solution" | "customer_rewrite" | "case_match";
+  analysisType: "customer_message" | "tech_solution" | "customer_rewrite" | "case_match" | "tech_message_review";
   summary?: string;
   category?: string;
   confidence: number;

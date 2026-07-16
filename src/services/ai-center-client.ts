@@ -34,6 +34,7 @@ type AiCenterChatResponse = {
 
 export type CustomerMessageAnalysis = {
   summary: string;
+  caseTitle: string;
   category: string;
   urgency: "low" | "medium" | "high" | "critical";
   sentiment: string;
@@ -51,6 +52,14 @@ export type TechSolutionAnalysis = {
   confidence: number;
 };
 
+export type TechMessageReview = {
+  messageType: "CUSTOMER_REPLY" | "REQUEST_MORE_INFO" | "INTERNAL_NOTE" | "STATUS_UPDATE" | "RESOLUTION" | "CLOSE_CASE";
+  shouldSendToCustomer: boolean;
+  rewrittenMessage: string;
+  reason: string;
+  reviewFailed?: boolean;
+};
+
 export type CaseRelationAnalysis = {
   related: boolean;
   confidence: number;
@@ -60,6 +69,7 @@ export type CaseRelationAnalysis = {
 function fallbackCustomerAnalysis(text: string): CustomerMessageAnalysis {
   return {
     summary: text.length > 120 ? `${text.slice(0, 117)}...` : text,
+    caseTitle: shortenCaseTitle(text),
     category: "ยังไม่ระบุหมวดหมู่",
     urgency: "medium",
     sentiment: "unknown",
@@ -67,6 +77,33 @@ function fallbackCustomerAnalysis(text: string): CustomerMessageAnalysis {
     suggestedTeamNote: "ตรวจสอบรายละเอียดเคสและตอบกลับวิธีแก้ไขใน MS Teams",
     confidence: 50,
     status: "AI_FAILED",
+  };
+}
+
+function shortenCaseTitle(text: string) {
+  const normalized = text.trim().replace(/\s+/g, " ");
+  if (normalized.length <= 50) return normalized;
+  return `${normalized.slice(0, 47).trimEnd()}...`;
+}
+
+function fallbackInfoRequest(input: { category?: string; originalCustomerText: string }) {
+  const searchable = `${input.category ?? ""} ${input.originalCustomerText}`.toLowerCase();
+  if (/จ่ายไฟ|ไฟไม่เข้า|ไฟล์/.test(searchable)) {
+    return "รบกวนส่งเลขทะเบียนรถ และช่วงเวลาที่ทำรายการให้หน่อยนะคะ";
+  }
+  if (/เข้าสู่ระบบ|login|รหัสผ่าน/.test(searchable)) {
+    return "หน้าจอขึ้นข้อความแจ้งเตือนว่าอะไรคะ และลองเข้าสู่ระบบผ่านช่องทางไหนแล้วบ้าง";
+  }
+  return "รบกวนส่งข้อความแจ้งเตือนที่พบ และช่วงเวลาที่เริ่มเกิดปัญหาให้หน่อยนะคะ";
+}
+
+function failedTechMessageReview(reason: string): TechMessageReview {
+  return {
+    messageType: "INTERNAL_NOTE",
+    shouldSendToCustomer: false,
+    rewrittenMessage: "",
+    reason,
+    reviewFailed: true,
   };
 }
 
@@ -138,7 +175,7 @@ function parseJsonObject<T>(content: string, fallback: T): T {
 
 export const aiCenterClient = {
   async generateLineContinuationReply(input: { originalCustomerText: string; recentConversation: string[]; newCustomerText: string }) {
-    const fallback = "โอเคค่ะ เดี๋ยวช่วยตรวจสอบต่อให้นะคะ";
+    const fallback = "ได้ข้อมูลแล้วค่ะ เดี๋ยวส่งให้ทีมงานตรวจสอบต่อนะคะ";
 
     try {
       const content = await chatWithAiCenter([
@@ -153,6 +190,7 @@ export const aiCenterClient = {
             rules: [
               "ลงท้ายด้วย ค่ะ หรือ นะคะ",
               "อ้างอิงบริบทจากข้อความก่อนหน้า",
+              "สรุปข้อมูลสำคัญที่ลูกค้าเพิ่งให้มาแบบสั้น ๆ โดยห้ามแต่งข้อมูล",
               "ไม่ต้องใช้คำว่า เคสเดิม หรือ ได้รับข้อมูลเพิ่มเติมแล้ว ซ้ำ ๆ",
               "ห้ามแต่งผลการตรวจสอบ ห้ามรับปากว่าจะแก้ไขได้แน่นอน",
               "ถ้าลูกค้าทำตามคำแนะนำแล้วแต่ยังไม่ได้ ให้ตอบรับและบอกว่าจะตรวจสอบต่อ",
@@ -246,6 +284,7 @@ export const aiCenterClient = {
           task: "analyze_customer_message",
           required_schema: {
             summary: "string",
+            caseTitle: "หัวข้อภาษาไทยสั้น 30-50 ตัวอักษร อิงข้อความลูกค้าเท่านั้น",
             category: "ชื่อหมวดหมู่ภาษาไทยที่เข้าใจง่าย เช่น เข้าสู่ระบบไม่ได้ หรือ ปัญหาการเชื่อมต่อเครือข่าย",
             urgency: "low | medium | high | critical",
             sentiment: "string",
@@ -264,6 +303,7 @@ export const aiCenterClient = {
       const parsed = parseJsonObject<CustomerMessageAnalysis>(content, fallback);
       return {
         ...parsed,
+        caseTitle: shortenCaseTitle(parsed.caseTitle || parsed.summary || input.text),
         category: normalizeCategory(parsed.category),
         status: parsed.confidence < 70 ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS",
       };
@@ -304,5 +344,101 @@ export const aiCenterClient = {
     if (!content) return fallback;
     const parsed = parseJsonObject<TechSolutionAnalysis>(content, fallback);
     return { ...parsed, category: normalizeCategory(parsed.category) };
+  },
+
+  async generateTargetedInfoRequest(input: {
+    caseTitle: string;
+    category?: string;
+    originalCustomerText: string;
+    recentConversation: string[];
+    requestedText?: string;
+  }) {
+    const fallback = fallbackInfoRequest(input);
+    try {
+      const content = await chatWithAiCenter([
+        {
+          role: "system",
+          content: "คุณเป็นเจ้าหน้าที่ Tech Support ที่ขอข้อมูลเพิ่มจากลูกค้าทาง LINE ตอบเป็นข้อความภาษาไทยเพียง 1 ประโยค",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "write_targeted_information_request",
+            rules: [
+              "ถามข้อมูลสำคัญที่เกี่ยวข้องไม่เกิน 1-2 รายการ",
+              "ห้ามถามข้อมูลที่ลูกค้าให้มาแล้ว",
+              "ห้ามใช้คำถามกว้าง ๆ เช่น ขอรายละเอียดเพิ่ม หรือ คุณเจออะไรไปบ้าง",
+              "ใช้ภาษาไทยสุภาพและลงท้ายด้วย ค่ะ หรือ นะคะ",
+              "ห้ามเพิ่มข้อเท็จจริงที่ไม่มีในบทสนทนา",
+              "ตอบเป็นข้อความธรรมดาเท่านั้น",
+            ],
+            caseTitle: input.caseTitle,
+            category: input.category,
+            originalCustomerText: input.originalCustomerText,
+            recentConversation: input.recentConversation,
+            requestedText: input.requestedText,
+          }),
+        },
+      ]);
+      const reply = content?.trim().replace(/^['"]|['"]$/g, "");
+      if (!reply || reply.length > 240 || !/(ค่ะ|นะคะ)[.!?]?$/u.test(reply)) return fallback;
+      return reply;
+    } catch (error) {
+      console.error({ event: "ai_center_info_request_failed", message: String(error) });
+      return fallback;
+    }
+  },
+
+  async reviewTechMessageForCustomer(input: {
+    caseNumber: string;
+    caseTitle: string;
+    customerOriginalMessage: string;
+    conversationHistory: string[];
+    techMessage: string;
+    currentCaseStatus: string;
+  }): Promise<TechMessageReview> {
+    const fallback = failedTechMessageReview("ไม่สามารถตรวจสอบข้อความทีมก่อนส่งลูกค้าได้");
+    try {
+      const content = await chatWithAiCenter([
+        {
+          role: "system",
+          content: "คุณมีหน้าที่ตรวจสอบและปรับข้อความจากทีม Tech Support ก่อนส่งให้ลูกค้าผ่าน LINE ตอบ JSON เท่านั้น",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "review_tech_message_for_customer",
+            rules: [
+              "เลือก messageType จาก CUSTOMER_REPLY, REQUEST_MORE_INFO, INTERNAL_NOTE, STATUS_UPDATE, RESOLUTION, CLOSE_CASE",
+              "ถ้าเป็นข้อความภายในทีมหรือคำสั่ง เช่น ช่วยตรวจสอบให้หน่อย ให้ shouldSendToCustomer=false",
+              "หากส่งได้ ให้เรียบเรียงใหม่เป็นไทยสุภาพ กระชับ 1-3 ประโยค และใช้ ค่ะ หรือ นะคะ",
+              "ห้ามใช้ ครับ ห้ามเปลี่ยนความหมาย ห้ามแต่งผลตรวจสอบ และห้ามรับปากว่าแก้ได้แน่นอน",
+              "ห้ามส่งคำสั่งภายในทีมให้ลูกค้า",
+              "หากไม่แน่ใจ ให้ shouldSendToCustomer=false และอธิบาย reason",
+            ],
+            required_schema: {
+              messageType: "CUSTOMER_REPLY | REQUEST_MORE_INFO | INTERNAL_NOTE | STATUS_UPDATE | RESOLUTION | CLOSE_CASE",
+              shouldSendToCustomer: "boolean",
+              rewrittenMessage: "string",
+              reason: "string",
+            },
+            ...input,
+          }),
+        },
+      ]);
+      if (!content) return fallback;
+      const parsed = parseJsonObject<TechMessageReview>(content, fallback);
+      const allowedTypes = new Set<TechMessageReview["messageType"]>([
+        "CUSTOMER_REPLY", "REQUEST_MORE_INFO", "INTERNAL_NOTE", "STATUS_UPDATE", "RESOLUTION", "CLOSE_CASE",
+      ]);
+      if (!allowedTypes.has(parsed.messageType)) return fallback;
+      if (!parsed.shouldSendToCustomer) return { ...parsed, rewrittenMessage: "" };
+      const message = parsed.rewrittenMessage?.trim();
+      if (!message || message.length > 600 || !/(ค่ะ|นะคะ)[.!?]?$/u.test(message)) return fallback;
+      return { ...parsed, rewrittenMessage: message.replace(/ครับ[.!?]?$/u, "ค่ะ") };
+    } catch (error) {
+      console.error({ event: "ai_center_tech_message_review_failed", message: String(error) });
+      return fallback;
+    }
   },
 };
