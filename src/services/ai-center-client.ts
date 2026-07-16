@@ -142,11 +142,25 @@ async function chatWithAiCenter(messages: ChatMessage[]): Promise<string | undef
     return undefined;
   }
 
-  const response = await fetch(new URL("/chat", env.AI_CENTER_BASE_URL), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(buildChatPayload(messages)),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), env.AI_CENTER_TIMEOUT_MS);
+  let response: Response;
+
+  try {
+    response = await fetch(new URL("/chat", env.AI_CENTER_BASE_URL), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(buildChatPayload(messages)),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`AI CENTER timed out after ${env.AI_CENTER_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     throw new Error(`AI CENTER /chat request failed: ${response.status}`);
