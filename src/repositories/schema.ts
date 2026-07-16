@@ -297,4 +297,51 @@ create index if not exists case_messages_case_message_type_idx on case_messages(
 create index if not exists case_messages_delivery_status_idx on case_messages(delivery_status);
 create index if not exists case_messages_parent_message_id_idx on case_messages(parent_message_id);
 create index if not exists case_messages_source_message_id_idx on case_messages(source_message_id);
+
+-- New application records live in case_messages. Repoint legacy foreign keys after
+-- case_messages is available so existing databases migrate without losing history.
+do $$
+begin
+  if exists (
+    select 1
+    from pg_constraint
+    where conname = 'analyses_message_id_fkey'
+      and conrelid = 'analyses'::regclass
+      and confrelid <> 'case_messages'::regclass
+  ) then
+    alter table analyses drop constraint analyses_message_id_fkey;
+  end if;
+
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'analyses_message_id_fkey'
+      and conrelid = 'analyses'::regclass
+  ) then
+    alter table analyses
+      add constraint analyses_message_id_fkey
+      foreign key (message_id) references case_messages(id) on delete cascade;
+  end if;
+
+  if exists (
+    select 1
+    from pg_constraint
+    where conname = 'auto_answer_logs_outbound_message_id_fkey'
+      and conrelid = 'auto_answer_logs'::regclass
+      and confrelid <> 'case_messages'::regclass
+  ) then
+    alter table auto_answer_logs drop constraint auto_answer_logs_outbound_message_id_fkey;
+  end if;
+
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'auto_answer_logs_outbound_message_id_fkey'
+      and conrelid = 'auto_answer_logs'::regclass
+  ) then
+    alter table auto_answer_logs
+      add constraint auto_answer_logs_outbound_message_id_fkey
+      foreign key (outbound_message_id) references case_messages(id) on delete set null;
+  end if;
+end $$;
 `;

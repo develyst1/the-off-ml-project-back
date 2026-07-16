@@ -25,6 +25,7 @@ try {
       confidence_matches,
       solutions,
       analyses,
+      case_messages,
       messages,
       support_cases,
       customers,
