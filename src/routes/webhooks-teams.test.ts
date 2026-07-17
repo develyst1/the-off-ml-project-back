@@ -26,6 +26,13 @@ mock.module("../services/ai-center-client", () => ({
     generateLineContinuationReply: async () => "รับทราบค่ะ",
     rewriteCustomerReply: async ({ rawSupportMessage }: { rawSupportMessage: string }) => ({ rewrittenMessage: rawSupportMessage }),
     rewriteAdditionalInfoRequest: async () => ({ rewrittenMessage: "ขอข้อมูลเพิ่มค่ะ" }),
+    generateMoreInfoRequest: async () => ({ suggestedMessage: "รบกวนแจ้งภาพหน้าจอเพิ่มเติมนะคะ", requestedFields: ["ภาพหน้าจอ"], reason: "ยังขาดภาพหน้าจอ" }),
+    composeCustomerReply: async ({ supportInstruction }: { supportInstruction?: string }) => ({
+      suggestedMessage: supportInstruction ? `ร่างคำตอบตามแนวทาง: ${supportInstruction}` : "ขอบคุณสำหรับข้อมูลล่าสุดค่ะ เดี๋ยวช่วยตรวจสอบต่อให้นะคะ",
+      suggestedMode: "CUSTOMER_REPLY",
+      missingInformation: [],
+      reason: "ใช้ข้อความล่าสุดของลูกค้าและประวัติเคส",
+    }),
     analyzeTechSolution: async () => ({ solutionSteps: [], rewrittenCustomerText: "" }),
     reviewTechMessageForCustomer: async () => ({ shouldSendToCustomer: false, reviewFailed: false }),
   },
@@ -43,6 +50,14 @@ async function createCase() {
 
 function postAction(body: Record<string, unknown>) {
   return app.fetch(new Request("http://localhost/webhooks/teams/actions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }));
+}
+
+function postCompose(caseId: string, body: Record<string, unknown>) {
+  return app.fetch(new Request(`http://localhost/cases/${caseId}/ai-compose`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -110,6 +125,41 @@ describe("POST /webhooks/teams/actions", () => {
     expect(closedMessage?.originalText).toContain(`ปิดเคส ${supportCase.caseNumber}`);
     expect(closedMessage?.sentAt).toBeDefined();
     expect(systemEvent?.isVisibleToCustomer).toBe(false);
+  });
+
+  test("composes customer reply and more-info drafts without sending LINE", async () => {
+    const supportCase = await createCase();
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "ส่งงานใน Teams แล้วแต่ยังไม่เห็นงานค่ะ",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      isVisibleToCustomer: true,
+      deliveryStatus: "RECEIVED",
+    });
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "ส่งช่วงสองโมงค่ะ",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_ADDITIONAL_INFO",
+      isVisibleToCustomer: true,
+      deliveryStatus: "RECEIVED",
+    });
+
+    const replyResponse = await postCompose(supportCase.id, { mode: "CUSTOMER_REPLY", supportInstruction: "ให้ตอบสั้นและสุภาพ" });
+    const infoResponse = await postCompose(supportCase.id, { mode: "REQUEST_MORE_INFO", requestedInformation: "ขอภาพหน้าจอ" });
+    const detail = await store.getCaseDetail(supportCase.id);
+    const aiDrafts = detail?.messages.filter((message) => message.senderType === "AI");
+
+    expect(replyResponse.status).toBe(200);
+    expect(infoResponse.status).toBe(200);
+    expect(aiDrafts?.some((message) => message.metadata?.aiPurpose === "GENERATE_CUSTOMER_REPLY")).toBe(true);
+    expect(aiDrafts?.some((message) => message.metadata?.aiPurpose === "GENERATE_MORE_INFO_REQUEST")).toBe(true);
+    expect(detail?.status).toBe("assigned");
   });
 
   test("records a failed delivery and does not close the case", async () => {

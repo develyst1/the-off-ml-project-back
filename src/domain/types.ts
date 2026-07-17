@@ -154,6 +154,7 @@ export type Message = {
   sentAt?: string;
   deliveredAt?: string;
   failedAt?: string;
+  metadata?: Record<string, unknown>;
   createdAt: string;
 };
 

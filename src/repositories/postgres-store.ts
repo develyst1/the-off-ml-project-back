@@ -75,6 +75,7 @@ type DbMessage = {
   delivered_at: Date | null;
   failed_at: Date | null;
   external_message_id: string | null;
+  metadata: Record<string, unknown> | null;
   created_at: Date;
 };
 
@@ -196,6 +197,7 @@ function mapMessage(row: DbMessage): Message {
     deliveredAt: row.delivered_at ? dateIso(row.delivered_at) : undefined,
     failedAt: row.failed_at ? dateIso(row.failed_at) : undefined,
     externalMessageId: row.external_message_id ?? undefined,
+    metadata: row.metadata ?? undefined,
     createdAt: dateIso(row.created_at),
   };
 }
@@ -414,8 +416,8 @@ export class PostgresStore implements CaseStore {
   async createMessage(input: Omit<Message, "id" | "createdAt">): Promise<Message> {
     const message = normalizeCaseMessage(input);
     const result = await this.query<DbMessage>(
-      `insert into case_messages (id, case_id, direction, channel, sender_type, content_type, message_type, original_text, normalized_text, display_text, parent_message_id, source_message_id, is_visible_to_customer, external_message_id, webhook_event_id, teams_message_id, delivery_status, delivery_error, retry_count, last_retry_at, received_at, processed_at, sent_at, delivered_at, failed_at, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+      `insert into case_messages (id, case_id, direction, channel, sender_type, content_type, message_type, original_text, normalized_text, display_text, parent_message_id, source_message_id, is_visible_to_customer, external_message_id, webhook_event_id, teams_message_id, delivery_status, delivery_error, retry_count, last_retry_at, received_at, processed_at, sent_at, delivered_at, failed_at, created_at, updated_at, metadata)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
        returning *`,
       [
         createId("msg"),
@@ -445,6 +447,7 @@ export class PostgresStore implements CaseStore {
         message.failedAt ?? null,
         nowIso(),
         nowIso(),
+        message.metadata ?? {},
       ],
     );
 

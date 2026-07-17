@@ -240,8 +240,11 @@ create table if not exists case_messages (
   delivered_at timestamptz,
   failed_at timestamptz,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  metadata jsonb not null default '{}'::jsonb
 );
+
+alter table case_messages add column if not exists metadata jsonb not null default '{}'::jsonb;
 
 insert into case_messages (
   id, case_id, direction, channel, sender_type, content_type, message_type,

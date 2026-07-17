@@ -491,9 +491,106 @@ export const caseService = {
       messageType: "AI_REWRITTEN_REPLY",
       sourceMessageId,
       isVisibleToCustomer: false,
+      metadata: { aiPurpose: "GENERATE_MORE_INFO_REQUEST" },
     });
 
     return { ...suggestion, rewrittenMessageId: aiMessage.id, sourceMessageId };
+  },
+
+  async composeAiMessage(input: {
+    caseId: string;
+    mode: "CUSTOMER_REPLY" | "REQUEST_MORE_INFO";
+    supportInstruction?: string;
+    requestedInformation?: string;
+  }) {
+    const detail = await store.getCaseDetail(input.caseId);
+    if (!detail) throw new Error("Case not found");
+
+    if (input.mode === "REQUEST_MORE_INFO") {
+      const suggestion = await this.generateMoreInfoRequest(input.caseId, input.requestedInformation);
+      return {
+        mode: input.mode,
+        suggestedMessage: suggestion.suggestedMessage,
+        suggestedMode: "REQUEST_MORE_INFO" as const,
+        reason: suggestion.reason,
+        requestedFields: suggestion.requestedFields,
+        missingInformation: suggestion.requestedFields,
+        rewrittenMessageId: suggestion.rewrittenMessageId,
+        sourceMessageId: suggestion.sourceMessageId,
+      };
+    }
+
+    const customerMessages = detail.messages
+      .filter((message) => message.senderType === "CUSTOMER" && (message.direction === "INBOUND" || message.direction === "inbound_customer"))
+      .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+    const latestCustomerMessage = customerMessages.at(-1);
+    const customerProvidedInformation = customerMessages.slice(1).map((message) => message.originalText);
+    const previouslyRequestedInformation = detail.messages
+      .filter((message) => message.messageType === "REQUEST_MORE_INFO")
+      .map((message) => message.originalText);
+    const previousReplies = detail.messages
+      .filter((message) => message.senderType === "TECH" && message.direction !== "INTERNAL")
+      .map((message) => message.originalText);
+    const caseSummary = detail.analyses
+      .filter((analysis) => analysis.analysisType === "customer_message")
+      .at(-1)?.summary ?? detail.title ?? "";
+    const conversationHistory = [...detail.messages]
+      .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime())
+      .map((message) => `${message.senderType ?? message.direction}: ${message.originalText}`);
+
+    const suggestion = await aiCenterClient.composeCustomerReply({
+      mode: "CUSTOMER_REPLY",
+      caseNumber: detail.caseNumber,
+      caseTitle: caseService.formatCaseTitle(detail),
+      originalCustomerMessage: customerMessages[0]?.originalText ?? "",
+      latestCustomerMessage: latestCustomerMessage?.originalText ?? "",
+      conversationHistory,
+      customerProvidedInformation,
+      previouslyRequestedInformation,
+      previousReplies,
+      caseSummary,
+      currentCaseStatus: detail.status,
+      supportInstruction: input.supportInstruction?.trim() || undefined,
+    });
+
+    let sourceMessageId: string | undefined;
+    if (input.supportInstruction?.trim()) {
+      const sourceMessage = await store.createMessage({
+        caseId: input.caseId,
+        direction: "INTERNAL",
+        channel: "system",
+        originalText: input.supportInstruction.trim(),
+        senderType: "TECH",
+        messageType: "TECH_RAW_REPLY",
+        isVisibleToCustomer: false,
+        metadata: { aiPurpose: "GENERATE_CUSTOMER_REPLY" },
+      });
+      sourceMessageId = sourceMessage.id;
+    }
+
+    const aiMessage = await store.createMessage({
+      caseId: input.caseId,
+      direction: "INTERNAL",
+      channel: "system",
+      originalText: suggestion.suggestedMessage || suggestion.reason,
+      senderType: "AI",
+      messageType: "AI_REWRITTEN_REPLY",
+      sourceMessageId,
+      isVisibleToCustomer: false,
+      metadata: {
+        aiPurpose: "GENERATE_CUSTOMER_REPLY",
+        suggestedMode: suggestion.suggestedMode,
+        missingInformation: suggestion.missingInformation,
+      },
+    });
+
+    return {
+      mode: input.mode,
+      ...suggestion,
+      requestedFields: [],
+      rewrittenMessageId: aiMessage.id,
+      sourceMessageId,
+    };
   },
 
   async requestAdditionalInfo(caseId: string, text: string, sourceMessageId?: string) {

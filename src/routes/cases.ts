@@ -74,6 +74,15 @@ caseRoutes.post("/:id/generate-more-info", async (c) => {
   return c.json({ data: await caseService.generateMoreInfoRequest(c.req.param("id"), requestedInformation) });
 });
 
+caseRoutes.post("/:id/ai-compose", async (c) => {
+  const body = await readJsonObject(c);
+  const mode = body.mode === "REQUEST_MORE_INFO" ? "REQUEST_MORE_INFO" : body.mode === "CUSTOMER_REPLY" ? "CUSTOMER_REPLY" : undefined;
+  if (!mode) return c.json({ error: "mode_must_be_CUSTOMER_REPLY_or_REQUEST_MORE_INFO" }, 400);
+  const supportInstruction = typeof body.supportInstruction === "string" ? body.supportInstruction : undefined;
+  const requestedInformation = typeof body.requestedInformation === "string" ? body.requestedInformation : undefined;
+  return c.json({ data: await caseService.composeAiMessage({ caseId: c.req.param("id"), mode, supportInstruction, requestedInformation }) });
+});
+
 caseRoutes.post("/:id/close", async (c) => {
   const body = await readJsonObject(c);
   return c.json({ data: await caseService.sendConsoleReply({

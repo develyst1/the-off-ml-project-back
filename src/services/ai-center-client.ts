@@ -75,6 +75,13 @@ export type MoreInfoRequestSuggestion = {
   reason: string;
 };
 
+export type CustomerReplyComposeSuggestion = {
+  suggestedMessage: string;
+  suggestedMode: "CUSTOMER_REPLY" | "REQUEST_MORE_INFO";
+  missingInformation: string[];
+  reason: string;
+};
+
 export type PendingInformationExtraction = {
   values: PendingInformationValues;
 };
@@ -666,6 +673,77 @@ export const aiCenterClient = {
       return { suggestedMessage, requestedFields, reason: parsed.reason?.trim() || "AI วิเคราะห์จากข้อมูลในเคสแล้ว" };
     } catch (error) {
       console.error({ event: "ai_center_more_info_generation_failed", message: String(error) });
+      return fallback;
+    }
+  },
+
+  async composeCustomerReply(input: {
+    mode: "CUSTOMER_REPLY";
+    caseNumber: string;
+    caseTitle: string;
+    originalCustomerMessage: string;
+    latestCustomerMessage: string;
+    conversationHistory: string[];
+    customerProvidedInformation: string[];
+    previouslyRequestedInformation: string[];
+    previousReplies: string[];
+    caseSummary: string;
+    currentCaseStatus: string;
+    supportInstruction?: string;
+  }): Promise<CustomerReplyComposeSuggestion> {
+    const fallback: CustomerReplyComposeSuggestion = {
+      suggestedMessage: "",
+      suggestedMode: "REQUEST_MORE_INFO",
+      missingInformation: ["ข้อมูลที่จำเป็นต่อการตอบลูกค้า"],
+      reason: "ข้อมูลยังไม่เพียงพอสำหรับร่างคำตอบอย่างถูกต้อง",
+    };
+
+    try {
+      const content = await chatWithAiCenter([
+        {
+          role: "system",
+          content: "คุณช่วยทีม Tech Support ร่างข้อความตอบกลับลูกค้าผ่าน LINE ให้ตอบเป็น JSON เท่านั้น",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "compose_customer_reply_from_latest_customer_message",
+            required_schema: {
+              suggestedMessage: "string",
+              suggestedMode: "CUSTOMER_REPLY | REQUEST_MORE_INFO",
+              missingInformation: "string[]",
+              reason: "string",
+            },
+            rules: [
+              "อ่าน latestCustomerMessage เป็นหลัก และใช้ conversationHistory เพื่อเข้าใจบริบทของเคสเดียวกัน",
+              "ห้ามถามข้อมูลที่ลูกค้าให้มาแล้ว หรือแนะนำขั้นตอนเดิมซ้ำโดยไม่มีเหตุผล",
+              "หากลูกค้าตอบคำถามของทีม ให้นำข้อมูลนั้นมาใช้ในคำตอบทันที",
+              "ใช้ภาษาไทยสุภาพ เป็นธรรมชาติ เข้าใจง่าย ความยาว 1-4 ประโยค และลงท้ายด้วย ค่ะ หรือ นะคะ",
+              "ให้แนวทางตรวจสอบทีละขั้นตอนอย่างกระชับเมื่อมีข้อมูลเพียงพอ",
+              "ห้ามแต่งผลการตรวจสอบ ห้ามรับปากว่าจะแก้ไขได้แน่นอน และห้ามกล่าวถึง AI",
+              "ห้ามใส่หมายเลขเคสหรือหัวข้อเคสใน suggestedMessage เพราะระบบจะเติมภายหลัง",
+              "หากข้อมูลไม่พอจริง ให้ suggestedMode เป็น REQUEST_MORE_INFO, suggestedMessage ว่าง และระบุ missingInformation",
+            ],
+            ...input,
+          }),
+        },
+      ]);
+      if (!content) return fallback;
+      const parsed = parseJsonObject<Partial<CustomerReplyComposeSuggestion>>(content, fallback);
+      const suggestedMode = parsed.suggestedMode === "REQUEST_MORE_INFO" ? "REQUEST_MORE_INFO" : "CUSTOMER_REPLY";
+      const missingInformation = Array.isArray(parsed.missingInformation)
+        ? parsed.missingInformation.filter((value): value is string => typeof value === "string").map((value) => value.trim()).filter(Boolean).slice(0, 5)
+        : [];
+      const suggestedMessage = typeof parsed.suggestedMessage === "string" ? parsed.suggestedMessage.trim() : "";
+      if (suggestedMode === "CUSTOMER_REPLY" && (!suggestedMessage || suggestedMessage.length > 1000)) return fallback;
+      return {
+        suggestedMessage,
+        suggestedMode,
+        missingInformation,
+        reason: typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : "AI สร้างร่างคำตอบจากบริบทของเคสแล้ว",
+      };
+    } catch (error) {
+      console.error({ event: "ai_center_customer_reply_compose_failed", message: String(error) });
       return fallback;
     }
   },
