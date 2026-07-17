@@ -635,12 +635,20 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     status: targetedInfoQuestion ? "awaiting_customer_info" : "awaiting_tech",
     title: analysis.caseTitle,
     aiStatus: analysis.status === "AI_FAILED" ? "AI_FAILED" : analysis.status === "AI_LOW_CONFIDENCE" ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS",
+    dataStatus: analysis.missingInformation.length > 0 ? "DATA_INCOMPLETE" : "COMPLETE",
     aiAnalyzedAt: new Date().toISOString(),
     customerSentAt: intakeReceivedAt,
     systemReceivedAt: input.systemReceivedAt,
     category: analysis.category,
     priority: analysis.urgency,
     confidenceScore: analysis.confidence,
+    initialCustomerMessageId: message.id,
+    latestCustomerMessageId: message.id,
+    problemSummary: analysis.status === "AI_FAILED" ? undefined : analysis.summary,
+    problemSummaryGeneratedAt: analysis.status === "AI_FAILED" ? undefined : new Date().toISOString(),
+    problemSummarySourceMessageId: analysis.status === "AI_FAILED" ? undefined : message.id,
+    problemSummaryVersion: 1,
+    problemSummaryStatus: analysis.status === "AI_FAILED" ? "FAILED" : "SUCCESS",
   });
   await store.setActiveCase(customer.id, supportCase.id);
   if (targetedInfoQuestion) {

@@ -1,4 +1,4 @@
-import type { CaseDetail, CaseStatus, MessageChannel, PendingCaseSelection } from "../domain/types";
+import type { CaseDetail, CaseStatus, Message, MessageChannel, PendingCaseSelection } from "../domain/types";
 import { env } from "../config/env";
 import { store } from "../repositories/store";
 import { aiCenterClient, type CaseHistoryCandidate, type CaseHistoryMatchDecision } from "./ai-center-client";
@@ -55,6 +55,42 @@ function isRecentClosedCase(detail: CaseDetail) {
 
 function isPendingExpired(selection: PendingCaseSelection) {
   return !selection.expiresAt || new Date(selection.expiresAt).getTime() <= Date.now();
+}
+
+function shouldRefreshProblemSummary(text: string) {
+  const normalized = text.trim().replace(/\s+/g, " ");
+  if (!normalized) return false;
+  if (/^(?:โอเค|โอเคค่ะ|ครับ|ค่ะ|ขอบคุณ|ขอบคุณค่ะ|ได้|ได้ค่ะ|ยังไม่ได้|ยังไม่หาย|ตกลง|รับทราบ|\+|-)$/iu.test(normalized)) return false;
+  if (/^(?:เช้า|สาย|เที่ยง|บ่าย|เย็น|ค่ำ|ประมาณ)?\s*\d{1,2}(?::|นาฬิกา|โมง|\.)?\s*\d{0,2}\s*(?:นาที|น\.|โมง)?$/iu.test(normalized)) return false;
+  return normalized.length >= 12 || /(รุ่น|อุปกรณ์|iphone|ipad|android|windows|mac|error|รหัส|เชื่อมต่อ|ค้าง|เด้ง|โหลด|ติดตั้ง|เสียง|หน้าจอ|ล็อกอิน|เข้าใช้|ไม่ได้|ไม่สามารถ|ลองแล้ว)/iu.test(normalized);
+}
+
+async function updateProblemSummaryForMessage(detail: CaseDetail, message: Pick<Message, "id" | "originalText" | "senderType" | "createdAt">) {
+  const customerMessages = [...detail.messages, message]
+    .filter((item) => item.senderType === "CUSTOMER")
+    .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime())
+    .map((item) => item.originalText);
+  const result = await aiCenterClient.generateProblemSummary({
+    caseId: detail.id,
+    caseTitle: detail.title,
+    category: detail.category,
+    initialCustomerMessage: customerMessages[0] ?? message.originalText,
+    customerMessages,
+    latestCustomerMessage: message.originalText,
+    analysisSummaries: detail.analyses.filter((item) => item.analysisType === "customer_message").map((item) => item.summary ?? "").filter(Boolean),
+    currentProblemSummary: detail.problemSummary,
+  });
+  const patch: Partial<Omit<CaseDetail, "id" | "customerId" | "createdAt" | "customer" | "messages" | "analyses" | "solutions">> = {
+    latestCustomerMessageId: message.id,
+    problemSummaryStatus: result.status,
+  };
+  if (result.status === "SUCCESS" && result.shouldUpdate && result.problemSummary.trim()) {
+    patch.problemSummary = result.problemSummary.trim();
+    patch.problemSummaryGeneratedAt = new Date().toISOString();
+    patch.problemSummarySourceMessageId = message.id;
+    patch.problemSummaryVersion = (detail.problemSummaryVersion ?? 0) + 1;
+  }
+  return store.updateCase(detail.id, patch);
 }
 
 async function extractAndStoreTechSolution(input: {
@@ -370,34 +406,45 @@ export const caseService = {
       webhookEventId: input.webhookEventId,
       receivedAt: input.receivedAt,
     });
-    const analysis = await aiCenterClient.analyzeCustomerMessage({
-      text: input.text,
-      customerDisplayName: detail.customer.displayName,
-      conversationContext: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
-    });
+    const shouldAnalyze = shouldRefreshProblemSummary(input.text);
+    const analysis = shouldAnalyze
+      ? await aiCenterClient.analyzeCustomerMessage({
+          text: input.text,
+          customerDisplayName: detail.customer.displayName,
+          conversationContext: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
+        })
+      : undefined;
     const continuationReply = await aiCenterClient.generateLineContinuationReply({
       originalCustomerText: detail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? input.text,
       recentConversation: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
       newCustomerText: input.text,
     });
 
-    await store.createAnalysis({
-      caseId: input.caseId,
-      messageId: message.id,
-      analysisType: "customer_message",
-      summary: analysis.summary,
-      category: analysis.category,
-      confidence: analysis.confidence,
-      rawJson: analysis,
-    });
+    if (analysis) {
+      await store.createAnalysis({
+        caseId: input.caseId,
+        messageId: message.id,
+        analysisType: "customer_message",
+        summary: analysis.summary,
+        category: analysis.category,
+        confidence: analysis.confidence,
+        rawJson: analysis,
+      });
+    }
+    if (shouldAnalyze) {
+      await updateProblemSummaryForMessage(detail, { ...message, senderType: "CUSTOMER" });
+    } else {
+      await store.updateCase(input.caseId, { latestCustomerMessageId: message.id });
+    }
     await store.updateCase(input.caseId, {
       status: "awaiting_tech",
-      title: detail.title ?? analysis.caseTitle,
-      aiStatus: analysis.status === "AI_FAILED" ? "AI_FAILED" : analysis.status === "AI_LOW_CONFIDENCE" ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS",
-      aiAnalyzedAt: new Date().toISOString(),
-      category: detail.category ?? analysis.category,
-      priority: analysis.urgency,
-      confidenceScore: analysis.confidence,
+      title: detail.title ?? analysis?.caseTitle,
+      aiStatus: analysis ? (analysis.status === "AI_FAILED" ? "AI_FAILED" : analysis.status === "AI_LOW_CONFIDENCE" ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS") : detail.aiStatus,
+      aiAnalyzedAt: analysis ? new Date().toISOString() : detail.aiAnalyzedAt,
+      category: detail.category ?? analysis?.category,
+      priority: analysis?.urgency ?? detail.priority,
+      confidenceScore: analysis?.confidence ?? detail.confidenceScore,
+      latestCustomerMessageId: message.id,
     });
 
     const updatedDetail = await store.getCaseDetail(input.caseId);

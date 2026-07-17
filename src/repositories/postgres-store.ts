@@ -45,6 +45,14 @@ type DbCase = {
   teams_delivery_status: SupportCase["teamsDeliveryStatus"];
   teams_delivery_at: Date | null;
   teams_delivery_error: string | null;
+  initial_customer_message_id: string | null;
+  latest_customer_message_id: string | null;
+  problem_summary: string | null;
+  problem_summary_generated_at: Date | null;
+  problem_summary_source_message_id: string | null;
+  problem_summary_version: number | null;
+  problem_summary_status: SupportCase["problemSummaryStatus"];
+  assignee_name: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -165,6 +173,14 @@ function mapCase(row: DbCase): SupportCase {
     teamsDeliveryStatus: row.teams_delivery_status ?? "not_sent",
     teamsDeliveryAt: row.teams_delivery_at ? dateIso(row.teams_delivery_at) : undefined,
     teamsDeliveryError: row.teams_delivery_error ?? undefined,
+    initialCustomerMessageId: row.initial_customer_message_id ?? undefined,
+    latestCustomerMessageId: row.latest_customer_message_id ?? undefined,
+    problemSummary: row.problem_summary ?? undefined,
+    problemSummaryGeneratedAt: row.problem_summary_generated_at ? dateIso(row.problem_summary_generated_at) : undefined,
+    problemSummarySourceMessageId: row.problem_summary_source_message_id ?? undefined,
+    problemSummaryVersion: row.problem_summary_version ?? undefined,
+    problemSummaryStatus: row.problem_summary_status ?? "PENDING",
+    assigneeName: row.assignee_name ?? undefined,
     createdAt: dateIso(row.created_at),
     updatedAt: dateIso(row.updated_at),
   };
@@ -381,7 +397,15 @@ export class PostgresStore implements CaseStore {
          teams_delivery_status = $19,
          teams_delivery_at = $20,
          teams_delivery_error = $21,
-         updated_at = $22
+         initial_customer_message_id = $22,
+         latest_customer_message_id = $23,
+         problem_summary = $24,
+         problem_summary_generated_at = $25,
+         problem_summary_source_message_id = $26,
+         problem_summary_version = $27,
+         problem_summary_status = $28,
+         assignee_name = $29,
+         updated_at = $30
        where id = $1
        returning *`,
       [
@@ -406,6 +430,14 @@ export class PostgresStore implements CaseStore {
         patch.teamsDeliveryStatus ?? current.teams_delivery_status,
         patch.teamsDeliveryAt ?? current.teams_delivery_at,
         "teamsDeliveryError" in patch ? patch.teamsDeliveryError ?? null : current.teams_delivery_error,
+        patch.initialCustomerMessageId ?? current.initial_customer_message_id,
+        patch.latestCustomerMessageId ?? current.latest_customer_message_id,
+        "problemSummary" in patch ? patch.problemSummary ?? null : current.problem_summary,
+        "problemSummaryGeneratedAt" in patch ? patch.problemSummaryGeneratedAt ?? null : current.problem_summary_generated_at,
+        "problemSummarySourceMessageId" in patch ? patch.problemSummarySourceMessageId ?? null : current.problem_summary_source_message_id,
+        patch.problemSummaryVersion ?? current.problem_summary_version ?? 1,
+        patch.problemSummaryStatus ?? current.problem_summary_status ?? "PENDING",
+        "assigneeName" in patch ? patch.assigneeName ?? null : current.assignee_name,
         nowIso(),
       ],
     );
@@ -592,10 +624,23 @@ export class PostgresStore implements CaseStore {
     const customer = customerResult.rows[0];
     if (!customer) return undefined;
 
+    const messages = messageResult.rows.map(mapMessage);
+    const customerMessages = messages
+      .filter((message) => message.senderType === "CUSTOMER" && (message.direction === "INBOUND" || message.direction === "inbound_customer"))
+      .sort((left, right) => new Date(left.receivedAt ?? left.createdAt).getTime() - new Date(right.receivedAt ?? right.createdAt).getTime());
+    const latestCustomerMessage = customerMessages.at(-1);
+    const latestOutboundMessage = messages
+      .filter((message) => message.senderType !== "CUSTOMER" && (message.direction === "OUTBOUND" || message.direction === "outbound_customer"))
+      .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime())
+      .at(-1);
+
     return {
       ...supportCase,
       customer: mapCustomer(customer),
-      messages: messageResult.rows.map(mapMessage),
+      initialCustomerMessageId: supportCase.initialCustomerMessageId ?? customerMessages[0]?.id,
+      latestCustomerMessageId: supportCase.latestCustomerMessageId ?? latestCustomerMessage?.id,
+      hasUnreadCustomerMessage: Boolean(latestCustomerMessage && (!latestOutboundMessage || new Date(latestCustomerMessage.receivedAt ?? latestCustomerMessage.createdAt).getTime() > new Date(latestOutboundMessage.createdAt).getTime())),
+      messages,
       analyses: analysisResult.rows.map(mapAnalysis),
       solutions: solutionResult.rows.map(mapSolution),
     };

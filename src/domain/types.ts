@@ -106,6 +106,15 @@ export type SupportCase = {
   priority?: "low" | "medium" | "high" | "critical";
   confidenceScore?: number;
   teamsThreadId?: string;
+  initialCustomerMessageId?: string;
+  latestCustomerMessageId?: string;
+  problemSummary?: string;
+  problemSummaryGeneratedAt?: string;
+  problemSummarySourceMessageId?: string;
+  problemSummaryVersion?: number;
+  problemSummaryStatus?: "PENDING" | "SUCCESS" | "FAILED";
+  assigneeName?: string;
+  hasUnreadCustomerMessage?: boolean;
   createdAt: string;
   updatedAt: string;
 };

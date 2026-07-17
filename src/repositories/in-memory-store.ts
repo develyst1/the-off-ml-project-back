@@ -189,10 +189,23 @@ export class InMemoryStore implements CaseStore {
     const customer = this.customers.get(supportCase.customerId);
     if (!customer) return undefined;
 
+    const messages = [...this.messages.values()].filter((message) => message.caseId === id);
+    const customerMessages = messages
+      .filter((message) => message.senderType === "CUSTOMER" && (message.direction === "INBOUND" || message.direction === "inbound_customer"))
+      .sort((left, right) => new Date(left.receivedAt ?? left.createdAt).getTime() - new Date(right.receivedAt ?? right.createdAt).getTime());
+    const latestCustomerMessage = customerMessages.at(-1);
+    const latestOutboundMessage = messages
+      .filter((message) => message.senderType !== "CUSTOMER" && (message.direction === "OUTBOUND" || message.direction === "outbound_customer"))
+      .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime())
+      .at(-1);
+
     return {
       ...supportCase,
       customer,
-      messages: [...this.messages.values()].filter((message) => message.caseId === id),
+      initialCustomerMessageId: supportCase.initialCustomerMessageId ?? customerMessages[0]?.id,
+      latestCustomerMessageId: supportCase.latestCustomerMessageId ?? latestCustomerMessage?.id,
+      hasUnreadCustomerMessage: Boolean(latestCustomerMessage && (!latestOutboundMessage || new Date(latestCustomerMessage.receivedAt ?? latestCustomerMessage.createdAt).getTime() > new Date(latestOutboundMessage.createdAt).getTime())),
+      messages,
       analyses: [...this.analyses.values()].filter((analysis) => analysis.caseId === id),
       solutions: [...this.solutions.values()].filter((solution) => solution.caseId === id),
     };

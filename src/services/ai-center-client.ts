@@ -49,6 +49,13 @@ export type CustomerMessageAnalysis = {
   status?: "AI_SUCCESS" | "AI_LOW_CONFIDENCE" | "AI_FAILED";
 };
 
+export type ProblemSummaryResult = {
+  problemSummary: string;
+  shouldUpdate: boolean;
+  reason: string;
+  status: "SUCCESS" | "FAILED";
+};
+
 export type TechSolutionAnalysis = {
   rootCause?: string;
   solutionSteps: string[];
@@ -492,6 +499,72 @@ export const aiCenterClient = {
         event: "ai_center_customer_analysis_failed",
         message: error instanceof Error ? error.message : "Unexpected AI CENTER error",
       });
+      return fallback;
+    }
+  },
+
+  async generateProblemSummary(input: {
+    caseId: string;
+    caseTitle?: string;
+    category?: string;
+    initialCustomerMessage: string;
+    customerMessages: string[];
+    latestCustomerMessage: string;
+    analysisSummaries: string[];
+    currentProblemSummary?: string;
+  }): Promise<ProblemSummaryResult> {
+    const fallback: ProblemSummaryResult = {
+      problemSummary: input.currentProblemSummary?.trim() ?? "",
+      shouldUpdate: false,
+      reason: "AI_CENTER_UNAVAILABLE",
+      status: "FAILED",
+    };
+    try {
+      const content = await chatWithAiCenter([
+        {
+          role: "system",
+          content: "คุณมีหน้าที่สรุปปัญหาที่ลูกค้าแจ้งเพื่อแสดงในหน้า Case Inbox สำหรับทีม Tech Support ตอบ JSON เท่านั้น",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "generate_case_problem_summary",
+            rules: [
+              "ใช้ข้อมูลจาก caseId ปัจจุบันเท่านั้น",
+              "สรุปใจความสำคัญเป็นภาษาไทย 30-100 ตัวอักษร",
+              "รักษาความหมายเดิมของลูกค้าและแก้คำสะกดได้",
+              "ไม่ต้องใส่หมายเลขเคส คำขึ้นต้นว่าลูกค้าแจ้งว่า หรือคำลงท้ายค่ะ/ครับ",
+              "ระบุอุปกรณ์ ระบบ อาการ รหัสข้อผิดพลาด หรือขั้นตอนที่ลองแล้วเมื่อมีข้อมูลรองรับ",
+              "ห้ามแต่งสาเหตุและห้ามสรุปว่าปัญหาได้รับการแก้ไขโดยไม่มีหลักฐาน",
+              "ข้อความสั้น เช่น โอเค ครับ ขอบคุณ ยังไม่ได้ หรือข้อมูลเวลาอย่างเดียว ห้ามแทนสรุปเดิม",
+            ],
+            required_schema: {
+              problemSummary: "string",
+              shouldUpdate: "boolean",
+              reason: "string",
+            },
+            ...input,
+          }),
+        },
+      ]);
+      if (!content) return fallback;
+      const parsed = parseJsonObject<{ problemSummary?: string; shouldUpdate?: boolean; reason?: string }>(content, {});
+      const summary = parsed.problemSummary?.trim() ?? "";
+      if (!summary) {
+        return {
+          ...fallback,
+          reason: parsed.reason?.trim() || "EMPTY_PROBLEM_SUMMARY",
+          status: "SUCCESS",
+        };
+      }
+      return {
+        problemSummary: summary.slice(0, 200),
+        shouldUpdate: parsed.shouldUpdate !== false,
+        reason: parsed.reason?.trim() || "SUMMARY_CREATED",
+        status: "SUCCESS",
+      };
+    } catch (error) {
+      console.error({ event: "ai_center_problem_summary_failed", caseId: input.caseId, message: String(error) });
       return fallback;
     }
   },

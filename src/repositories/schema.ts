@@ -36,6 +36,14 @@ create table if not exists support_cases (
   teams_delivery_status text not null default 'not_sent',
   teams_delivery_at timestamptz,
   teams_delivery_error text,
+  initial_customer_message_id text,
+  latest_customer_message_id text,
+  problem_summary text,
+  problem_summary_generated_at timestamptz,
+  problem_summary_source_message_id text,
+  problem_summary_version integer not null default 1,
+  problem_summary_status text not null default 'PENDING',
+  assignee_name text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -94,6 +102,14 @@ alter table support_cases alter column case_number set not null;
 alter table support_cases add column if not exists teams_delivery_status text not null default 'not_sent';
 alter table support_cases add column if not exists teams_delivery_at timestamptz;
 alter table support_cases add column if not exists teams_delivery_error text;
+alter table support_cases add column if not exists initial_customer_message_id text;
+alter table support_cases add column if not exists latest_customer_message_id text;
+alter table support_cases add column if not exists problem_summary text;
+alter table support_cases add column if not exists problem_summary_generated_at timestamptz;
+alter table support_cases add column if not exists problem_summary_source_message_id text;
+alter table support_cases add column if not exists problem_summary_version integer not null default 1;
+alter table support_cases add column if not exists problem_summary_status text not null default 'PENDING';
+alter table support_cases add column if not exists assignee_name text;
 
 create table if not exists messages (
   id text primary key,
@@ -304,6 +320,8 @@ create index if not exists case_messages_case_message_type_idx on case_messages(
 create index if not exists case_messages_delivery_status_idx on case_messages(delivery_status);
 create index if not exists case_messages_parent_message_id_idx on case_messages(parent_message_id);
 create index if not exists case_messages_source_message_id_idx on case_messages(source_message_id);
+create index if not exists support_cases_latest_customer_message_idx on support_cases(latest_customer_message_id);
+create index if not exists support_cases_problem_summary_status_idx on support_cases(problem_summary_status);
 
 create table if not exists case_match_logs (
   id text primary key,

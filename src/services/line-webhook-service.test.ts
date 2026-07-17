@@ -32,6 +32,12 @@ mock.module("./ai-center-client", () => ({
     analyzeCaseRelation: async () => ({ related: true, confidence: 100, reason: "pending question" }),
     extractPendingInformation: async () => ({ values: {} }),
     generateLineContinuationReply: async () => "รับทราบค่ะ เดี๋ยวส่งข้อมูลให้ทีมตรวจสอบต่อนะคะ",
+    generateProblemSummary: async (input: { currentProblemSummary?: string; latestCustomerMessage: string }) => ({
+      problemSummary: input.currentProblemSummary ?? input.latestCustomerMessage,
+      shouldUpdate: !input.currentProblemSummary,
+      reason: "test",
+      status: "SUCCESS",
+    }),
   },
 }));
 
