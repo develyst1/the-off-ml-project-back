@@ -57,6 +57,46 @@ function isPendingExpired(selection: PendingCaseSelection) {
   return !selection.expiresAt || new Date(selection.expiresAt).getTime() <= Date.now();
 }
 
+async function extractAndStoreTechSolution(input: {
+  detail: CaseDetail;
+  messageId: string;
+  techReplyText: string;
+  rewrittenCustomerText: string;
+}) {
+  const originalCustomerText = input.detail.messages.find((item) => item.senderType === "CUSTOMER")?.originalText;
+  const solutionAnalysis = await aiCenterClient.analyzeTechSolution({
+    techReplyText: input.techReplyText,
+    originalCustomerText,
+  });
+  const solutionSteps = solutionAnalysis.solutionSteps.map((step) => step.trim()).filter(Boolean);
+  const normalizedSolutionAnalysis = {
+    ...solutionAnalysis,
+    solutionSteps: solutionSteps.length > 0 ? solutionSteps : [input.techReplyText],
+    rewrittenCustomerText: solutionAnalysis.rewrittenCustomerText.trim() || input.rewrittenCustomerText,
+  };
+
+  await store.createAnalysis({
+    caseId: input.detail.id,
+    messageId: input.messageId,
+    analysisType: "tech_solution",
+    summary: normalizedSolutionAnalysis.solutionSteps.join("\n"),
+    category: normalizedSolutionAnalysis.category,
+    confidence: normalizedSolutionAnalysis.confidence,
+    rawJson: normalizedSolutionAnalysis,
+  });
+  await store.createSolution({
+    caseId: input.detail.id,
+    rawReplyText: input.techReplyText,
+    rootCause: normalizedSolutionAnalysis.rootCause,
+    solutionSteps: normalizedSolutionAnalysis.solutionSteps,
+    rewrittenCustomerText: normalizedSolutionAnalysis.rewrittenCustomerText,
+    confidence: normalizedSolutionAnalysis.confidence,
+    validatedByTeam: true,
+  });
+
+  return normalizedSolutionAnalysis;
+}
+
 export const caseService = {
   formatCaseTitle(detail: { title?: string; category?: string; messages: { direction: string; originalText: string; senderType?: string }[] }) {
     if (detail.title?.trim()) return detail.title.trim();
@@ -738,6 +778,12 @@ export const caseService = {
         sentAt,
         deliveredAt: sentAt,
       });
+      const solutionAnalysis = await extractAndStoreTechSolution({
+        detail,
+        messageId: rawMessage.id,
+        techReplyText: text,
+        rewrittenCustomerText: supportText,
+      });
       await store.updateCase(input.caseId, {
         status: "closed",
         closedAt: sentAt,
@@ -745,6 +791,7 @@ export const caseService = {
         lineSentAt: sentAt,
         lineDeliveredAt: sentAt,
         techRepliedAt: sentAt,
+        category: solutionAnalysis.category ?? detail.category,
       });
       await store.createMessage({
         caseId: input.caseId,
@@ -816,6 +863,13 @@ export const caseService = {
       externalMessageId,
     });
 
+    const solutionAnalysis = await extractAndStoreTechSolution({
+      detail,
+      messageId: rawMessage.id,
+      techReplyText: text,
+      rewrittenCustomerText: text,
+    });
+
     if (input.closeCase) {
       await store.updateCase(input.caseId, {
         status: "closed",
@@ -824,6 +878,7 @@ export const caseService = {
         lineSentAt: sentAt,
         lineDeliveredAt: sentAt,
         techRepliedAt: sentAt,
+        category: solutionAnalysis.category ?? detail.category,
       });
 
       await store.createMessage({
@@ -851,6 +906,7 @@ export const caseService = {
         lineSentAt: sentAt,
         lineDeliveredAt: sentAt,
         techRepliedAt: sentAt,
+        category: solutionAnalysis.category ?? detail.category,
       });
     }
 
