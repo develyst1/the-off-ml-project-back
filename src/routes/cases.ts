@@ -68,6 +68,12 @@ caseRoutes.post("/:id/reply", async (c) => {
   return c.json({ data: await caseService.sendConsoleReply({ caseId: c.req.param("id"), text: requiredString(body, "text") }) });
 });
 
+caseRoutes.post("/:id/generate-more-info", async (c) => {
+  const body = await readJsonObject(c);
+  const requestedInformation = typeof body.requestedInformation === "string" ? body.requestedInformation : undefined;
+  return c.json({ data: await caseService.generateMoreInfoRequest(c.req.param("id"), requestedInformation) });
+});
+
 caseRoutes.post("/:id/close", async (c) => {
   const body = await readJsonObject(c);
   return c.json({ data: await caseService.sendConsoleReply({

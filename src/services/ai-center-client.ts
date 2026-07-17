@@ -69,6 +69,12 @@ export type InfoRequestRewrite = {
   rewrittenMessage: string;
 };
 
+export type MoreInfoRequestSuggestion = {
+  suggestedMessage: string;
+  requestedFields: string[];
+  reason: string;
+};
+
 export type PendingInformationExtraction = {
   values: PendingInformationValues;
 };
@@ -609,6 +615,58 @@ export const aiCenterClient = {
     } catch (error) {
       console.error({ event: "ai_center_info_request_rewrite_failed", message: String(error) });
       throw new Error("AI ไม่สามารถเรียบเรียงข้อความได้ในขณะนี้ คุณยังสามารถแก้ไขและส่งข้อความเดิมได้");
+    }
+  },
+
+  async generateMoreInfoRequest(input: {
+    caseNumber: string;
+    caseTitle: string;
+    originalCustomerMessage: string;
+    caseSummary: string;
+    conversationHistory: string[];
+    customerProvidedInformation: string[];
+    previouslyRequestedInformation: string[];
+    requestedInformation?: string;
+  }): Promise<MoreInfoRequestSuggestion> {
+    const fallback: MoreInfoRequestSuggestion = {
+      suggestedMessage: "รบกวนแจ้งรายละเอียดเพิ่มเติมที่เกี่ยวข้องกับปัญหานี้ให้หน่อยนะคะ",
+      requestedFields: [],
+      reason: "AI ไม่สามารถระบุข้อมูลที่ขาดได้",
+    };
+    try {
+      const content = await chatWithAiCenter([
+        {
+          role: "system",
+          content: "คุณช่วยทีม Tech Support สร้างข้อความขอข้อมูลเพิ่มเติมจากลูกค้า ตอบกลับเป็น JSON เท่านั้น",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "generate_more_information_request",
+            required_schema: { suggestedMessage: "string", requestedFields: "string[]", reason: "string" },
+            rules: [
+              "วิเคราะห์ว่าข้อมูลใดยังขาดจริงจากบริบททั้งหมด",
+              "ห้ามถามข้อมูลที่ลูกค้าให้มาแล้วหรือเคยตอบไปแล้ว",
+              "ถามไม่เกิน 1-3 รายการ ใช้ภาษาไทยสุภาพ เป็นธรรมชาติ และลงท้ายด้วย ค่ะ หรือ นะคะ",
+              "ห้ามใช้คำถามกว้าง เช่น ขอรายละเอียดเพิ่มเติม",
+              "ห้ามกล่าวถึง AI หรือรับปากว่าจะแก้ปัญหาได้แน่นอน",
+              "ส่งเฉพาะข้อความที่เจ้าหน้าที่ตรวจสอบก่อนส่งได้",
+            ],
+            ...input,
+          }),
+        },
+      ]);
+      if (!content) return fallback;
+      const parsed = parseJsonObject<Partial<MoreInfoRequestSuggestion>>(content, fallback);
+      const suggestedMessage = parsed.suggestedMessage?.trim();
+      const requestedFields = Array.isArray(parsed.requestedFields)
+        ? parsed.requestedFields.filter((field): field is string => typeof field === "string").map((field) => field.trim()).filter(Boolean).slice(0, 3)
+        : [];
+      if (!suggestedMessage || suggestedMessage.length > 600) return fallback;
+      return { suggestedMessage, requestedFields, reason: parsed.reason?.trim() || "AI วิเคราะห์จากข้อมูลในเคสแล้ว" };
+    } catch (error) {
+      console.error({ event: "ai_center_more_info_generation_failed", message: String(error) });
+      return fallback;
     }
   },
 

@@ -448,6 +448,54 @@ export const caseService = {
     return { rewrittenMessage: rewrite.rewrittenMessage, rawMessageId: rawMessage.id, rewrittenMessageId: rewrittenMessage.id };
   },
 
+  async generateMoreInfoRequest(caseId: string, requestedInformation?: string) {
+    const detail = await store.getCaseDetail(caseId);
+    if (!detail) throw new Error("Case not found");
+    const customerMessages = detail.messages.filter((message) => message.senderType === "CUSTOMER");
+    const previousRequests = detail.messages.filter((message) => message.messageType === "REQUEST_MORE_INFO");
+    const caseSummary = detail.analyses
+      .filter((analysis) => analysis.analysisType === "customer_message")
+      .at(-1)?.summary ?? detail.title ?? "";
+
+    const suggestion = await aiCenterClient.generateMoreInfoRequest({
+      caseNumber: detail.caseNumber,
+      caseTitle: caseService.formatCaseTitle(detail),
+      originalCustomerMessage: customerMessages[0]?.originalText ?? "",
+      caseSummary,
+      conversationHistory: detail.messages.slice(-12).map((message) => `${message.senderType ?? message.direction}: ${message.originalText}`),
+      customerProvidedInformation: customerMessages.map((message) => message.originalText),
+      previouslyRequestedInformation: previousRequests.map((message) => message.originalText),
+      requestedInformation: requestedInformation?.trim() || undefined,
+    });
+
+    let sourceMessageId: string | undefined;
+    if (requestedInformation?.trim()) {
+      const sourceMessage = await store.createMessage({
+        caseId,
+        direction: "INTERNAL",
+        channel: "system",
+        originalText: requestedInformation.trim(),
+        senderType: "TECH",
+        messageType: "TECH_RAW_REPLY",
+        isVisibleToCustomer: false,
+      });
+      sourceMessageId = sourceMessage.id;
+    }
+
+    const aiMessage = await store.createMessage({
+      caseId,
+      direction: "INTERNAL",
+      channel: "system",
+      originalText: suggestion.suggestedMessage,
+      senderType: "AI",
+      messageType: "AI_REWRITTEN_REPLY",
+      sourceMessageId,
+      isVisibleToCustomer: false,
+    });
+
+    return { ...suggestion, rewrittenMessageId: aiMessage.id, sourceMessageId };
+  },
+
   async requestAdditionalInfo(caseId: string, text: string, sourceMessageId?: string) {
     const detail = await store.getCaseDetail(caseId);
     if (!detail) throw new Error("Case not found");
