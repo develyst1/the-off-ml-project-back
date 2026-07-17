@@ -584,6 +584,93 @@ export const caseService = {
       if (existing) throw new Error("คำขอนี้เคยส่งไม่สำเร็จ กรุณาส่งใหม่ด้วย requestId ใหม่");
     }
 
+    if (input.closeCase) {
+      if (detail.status === "closed") throw new Error("Case is already closed");
+
+      const responder = input.closedBy ?? "Tech Support Console";
+      const followupText = `หากยังพบปัญหา สามารถตอบกลับพร้อมแจ้งหมายเลขเคส ${detail.caseNumber} ได้เลยค่ะ`;
+      const genericFollowupText = "หากยังพบปัญหา สามารถตอบกลับพร้อมแจ้งหมายเลขเคสได้เลยค่ะ";
+      const supportText = text.includes(genericFollowupText)
+        ? text.replaceAll(genericFollowupText, followupText)
+        : `${text}\n\n${followupText}`;
+      const outboundText = [
+        `ปิดเคส ${detail.caseNumber}`,
+        `เรื่อง: ${caseService.formatCaseTitle(detail)}`,
+        "",
+        supportText,
+      ].join("\n");
+      const rawMessage = await store.createMessage({
+        caseId: input.caseId,
+        direction: "INTERNAL",
+        channel: "system",
+        originalText: text,
+        senderType: "TECH",
+        messageType: "TECH_RAW_REPLY",
+        isVisibleToCustomer: false,
+        deliveryStatus: "PROCESSED",
+      });
+      const outboundMessage = await store.createMessage({
+        caseId: input.caseId,
+        direction: "OUTBOUND",
+        channel: "line",
+        originalText: outboundText,
+        senderType: "TECH",
+        contentType: "TEXT",
+        messageType: "CASE_CLOSED",
+        sourceMessageId: rawMessage.id,
+        isVisibleToCustomer: true,
+        deliveryStatus: "PENDING",
+        externalMessageId,
+      });
+
+      try {
+        const delivery = await lineClient.reply({ lineUserId: detail.customer.lineUserId, text: outboundText });
+        if (!delivery.delivered) throw new Error("LINE ยังไม่ยืนยันการส่งข้อความ");
+      } catch (error) {
+        await store.updateMessage(outboundMessage.id, {
+          deliveryStatus: "FAILED",
+          deliveryError: error instanceof Error ? error.message : String(error),
+          failedAt: new Date().toISOString(),
+        });
+        throw new Error("LINE ส่งข้อความปิดเคสไม่สำเร็จ");
+      }
+
+      const sentAt = new Date().toISOString();
+      await store.updateMessage(outboundMessage.id, {
+        deliveryStatus: "SENT",
+        sentAt,
+        deliveredAt: sentAt,
+      });
+      await store.updateCase(input.caseId, {
+        status: "closed",
+        closedAt: sentAt,
+        closedBy: responder,
+        lineSentAt: sentAt,
+        lineDeliveredAt: sentAt,
+        techRepliedAt: sentAt,
+      });
+      await store.createMessage({
+        caseId: input.caseId,
+        direction: "INTERNAL",
+        channel: "system",
+        originalText: `ปิดเคสโดย ${responder}`,
+        displayText: `ปิดเคสโดย ${responder}`,
+        senderType: "SYSTEM",
+        contentType: "SYSTEM_EVENT",
+        messageType: "SYSTEM_EVENT",
+        isVisibleToCustomer: false,
+        deliveryStatus: "PROCESSED",
+      });
+      if (detail.customer.activeCaseId === input.caseId) {
+        await store.setActiveCase(detail.customer.id);
+      }
+      if (detail.customer.pendingCaseSelection?.pendingCaseId === input.caseId) {
+        await store.setPendingCaseSelection(detail.customer.id);
+        await store.setConversationState(detail.customer.id, "IDLE");
+      }
+      return store.getCaseDetail(input.caseId);
+    }
+
     // The LINE push is the commit point: do not alter the case until LINE accepts it.
     let delivery: { delivered: boolean };
     try {

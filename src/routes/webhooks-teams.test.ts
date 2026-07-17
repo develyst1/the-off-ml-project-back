@@ -87,6 +87,31 @@ describe("POST /webhooks/teams/actions", () => {
     expect(mismatch.status).toBe(400);
   });
 
+  test("formats a close message, records SENT, and closes after LINE accepts it", async () => {
+    const supportCase = await createCase();
+    const response = await postAction({
+      action: "CLOSE_CASE",
+      caseId: supportCase.id,
+      caseNumber: supportCase.caseNumber,
+      replyText: "ทีมงานตรวจสอบและแนะนำวิธีแก้ไขเรียบร้อยแล้วค่ะ",
+      responderName: "เจ้าหน้าที่ทดสอบ",
+      requestId: `close-${sequence}`,
+    });
+
+    const detail = await store.getCaseDetail(supportCase.id);
+    const closedMessage = detail?.messages.find((message) => message.messageType === "CASE_CLOSED");
+    const systemEvent = detail?.messages.find((message) => message.messageType === "SYSTEM_EVENT" && message.originalText.includes("เจ้าหน้าที่ทดสอบ"));
+
+    expect(response.status).toBe(200);
+    expect(detail?.status).toBe("closed");
+    expect(detail?.closedBy).toBe("เจ้าหน้าที่ทดสอบ");
+    expect(closedMessage?.deliveryStatus).toBe("SENT");
+    expect(closedMessage?.isVisibleToCustomer).toBe(true);
+    expect(closedMessage?.originalText).toContain(`ปิดเคส ${supportCase.caseNumber}`);
+    expect(closedMessage?.sentAt).toBeDefined();
+    expect(systemEvent?.isVisibleToCustomer).toBe(false);
+  });
+
   test("records a failed delivery and does not close the case", async () => {
     const supportCase = await createCase();
     lineShouldFail = true;
