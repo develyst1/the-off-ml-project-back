@@ -35,6 +35,8 @@ type DbCase = {
   tech_replied_at: Date | null;
   line_sent_at: Date | null;
   line_delivered_at: Date | null;
+  closed_at: Date | null;
+  closed_by: string | null;
   status: CaseStatus;
   category: string | null;
   priority: SupportCase["priority"] | null;
@@ -152,6 +154,8 @@ function mapCase(row: DbCase): SupportCase {
     techRepliedAt: row.tech_replied_at ? dateIso(row.tech_replied_at) : undefined,
     lineSentAt: row.line_sent_at ? dateIso(row.line_sent_at) : undefined,
     lineDeliveredAt: row.line_delivered_at ? dateIso(row.line_delivered_at) : undefined,
+    closedAt: row.closed_at ? dateIso(row.closed_at) : undefined,
+    closedBy: row.closed_by ?? undefined,
     status: row.status,
     category: row.category ?? undefined,
     priority: row.priority ?? undefined,
@@ -366,14 +370,16 @@ export class PostgresStore implements CaseStore {
          tech_replied_at = $10,
          line_sent_at = $11,
          line_delivered_at = $12,
-         category = $13,
-         priority = $14,
-         confidence_score = $15,
-         teams_thread_id = $16,
-         teams_delivery_status = $17,
-         teams_delivery_at = $18,
-         teams_delivery_error = $19,
-         updated_at = $20
+         closed_at = $13,
+         closed_by = $14,
+         category = $15,
+         priority = $16,
+         confidence_score = $17,
+         teams_thread_id = $18,
+         teams_delivery_status = $19,
+         teams_delivery_at = $20,
+         teams_delivery_error = $21,
+         updated_at = $22
        where id = $1
        returning *`,
       [
@@ -389,6 +395,8 @@ export class PostgresStore implements CaseStore {
         patch.techRepliedAt ?? current.tech_replied_at,
         patch.lineSentAt ?? current.line_sent_at,
         patch.lineDeliveredAt ?? current.line_delivered_at,
+        "closedAt" in patch ? patch.closedAt ?? null : current.closed_at,
+        "closedBy" in patch ? patch.closedBy ?? null : current.closed_by,
         patch.category ?? current.category,
         patch.priority ?? current.priority,
         patch.confidenceScore ?? current.confidence_score,

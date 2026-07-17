@@ -82,7 +82,7 @@ export const teamsClient = {
         { type: "TextBlock", wrap: true, text: `AI summary: ${data.summary}` },
         {
           type: "Input.Text",
-          id: "techReplyText",
+          id: "replyText",
           label: "คำตอบจากทีม Tech Support",
           placeholder: "พิมพ์วิธีแก้ปัญหาหรือคำตอบให้ลูกค้า",
           isMultiline: true,
@@ -90,7 +90,7 @@ export const teamsClient = {
         },
         {
           type: "Input.Text",
-          id: "requestInfoText",
+          id: "additionalInfoRequest",
           label: "ข้อความขอข้อมูลเพิ่มเติมจากลูกค้า",
           placeholder: "เช่น รบกวนส่งภาพหน้าจอหรือข้อความแจ้งเตือนเพิ่มเติม",
           isMultiline: true,
@@ -101,12 +101,12 @@ export const teamsClient = {
         {
           type: "Action.Submit",
           title: "วิเคราะห์และส่งให้ลูกค้า",
-          data: { action: "reply", caseId: data.caseId, caseNumber: data.caseNumber },
+          data: { action: "REPLY_CUSTOMER", caseId: data.caseId, caseNumber: data.caseNumber },
         },
         {
           type: "Action.Submit",
           title: "ขอข้อมูลเพิ่มเติม",
-          data: { action: "request-info", caseId: data.caseId, caseNumber: data.caseNumber },
+          data: { action: "REQUEST_MORE_INFO", caseId: data.caseId, caseNumber: data.caseNumber },
         },
         {
           type: "Action.OpenUrl",

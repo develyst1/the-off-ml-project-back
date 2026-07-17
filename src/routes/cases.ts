@@ -65,26 +65,31 @@ caseRoutes.post("/:id/rewrite-request-info", async (c) => {
 
 caseRoutes.post("/:id/reply", async (c) => {
   const body = await readJsonObject(c);
-
-  return c.json({
-    data: await caseService.receiveTeamsReply({
-      caseId: c.req.param("id"),
-      text: requiredString(body, "text"),
-      channel: "system",
-    }),
-  });
+  return c.json({ data: await caseService.sendConsoleReply({ caseId: c.req.param("id"), text: requiredString(body, "text") }) });
 });
 
 caseRoutes.post("/:id/close", async (c) => {
   const body = await readJsonObject(c);
-  return c.json({
-    data: await caseService.receiveTeamsReply({
-      caseId: c.req.param("id"),
-      text: requiredString(body, "text"),
-      channel: "system",
-      closeAfterReply: true,
-    }),
-  });
+  return c.json({ data: await caseService.sendConsoleReply({
+    caseId: c.req.param("id"),
+    text: requiredString(body, "text"),
+    closeCase: true,
+    closedBy: typeof body.closedBy === "string" && body.closedBy.trim() ? body.closedBy.trim() : undefined,
+  }) });
+});
+
+caseRoutes.post("/:id/rewrite-reply", async (c) => {
+  const body = await readJsonObject(c);
+  const mode = body.mode === "CLOSING_REPLY" ? "CLOSING_REPLY" : "NORMAL_REPLY";
+  return c.json({ data: await caseService.rewriteCustomerReply(c.req.param("id"), requiredString(body, "text"), mode) });
+});
+
+caseRoutes.post("/:id/reopen", async (c) => {
+  const body = await readJsonObject(c);
+  return c.json({ data: await caseService.reopenCaseFromConsole(
+    c.req.param("id"),
+    typeof body.reopenedBy === "string" && body.reopenedBy.trim() ? body.reopenedBy.trim() : undefined,
+  ) });
 });
 
 caseRoutes.patch("/:id/status", async (c) => {

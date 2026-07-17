@@ -4,6 +4,7 @@ import { store } from "../repositories/store";
 import { aiCenterClient, type CaseHistoryCandidate, type CaseHistoryMatchDecision } from "./ai-center-client";
 import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
+import { inferPendingInformationFields } from "../lib/pending-information";
 
 const CLOSED_CASE_STATUSES: CaseStatus[] = ["closed", "resolved", "sent_to_customer"];
 const RECENT_CLOSED_CASE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
@@ -116,6 +117,32 @@ export const caseService = {
       createdAt: new Date().toISOString(),
     };
     return store.setPendingCaseSelection(customerId, selection);
+  },
+
+  async setPendingInformationRequest(input: {
+    customerId: string;
+    caseId: string;
+    questionType: "AI_MISSING_INFORMATION" | "TECH_REQUEST";
+    requestedFields: string[];
+  }) {
+    const timestamp = new Date().toISOString();
+    const requestedFields = input.requestedFields.length > 0
+      ? inferPendingInformationFields(input.requestedFields)
+      : ["additionalDetails"];
+    await store.setPendingCaseSelection(input.customerId, {
+      mode: "request_more_info",
+      candidateCaseIds: [input.caseId],
+      selectedCaseId: input.caseId,
+      pendingAction: "REQUEST_MORE_INFO",
+      pendingCaseId: input.caseId,
+      pendingQuestionType: input.questionType,
+      pendingRequestedFields: requestedFields,
+      pendingCollectedFields: {},
+      pendingCreatedAt: timestamp,
+      createdAt: timestamp,
+    });
+    await store.setActiveCase(input.customerId, input.caseId);
+    await store.setConversationState(input.customerId, "ACTIVE_CASE_CONVERSATION");
   },
 
   async reopenCase(customerId: string, caseId: string) {
@@ -465,6 +492,159 @@ export const caseService = {
     });
 
     await store.updateCase(caseId, { status: "awaiting_customer_info" });
+    await this.setPendingInformationRequest({
+      customerId: detail.customer.id,
+      caseId,
+      questionType: "TECH_REQUEST",
+      requestedFields: [question],
+    });
+    return store.getCaseDetail(caseId);
+  },
+
+  async rewriteCustomerReply(caseId: string, rawSupportMessage: string, mode: "NORMAL_REPLY" | "CLOSING_REPLY") {
+    const detail = await store.getCaseDetail(caseId);
+    if (!detail) throw new Error("Case not found");
+    const rawText = rawSupportMessage.trim();
+    if (!rawText) throw new Error("กรุณากรอกข้อความตอบกลับลูกค้า");
+
+    const customerMessages = detail.messages.filter((message) => message.senderType === "CUSTOMER");
+    return aiCenterClient.rewriteCustomerReply({
+      caseNumber: detail.caseNumber,
+      caseTitle: caseService.formatCaseTitle(detail),
+      originalCustomerMessage: customerMessages[0]?.originalText ?? "",
+      conversationHistory: detail.messages.slice(-12).map((message) => `${message.senderType ?? message.direction}: ${message.originalText}`),
+      rawSupportMessage: rawText,
+      mode,
+    });
+  },
+
+  async sendConsoleReply(input: { caseId: string; text: string; closeCase?: boolean; closedBy?: string; externalActionId?: string }) {
+    const detail = await store.getCaseDetail(input.caseId);
+    if (!detail) throw new Error("Case not found");
+    if (!detail.customer.lineUserId?.trim()) throw new Error("Customer LINE user ID is missing");
+    if (detail.status === "closed" && !input.closeCase) throw new Error("เคสนี้ปิดแล้ว กรุณาเปิดเคสอีกครั้งก่อนตอบกลับลูกค้า");
+
+    const text = input.text.trim();
+    if (!text) throw new Error("กรุณากรอกข้อความตอบกลับลูกค้า");
+
+    const externalMessageId = input.externalActionId ? `teams-action:${input.externalActionId}` : undefined;
+    if (externalMessageId) {
+      const existing = await store.getMessageByExternalMessageId(externalMessageId);
+      if (existing?.deliveryStatus === "SENT" || existing?.deliveryStatus === "DELIVERED" || existing?.deliveryStatus === "sent" || existing?.deliveryStatus === "delivered") {
+        return detail;
+      }
+      if (existing) throw new Error("คำขอนี้เคยส่งไม่สำเร็จ กรุณาส่งใหม่ด้วย requestId ใหม่");
+    }
+
+    // The LINE push is the commit point: do not alter the case until LINE accepts it.
+    let delivery: { delivered: boolean };
+    try {
+      delivery = await lineClient.reply({ lineUserId: detail.customer.lineUserId, text });
+      if (!delivery.delivered) throw new Error("LINE ยังไม่ยืนยันการส่งข้อความ");
+    } catch (error) {
+      await store.createMessage({
+        caseId: input.caseId,
+        direction: "OUTBOUND",
+        channel: "line",
+        originalText: text,
+        senderType: "TECH",
+        messageType: input.closeCase ? "CASE_CLOSED" : "CUSTOMER_REPLY",
+        isVisibleToCustomer: false,
+        deliveryStatus: "FAILED",
+        deliveryError: error instanceof Error ? error.message : String(error),
+        externalMessageId,
+      });
+      throw new Error("LINE ส่งข้อความไม่สำเร็จ");
+    }
+
+    const sentAt = new Date().toISOString();
+    const rawMessage = await store.createMessage({
+      caseId: input.caseId,
+      direction: "INTERNAL",
+      channel: "system",
+      originalText: text,
+      senderType: "TECH",
+      messageType: "TECH_RAW_REPLY",
+      isVisibleToCustomer: false,
+      deliveryStatus: "PROCESSED",
+    });
+
+    await store.createMessage({
+      caseId: input.caseId,
+      direction: "OUTBOUND",
+      channel: "line",
+      originalText: text,
+      senderType: "TECH",
+      messageType: input.closeCase ? "CASE_CLOSED" : "CUSTOMER_REPLY",
+      sourceMessageId: rawMessage.id,
+      isVisibleToCustomer: true,
+      deliveryStatus: "SENT",
+      sentAt,
+      deliveredAt: sentAt,
+      externalMessageId,
+    });
+
+    if (input.closeCase) {
+      await store.updateCase(input.caseId, {
+        status: "closed",
+        closedAt: sentAt,
+        closedBy: input.closedBy ?? "Tech Support Console",
+        lineSentAt: sentAt,
+        lineDeliveredAt: sentAt,
+        techRepliedAt: sentAt,
+      });
+
+      await store.createMessage({
+        caseId: input.caseId,
+        direction: "INTERNAL",
+        channel: "system",
+        originalText: "ปิดเคสโดยทีม Tech Support",
+        senderType: "SYSTEM",
+        contentType: "SYSTEM_EVENT",
+        messageType: "SYSTEM_EVENT",
+        isVisibleToCustomer: false,
+        deliveryStatus: "PROCESSED",
+      });
+
+      if (detail.customer.activeCaseId === input.caseId) {
+        await store.setActiveCase(detail.customer.id);
+      }
+      if (detail.customer.pendingCaseSelection?.pendingCaseId === input.caseId) {
+        await store.setPendingCaseSelection(detail.customer.id);
+        await store.setConversationState(detail.customer.id, "IDLE");
+      }
+    } else {
+      // A normal reply must keep the current workflow state and active case intact.
+      await store.updateCase(input.caseId, {
+        lineSentAt: sentAt,
+        lineDeliveredAt: sentAt,
+        techRepliedAt: sentAt,
+      });
+    }
+
+    return store.getCaseDetail(input.caseId);
+  },
+
+  async reopenCaseFromConsole(caseId: string, reopenedBy = "Tech Support Console") {
+    const detail = await store.getCaseDetail(caseId);
+    if (!detail) throw new Error("Case not found");
+    if (detail.status !== "closed") return detail;
+
+    const reopenedAt = new Date().toISOString();
+    await store.updateCase(caseId, { status: "reopened", closedAt: undefined, closedBy: undefined });
+    await store.setActiveCase(detail.customer.id, caseId);
+    await store.createMessage({
+      caseId,
+      direction: "INTERNAL",
+      channel: "system",
+      originalText: `เปิดเคสอีกครั้งโดย ${reopenedBy}`,
+      senderType: "SYSTEM",
+      contentType: "SYSTEM_EVENT",
+      messageType: "CASE_REOPENED",
+      isVisibleToCustomer: false,
+      deliveryStatus: "PROCESSED",
+      processedAt: reopenedAt,
+    });
     return store.getCaseDetail(caseId);
   },
 

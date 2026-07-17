@@ -37,7 +37,7 @@ export type Customer = {
 };
 
 export type PendingCaseSelection = {
-  mode: "choose" | "confirm" | "case_split_confirmation" | "case_history_match";
+  mode: "choose" | "confirm" | "case_split_confirmation" | "case_history_match" | "request_more_info";
   candidateCaseIds: string[];
   selectedCaseId?: string;
   pendingText?: string;
@@ -50,6 +50,12 @@ export type PendingCaseSelection = {
   matchReason?: string;
   matchLogId?: string;
   expiresAt?: string;
+  pendingAction?: "REQUEST_MORE_INFO";
+  pendingCaseId?: string;
+  pendingQuestionType?: "AI_MISSING_INFORMATION" | "TECH_REQUEST";
+  pendingRequestedFields?: string[];
+  pendingCollectedFields?: Record<string, string>;
+  pendingCreatedAt?: string;
   createdAt: string;
 };
 
@@ -90,6 +96,8 @@ export type SupportCase = {
   techRepliedAt?: string;
   lineSentAt?: string;
   lineDeliveredAt?: string;
+  closedAt?: string;
+  closedBy?: string;
   teamsDeliveryStatus?: "not_sent" | "accepted" | "failed";
   teamsDeliveryAt?: string;
   teamsDeliveryError?: string;

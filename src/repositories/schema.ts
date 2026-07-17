@@ -26,6 +26,8 @@ create table if not exists support_cases (
   tech_replied_at timestamptz,
   line_sent_at timestamptz,
   line_delivered_at timestamptz,
+  closed_at timestamptz,
+  closed_by text,
   status text not null,
   category text,
   priority text,
@@ -54,6 +56,8 @@ alter table support_cases add column if not exists teams_sent_at timestamptz;
 alter table support_cases add column if not exists tech_replied_at timestamptz;
 alter table support_cases add column if not exists line_sent_at timestamptz;
 alter table support_cases add column if not exists line_delivered_at timestamptz;
+alter table support_cases add column if not exists closed_at timestamptz;
+alter table support_cases add column if not exists closed_by text;
 update support_cases set category = case upper(category)
   when 'UNCATEGORIZED' then 'ยังไม่ระบุหมวดหมู่'
   when 'LOGIN_ISSUE' then 'เข้าสู่ระบบไม่ได้'

@@ -1,4 +1,13 @@
-import type { CaseDetail } from "../domain/types";
+import type { CaseDetail, Customer, PendingCaseSelection } from "../domain/types";
+import {
+  PENDING_INFORMATION_FIELDS,
+  buildMissingInformationQuestion,
+  extractPendingInformationFallback,
+  formatPendingInformation,
+  getMissingPendingInformationFields,
+  type PendingInformationField,
+  type PendingInformationValues,
+} from "../lib/pending-information";
 import { store } from "../repositories/store";
 import { aiCenterClient } from "./ai-center-client";
 import { caseService } from "./case-service";
@@ -33,6 +42,123 @@ export type LineTextMessageResult =
       processed: false;
       duplicate: true;
     };
+
+function getPendingInformationFields(selection: PendingCaseSelection): PendingInformationField[] {
+  const requested = selection.pendingRequestedFields?.filter((field): field is PendingInformationField =>
+    PENDING_INFORMATION_FIELDS.includes(field as PendingInformationField),
+  ) ?? [];
+  return requested.length > 0 ? requested : ["additionalDetails"];
+}
+
+function getStoredPendingInformation(selection: PendingCaseSelection): PendingInformationValues {
+  const stored = selection.pendingCollectedFields ?? {};
+  return Object.fromEntries(
+    Object.entries(stored).filter(([field, value]) =>
+      PENDING_INFORMATION_FIELDS.includes(field as PendingInformationField) && typeof value === "string" && value.trim(),
+    ),
+  ) as PendingInformationValues;
+}
+
+async function handlePendingInformationResponse(
+  input: LineTextMessageInput,
+  customer: Customer,
+  selection: PendingCaseSelection,
+): Promise<LineTextMessageResult | undefined> {
+  const caseId = selection.pendingCaseId ?? selection.selectedCaseId ?? selection.candidateCaseIds[0];
+  if (!caseId) {
+    await store.setPendingCaseSelection(customer.id);
+    return undefined;
+  }
+
+  const caseDetail = await caseService.getCase(caseId);
+  if (!caseDetail || caseDetail.customerId !== customer.id) {
+    await store.setPendingCaseSelection(customer.id);
+    return undefined;
+  }
+
+  const requestedFields = getPendingInformationFields(selection);
+  const existingValues = getStoredPendingInformation(selection);
+  const [aiExtraction, fallbackValues] = await Promise.all([
+    aiCenterClient.extractPendingInformation({
+      text: input.text,
+      requestedFields,
+      existingValues,
+      caseTitle: caseService.formatCaseTitle(caseDetail),
+    }),
+    Promise.resolve(extractPendingInformationFallback({ text: input.text, requestedFields })),
+  ]);
+  const collectedValues = { ...existingValues, ...aiExtraction.values, ...fallbackValues };
+  const missingFields = getMissingPendingInformationFields(requestedFields, collectedValues);
+  const relatedResult = await caseService.appendLineMessageToCase({
+    caseId,
+    text: input.text,
+    externalMessageId: input.messageId,
+    webhookEventId: input.webhookEventId,
+    receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
+  });
+  const collectedText = formatPendingInformation(collectedValues);
+
+  if (collectedText) {
+    await store.createMessage({
+      caseId,
+      direction: "INTERNAL",
+      channel: "system",
+      originalText: `ข้อมูลเพิ่มเติมที่สกัดได้: ${collectedText}`,
+      senderType: "SYSTEM",
+      messageType: "SYSTEM_EVENT",
+      isVisibleToCustomer: false,
+      deliveryStatus: "PROCESSED",
+    });
+  }
+
+  if (missingFields.length > 0) {
+    const question = buildMissingInformationQuestion(missingFields);
+    const reply = `ขอข้อมูลเพิ่มเติมสำหรับเคส ${caseDetail.caseNumber}\n\n${question}`;
+    const delivery = await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
+    await store.createMessage({
+      caseId,
+      direction: "outbound_customer",
+      channel: "line",
+      originalText: reply,
+      senderType: "BOT",
+      messageType: "REQUEST_MORE_INFO",
+      isVisibleToCustomer: true,
+      deliveryStatus: delivery.delivered ? "delivered" : "pending",
+    });
+    await store.updateCase(caseId, { status: "awaiting_customer_info" });
+    await store.setPendingCaseSelection(customer.id, {
+      ...selection,
+      mode: "request_more_info",
+      pendingAction: "REQUEST_MORE_INFO",
+      pendingCaseId: caseId,
+      pendingRequestedFields: requestedFields,
+      pendingCollectedFields: collectedValues,
+      pendingCreatedAt: selection.pendingCreatedAt ?? new Date().toISOString(),
+      createdAt: selection.createdAt ?? new Date().toISOString(),
+    });
+    await store.setActiveCase(customer.id, caseId);
+    return { processed: true, duplicate: false, caseDetail: await caseService.getCase(caseId) };
+  }
+
+  const details = collectedText ? `${collectedText} ` : "";
+  const acknowledgement = `รับทราบค่ะ ${details}เพิ่มข้อมูลในเคส ${caseDetail.caseNumber} ให้แล้วนะคะ`;
+  const delivery = await lineClient.replyToToken({ replyToken: input.replyToken, text: acknowledgement });
+  await store.createMessage({
+    caseId,
+    direction: "outbound_customer",
+    channel: "line",
+    originalText: acknowledgement,
+    senderType: "BOT",
+    messageType: "CASE_ACKNOWLEDGEMENT",
+    isVisibleToCustomer: true,
+    deliveryStatus: delivery.delivered ? "delivered" : "pending",
+  });
+  await store.setPendingCaseSelection(customer.id);
+  await store.setConversationState(customer.id, "ACTIVE_CASE_CONVERSATION");
+  await store.setActiveCase(customer.id, caseId);
+
+  return { processed: true, duplicate: false, caseDetail: relatedResult.detail };
+}
 
 export async function receiveLineTextMessage(input: LineTextMessageInput): Promise<LineTextMessageResult> {
   const existingMessage = await store.getMessageByExternalMessageId(input.messageId);
@@ -182,6 +308,15 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
         return { processed: true, duplicate: false, caseDetail: undefined };
       }
     }
+  }
+
+  const pendingInformation = customer.pendingCaseSelection?.mode === "request_more_info"
+    && customer.pendingCaseSelection.pendingAction === "REQUEST_MORE_INFO"
+    ? customer.pendingCaseSelection
+    : undefined;
+  if (pendingInformation) {
+    const pendingResult = await handlePendingInformationResponse(input, customer, pendingInformation);
+    if (pendingResult) return pendingResult;
   }
 
   const pendingSplit = customer.pendingCaseSelection?.mode === "case_split_confirmation"
@@ -508,6 +643,14 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     confidenceScore: analysis.confidence,
   });
   await store.setActiveCase(customer.id, supportCase.id);
+  if (targetedInfoQuestion) {
+    await caseService.setPendingInformationRequest({
+      customerId: customer.id,
+      caseId: supportCase.id,
+      questionType: "AI_MISSING_INFORMATION",
+      requestedFields: analysis.missingInformation,
+    });
+  }
 
   if (pendingNewCaseText) {
     await store.createMessage({
@@ -545,7 +688,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     channel: "line",
     originalText: acknowledgement,
     senderType: "BOT",
-    messageType: "CASE_ACKNOWLEDGEMENT",
+    messageType: targetedInfoQuestion ? "REQUEST_MORE_INFO" : "CASE_ACKNOWLEDGEMENT",
     deliveryStatus: acknowledgementDelivery.delivered ? "delivered" : "pending",
   });
   await store.updateCase(supportCase.id, {

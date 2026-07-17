@@ -1,5 +1,10 @@
 import { env } from "../config/env";
 import { normalizeCategory } from "../lib/category";
+import {
+  type PendingInformationField,
+  type PendingInformationValues,
+  sanitizePendingInformationValues,
+} from "../lib/pending-information";
 
 type ChatRole = "system" | "user" | "assistant";
 
@@ -62,6 +67,10 @@ export type TechMessageReview = {
 
 export type InfoRequestRewrite = {
   rewrittenMessage: string;
+};
+
+export type PendingInformationExtraction = {
+  values: PendingInformationValues;
 };
 
 export type CaseRelationAnalysis = {
@@ -232,6 +241,44 @@ function parseJsonObject<T>(content: string, fallback: T): T {
 }
 
 export const aiCenterClient = {
+  async extractPendingInformation(input: {
+    text: string;
+    requestedFields: PendingInformationField[];
+    existingValues: PendingInformationValues;
+    caseTitle: string;
+  }): Promise<PendingInformationExtraction> {
+    const fallback = { values: {} };
+    try {
+      const content = await chatWithAiCenter([
+        {
+          role: "system",
+          content: "คุณเป็นผู้ช่วยสกัดข้อมูลเพิ่มเติมสำหรับเคส Tech Support ตอบกลับเป็น JSON เท่านั้น",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "extract_requested_customer_information",
+            rules: [
+              "สกัดเฉพาะข้อมูลที่มีในข้อความล่าสุด ห้ามเดา",
+              "ใช้เฉพาะ key ที่ระบุใน requestedFields",
+              "หากไม่พบข้อมูลของ field ใด ให้ไม่ต้องส่ง key นั้นกลับมา",
+            ],
+            required_schema: { values: "object keyed by requestedFields" },
+            ...input,
+          }),
+        },
+      ]);
+      if (!content) return fallback;
+      const parsed = parseJsonObject<PendingInformationExtraction>(content, fallback);
+      return {
+        values: sanitizePendingInformationValues(parsed.values as Record<string, unknown>, input.requestedFields),
+      };
+    } catch (error) {
+      console.error({ event: "ai_center_pending_information_extract_failed", message: String(error) });
+      return fallback;
+    }
+  },
+
   async generateLineContinuationReply(input: { originalCustomerText: string; recentConversation: string[]; newCustomerText: string }) {
     const fallback = "ได้ข้อมูลแล้วค่ะ เดี๋ยวส่งให้ทีมงานตรวจสอบต่อนะคะ";
 
@@ -562,6 +609,49 @@ export const aiCenterClient = {
     } catch (error) {
       console.error({ event: "ai_center_info_request_rewrite_failed", message: String(error) });
       throw new Error("AI ไม่สามารถเรียบเรียงข้อความได้ในขณะนี้ คุณยังสามารถแก้ไขและส่งข้อความเดิมได้");
+    }
+  },
+
+  async rewriteCustomerReply(input: {
+    caseNumber: string;
+    caseTitle: string;
+    originalCustomerMessage: string;
+    conversationHistory: string[];
+    rawSupportMessage: string;
+    mode: "NORMAL_REPLY" | "CLOSING_REPLY";
+  }): Promise<{ rewrittenMessage: string }> {
+    const fallback = input.mode === "CLOSING_REPLY"
+      ? `${input.rawSupportMessage.trim()}\n\nระบบกำลังปิดเคสนี้ให้ก่อนนะคะ หากยังพบปัญหาสามารถติดต่อกลับมาได้ค่ะ`
+      : input.rawSupportMessage.trim();
+
+    try {
+      const content = await chatWithAiCenter([
+        {
+          role: "system",
+          content: "Rewrite a Thai customer support reply. Return JSON only.",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "rewrite_customer_reply",
+            required_schema: { rewrittenMessage: "string" },
+            rules: [
+              "Use polite, natural Thai and preserve the support team's factual meaning.",
+              "Do not invent investigation results or promise that the issue is fixed.",
+              "NORMAL_REPLY: concise reply for the customer, 1-3 sentences.",
+              "CLOSING_REPLY: include the result summary, state that this case is being closed, and say the customer can contact support again if the problem continues.",
+            ],
+            ...input,
+          }),
+        },
+      ]);
+      if (!content) return { rewrittenMessage: fallback };
+      const parsed = parseJsonObject<{ rewrittenMessage?: string }>(content, {});
+      const rewrittenMessage = parsed.rewrittenMessage?.trim();
+      return { rewrittenMessage: rewrittenMessage && rewrittenMessage.length <= 1000 ? rewrittenMessage : fallback };
+    } catch (error) {
+      console.error({ event: "ai_center_customer_reply_rewrite_failed", message: String(error) });
+      return { rewrittenMessage: fallback };
     }
   },
 

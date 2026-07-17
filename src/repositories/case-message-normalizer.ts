@@ -18,8 +18,10 @@ function inferredMessageType(input: Omit<Message, "id" | "createdAt">): NonNulla
 function normalizeDeliveryStatus(direction: "INBOUND" | "OUTBOUND" | "INTERNAL", value?: Message["deliveryStatus"]): NonNullable<Message["deliveryStatus"]> {
   if (direction === "INBOUND") return "RECEIVED";
   if (direction === "INTERNAL") return "PROCESSED";
-  if (value === "failed") return "FAILED";
-  if (value === "pending") return "PENDING";
+  if (value === "FAILED" || value === "failed") return "FAILED";
+  if (value === "DELIVERED" || value === "delivered") return "DELIVERED";
+  if (value === "SENT" || value === "sent") return "SENT";
+  if (value === "PENDING" || value === "pending") return "PENDING";
   return "API_ACCEPTED";
 }
 
