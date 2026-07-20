@@ -24,6 +24,16 @@ function parseDateBoundary(value: string | undefined, endOfDay = false) {
   return Number.isNaN(date.getTime()) ? undefined : date.getTime();
 }
 
+function matchesLogStatus(actualStatus: string | undefined, requestedStatus: string | undefined) {
+  if (!requestedStatus) return true;
+  const actual = (actualStatus ?? "UNKNOWN").toUpperCase();
+  const requested = requestedStatus.toUpperCase();
+  if (["SENT", "DELIVERED", "API_ACCEPTED"].includes(requested)) {
+    return ["SENT", "DELIVERED", "API_ACCEPTED"].includes(actual);
+  }
+  return actual === requested;
+}
+
 let settings: AutomationSettings = {
   enabled: true,
   caseUnderstandingThreshold: 98,
@@ -105,7 +115,7 @@ automationRoutes.get("/logs", async (c) => {
       const searchable = `${item.caseNumber} ${item.customer} ${item.answerText} ${item.solutionText ?? ""}`.toLocaleLowerCase();
       return (!search || searchable.includes(search))
         && (!eventType || item.eventType === eventType)
-        && (!status || item.status === status)
+        && matchesLogStatus(item.status, status)
         && (dateFrom === undefined || time >= dateFrom)
         && (dateTo === undefined || time <= dateTo);
     })
