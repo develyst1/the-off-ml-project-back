@@ -37,7 +37,7 @@ export type Customer = {
 };
 
 export type PendingCaseSelection = {
-  mode: "choose" | "confirm" | "case_split_confirmation" | "case_history_match" | "request_more_info";
+  mode: "choose" | "confirm" | "case_split_confirmation" | "case_history_match" | "request_more_info" | "context_only";
   candidateCaseIds: string[];
   selectedCaseId?: string;
   pendingText?: string;
@@ -56,6 +56,8 @@ export type PendingCaseSelection = {
   pendingRequestedFields?: string[];
   pendingCollectedFields?: Record<string, string>;
   pendingCreatedAt?: string;
+  contextTopic?: string;
+  contextMessages?: Array<{ sender: string; message: string; createdAt: string }>;
   createdAt: string;
 };
 

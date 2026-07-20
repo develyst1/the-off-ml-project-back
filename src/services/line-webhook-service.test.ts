@@ -3,6 +3,7 @@ import { InMemoryStore } from "../repositories/in-memory-store";
 
 const store = new InMemoryStore();
 const lineReplies: string[] = [];
+let classifierShouldFail = false;
 
 mock.module("../repositories/store", () => ({ store }));
 mock.module("./line-client", () => ({
@@ -31,14 +32,17 @@ mock.module("./ai-center-client", () => ({
       sentiment: "neutral",
     }),
     analyzeCaseRelation: async () => ({ related: true, confidence: 100, reason: "pending question" }),
+    matchCustomerCaseHistory: async () => ({ intent: "NEW_ISSUE", matchedCaseId: null, isSameProblem: false, confidence: 0, reason: "no matching history" }),
     extractPendingInformation: async () => ({ values: {} }),
     classifyLineMessageIntent: async (input: { latestMessage: string; activeCases?: Array<{ id: string }> }) => {
+      if (classifierShouldFail) throw new Error("classifier unavailable");
+      if (input.latestMessage === "ต้องการสอบถามเกี่ยวกับเครื่องเซิร์ฟเวอร์") return { intent: "TECH_GENERAL_QUESTION", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "technical context" };
       if (input.latestMessage === "กินข้าวหรือยัง") return { intent: "SMALL_TALK", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "small talk" };
       if (input.latestMessage === "สวัสดี") return { intent: "GREETING", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "greeting" };
       if (input.latestMessage === "ขอบคุณครับ") return { intent: "THANK_YOU", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "thanks" };
       if (input.latestMessage === "วันนี้อินเทอร์เน็ตเร็วไหม") return { intent: "TECH_GENERAL_QUESTION", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "technical general" };
       if (input.latestMessage === "AI ล่ม") throw new Error("classifier unavailable");
-      if (["ไฟยังติดครับ", "ไฟยังติด", "คณิตศาสตร์", "บ่ายสอง"].includes(input.latestMessage) && (input.activeCases?.length ?? 0) > 0) {
+      if (["ช้า", "ยังช้าอยู่", "ไฟยังติดครับ", "ไฟยังติด", "คณิตศาสตร์", "บ่ายสอง"].includes(input.latestMessage) && (input.activeCases?.length ?? 0) > 0) {
         return { intent: "FOLLOW_UP_EXISTING_CASE", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "follow up" };
       }
       return { intent: "NEW_SUPPORT_ISSUE", shouldCreateCase: true, targetCaseNumber: null, confidence: 1, reason: "test" };
@@ -231,5 +235,75 @@ describe("LINE intent classification guards", () => {
 
     expect(await caseService.getCustomerCases(customer.id)).toHaveLength(0);
     expect(lineReplies.at(-1)).toContain("ขอสอบถามเพิ่มเติม");
+  });
+
+  test("keeps a short symptom after a pre-case topic and creates one contextual case", async () => {
+    sequence += 1;
+    const lineUserId = `U-short-context-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Short Context Customer ${sequence}` });
+
+    await sendReply({ lineUserId, messageId: `short-topic-${sequence}`, text: "ต้องการสอบถามเกี่ยวกับเครื่องเซิร์ฟเวอร์" });
+    expect(await caseService.getCustomerCases(customer.id)).toHaveLength(0);
+
+    await sendReply({ lineUserId, messageId: `short-symptom-${sequence}`, text: "ช้า" });
+
+    const cases = await caseService.getCustomerCases(customer.id);
+    const detail = cases[0] ? await caseService.getCase(cases[0].id) : undefined;
+    expect(cases).toHaveLength(1);
+    expect(detail?.messages.some((message) => message.originalText === "ช้า")).toBe(true);
+    expect(lineReplies.at(-1)).not.toContain("ยังไม่แน่ใจ");
+  });
+
+  test("uses safe clarification for a short symptom without any topic context", async () => {
+    sequence += 1;
+    const lineUserId = `U-short-no-context-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `No Context Customer ${sequence}` });
+
+    await sendReply({ lineUserId, messageId: `short-no-context-${sequence}`, text: "ช้า" });
+
+    expect(await caseService.getCustomerCases(customer.id)).toHaveLength(0);
+    expect(lineReplies.at(-1)).toContain("อะไรทำงานช้า");
+  });
+
+  test("clears a pre-case topic after small talk", async () => {
+    sequence += 1;
+    const lineUserId = `U-short-small-talk-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Small Talk Customer ${sequence}` });
+
+    await sendReply({ lineUserId, messageId: `small-talk-topic-${sequence}`, text: "ต้องการสอบถามเกี่ยวกับเครื่องเซิร์ฟเวอร์" });
+    await sendReply({ lineUserId, messageId: `small-talk-${sequence}`, text: "กินข้าวหรือยัง" });
+    await sendReply({ lineUserId, messageId: `small-talk-short-${sequence}`, text: "ช้า" });
+
+    expect(await caseService.getCustomerCases(customer.id)).toHaveLength(0);
+    expect(lineReplies.at(-1)).toContain("อะไรทำงานช้า");
+  });
+
+  test("uses stored topic when the intent classifier fails", async () => {
+    sequence += 1;
+    const lineUserId = `U-short-classifier-error-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Short Classifier Error Customer ${sequence}` });
+
+    await sendReply({ lineUserId, messageId: `short-error-topic-${sequence}`, text: "ต้องการสอบถามเกี่ยวกับเครื่องเซิร์ฟเวอร์" });
+    classifierShouldFail = true;
+    try {
+      await sendReply({ lineUserId, messageId: `short-error-symptom-${sequence}`, text: "ช้า" });
+    } finally {
+      classifierShouldFail = false;
+    }
+
+    expect(await caseService.getCustomerCases(customer.id)).toHaveLength(1);
+  });
+
+  test("appends an active-case short symptom without creating another case", async () => {
+    sequence += 1;
+    const lineUserId = `U-active-short-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Active Short Customer ${sequence}` });
+    const supportCase = await store.createCase({ customerId: customer.id, status: "awaiting_tech", title: "เครื่องเซิร์ฟเวอร์ช้า" });
+
+    await sendReply({ lineUserId, messageId: `active-short-${sequence}`, text: "ยังช้าอยู่" });
+
+    expect(await caseService.getCustomerCases(customer.id)).toHaveLength(1);
+    const detail = await caseService.getCase(supportCase.id);
+    expect(detail?.messages.some((message) => message.originalText === "ยังช้าอยู่")).toBe(true);
   });
 });

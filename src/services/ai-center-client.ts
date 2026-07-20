@@ -107,6 +107,7 @@ export type LineMessageIntentClassification = {
   shouldCreateCase: boolean;
   targetCaseNumber: string | null;
   matchedActiveCaseId?: string | null;
+  resolvedMessage?: string;
   confidence: number;
   reason: string;
 };
@@ -409,6 +410,8 @@ export const aiCenterClient = {
 
   async classifyLineMessageIntent(input: {
     latestMessage: string;
+    lastKnownTopic?: string;
+    resolvedMessage?: string;
     recentConversation?: Array<{ sender: string; message: string; createdAt?: string }>;
     lastBotMessage?: string;
     lastBotQuestion?: string;
@@ -441,6 +444,8 @@ export const aiCenterClient = {
               intent: "one of allowedIntents",
               shouldCreateCase: "boolean",
               targetCaseNumber: "string or null",
+              matchedActiveCaseId: "active case id or null",
+              resolvedMessage: "context-resolved message or null",
               confidence: "number from 0 to 1",
               reason: "short Thai explanation",
             },
@@ -455,6 +460,8 @@ export const aiCenterClient = {
               "confidence ต่ำกว่า 0.70 ให้ shouldCreateCase=false",
               "ถ้ามีเลขเคส ให้ใส่ targetCaseNumber เฉพาะเลขที่ปรากฏในข้อความ",
               "ถ้ามี active case เดียวและข้อความสั้นเป็นคำตอบต่อคำถามล่าสุด ให้ใช้ FOLLOW_UP_EXISTING_CASE",
+              "ต้องพิจารณาข้อความล่าสุดร่วมกับ recentConversation, lastBotQuestion, lastKnownTopic และ resolvedMessage เสมอ",
+              "ข้อความสั้น เช่น ช้า, ค้าง, หลุด, ยังไม่ได้, ไฟยังติด หรือเปิดไม่ขึ้น ห้ามเป็น UNKNOWN หากมีหัวข้อเดิมที่เชื่อถือได้",
               "ห้ามเปิดเผยข้อมูลจากเคสอื่น และอย่าเดา target case เมื่อไม่ชัดเจน",
             ],
             ...input,
@@ -483,6 +490,9 @@ export const aiCenterClient = {
           ? requestedCaseNumber
           : null,
         matchedActiveCaseId: requestedActiveCaseId && knownActiveCaseIds.has(requestedActiveCaseId) ? requestedActiveCaseId : null,
+        resolvedMessage: typeof parsed.resolvedMessage === "string" && parsed.resolvedMessage.trim()
+          ? parsed.resolvedMessage.trim()
+          : input.resolvedMessage,
         confidence,
         reason: typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : "AI จำแนกข้อความแล้ว",
       };

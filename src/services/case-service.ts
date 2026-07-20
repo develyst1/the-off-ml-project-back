@@ -390,9 +390,13 @@ export const caseService = {
     return relation.related ? candidate : undefined;
   },
 
-  async appendLineMessageToCase(input: { caseId: string; text: string; externalMessageId?: string; webhookEventId?: string; receivedAt?: string }) {
+  async appendLineMessageToCase(input: { caseId: string; text: string; resolvedText?: string; externalMessageId?: string; webhookEventId?: string; receivedAt?: string }) {
     const detail = await store.getCaseDetail(input.caseId);
     if (!detail) throw new Error("Case not found");
+
+    // Preserve the raw customer message, but give AI the topic-resolved meaning
+    // when a short reply depends on the preceding conversation.
+    const contextualText = input.resolvedText?.trim() || input.text;
 
     const message = await store.createMessage({
       caseId: input.caseId,
@@ -406,10 +410,10 @@ export const caseService = {
       webhookEventId: input.webhookEventId,
       receivedAt: input.receivedAt,
     });
-    const shouldAnalyze = shouldRefreshProblemSummary(input.text);
+    const shouldAnalyze = shouldRefreshProblemSummary(contextualText);
     const analysis = shouldAnalyze
       ? await aiCenterClient.analyzeCustomerMessage({
-          text: input.text,
+          text: contextualText,
           customerDisplayName: detail.customer.displayName,
           conversationContext: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
         })
@@ -425,9 +429,9 @@ export const caseService = {
       caseNumber: detail.caseNumber,
       caseTitle: this.formatCaseTitle(detail),
       originalCustomerText: detail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? input.text,
-      latestCustomerMessage: input.text,
+      latestCustomerMessage: contextualText,
       recentConversation: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
-      newCustomerText: input.text,
+      newCustomerText: contextualText,
       lastBotQuestion,
       currentSummary: detail.problemSummary ?? detail.title ?? "",
       knownFacts: detail.messages

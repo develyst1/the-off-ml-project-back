@@ -108,6 +108,76 @@ function hasActualProblemDescription(text: string) {
   return !detectCaseQueryIntent(normalized);
 }
 
+const SHORT_FOLLOW_UP_PATTERNS = [
+  /^ช้า$/iu,
+  /^ค้าง$/iu,
+  /^หลุด$/iu,
+  /^ยังไม่ได้$/iu,
+  /^ยังเป็นอยู่$/iu,
+  /^เปิดไม่ขึ้น$/iu,
+  /^เข้าไม่ได้$/iu,
+  /^ไฟยังติด(?:ครับ|ค่ะ)?$/iu,
+  /^ไฟไม่ติด(?:ครับ|ค่ะ)?$/iu,
+  /^ยังช้าอยู่$/iu,
+  /^ยังค้างอยู่$/iu,
+  /^ยังหลุดอยู่$/iu,
+];
+
+function isShortFollowUp(message: string) {
+  const normalized = message.trim().replace(/\s+/g, " ");
+  return normalized.length <= 20 && SHORT_FOLLOW_UP_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function extractLastKnownTopic(text: string | undefined) {
+  if (!text) return undefined;
+  const normalized = text.trim().replace(/[!?。、]+$/gu, "");
+  const match = normalized.match(/(?:สอบถามเกี่ยวกับ|เกี่ยวกับ|เรื่อง|ปัญหา(?:เรื่อง)?|อาการ(?:คือ)?)\s*(.+)$/iu);
+  const topic = (match?.[1] ?? (/^(?:เครื่อง|ระบบ|เซิร์ฟเวอร์|อินเทอร์เน็ต|แอป|โน้ตบุ๊ก|คอมพิวเตอร์)/iu.test(normalized) ? normalized : "")).trim();
+  if (!topic || /^(?:อะไร|อย่างไร|ยังไง|ทั่วไป)$/iu.test(topic)) return undefined;
+  return topic;
+}
+
+function resolveShortFollowUp(message: string, lastKnownTopic?: string) {
+  if (!lastKnownTopic || !isShortFollowUp(message)) return undefined;
+  const normalized = message.trim().replace(/\s+/g, " ");
+  if (/^ช้า$|^ยังช้าอยู่$/iu.test(normalized)) return `${lastKnownTopic}ช้า`;
+  if (/^ค้าง$|^ยังค้างอยู่$/iu.test(normalized)) return `${lastKnownTopic}ค้าง`;
+  if (/^หลุด$|^ยังหลุดอยู่$/iu.test(normalized)) return `${lastKnownTopic}หลุด`;
+  if (/^ยังไม่ได้$/iu.test(normalized)) return `${lastKnownTopic}ยังใช้งานไม่ได้`;
+  if (/^ยังเป็นอยู่$/iu.test(normalized)) return `${lastKnownTopic}ยังมีอาการเดิมอยู่`;
+  if (/^เปิดไม่ขึ้น$/iu.test(normalized)) return `${lastKnownTopic}เปิดไม่ขึ้น`;
+  if (/^เข้าไม่ได้$/iu.test(normalized)) return `${lastKnownTopic}เข้าใช้งานไม่ได้`;
+  if (/^ไฟยังติด/iu.test(normalized)) return `${lastKnownTopic} และไฟแสดงสถานะยังติด`;
+  if (/^ไฟไม่ติด/iu.test(normalized)) return `${lastKnownTopic} และไฟแสดงสถานะไม่ติด`;
+  return undefined;
+}
+
+function getStoredContext(customer: Customer) {
+  return customer.pendingCaseSelection?.mode === "context_only" ? customer.pendingCaseSelection : undefined;
+}
+
+async function rememberPreCaseContext(customer: Customer, customerText: string, botText: string) {
+  const previous = getStoredContext(customer);
+  const topic = extractLastKnownTopic(customerText) ?? previous?.contextTopic;
+  if (!topic) return;
+  const contextMessages = [
+    ...(previous?.contextMessages ?? []),
+    { sender: "CUSTOMER", message: customerText, createdAt: new Date().toISOString() },
+    { sender: "LINE_BOT", message: botText, createdAt: new Date().toISOString() },
+  ].slice(-6);
+  await store.setPendingCaseSelection(customer.id, {
+    mode: "context_only",
+    candidateCaseIds: [],
+    contextTopic: topic,
+    contextMessages,
+    createdAt: previous?.createdAt ?? new Date().toISOString(),
+  });
+}
+
+async function clearPreCaseContext(customer: Customer) {
+  if (getStoredContext(customer)) await store.setPendingCaseSelection(customer.id);
+}
+
 function formatCustomerCaseDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "ไม่ทราบวันที่";
@@ -205,6 +275,11 @@ async function handleNonCaseIntent(input: {
       ? "ฉันดูแลเรื่องปัญหาการใช้งานระบบ อุปกรณ์ และบริการไอทีเป็นหลักค่ะ หากพบปัญหา แจ้งอาการมาได้เลยนะคะ"
       : "ขอสอบถามเพิ่มเติมค่ะ ตอนนี้ต้องการแจ้งปัญหาใหม่ หรือต้องการติดตามเคสเดิมคะ";
     await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
+    if (input.intent.intent === "TECH_GENERAL_QUESTION") {
+      await rememberPreCaseContext(input.customer, input.text, reply);
+    } else if (input.intent.intent === "SMALL_TALK" || input.intent.intent === "GREETING" || input.intent.intent === "THANK_YOU") {
+      await clearPreCaseContext(input.customer);
+    }
     return true;
   }
 
@@ -384,6 +459,12 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     await store.setActiveCase(customer.id, activeCase.id);
   }
   const customerCases = await caseService.getCustomerCases(customer.id);
+  const storedContext = getStoredContext(customer);
+  const activeCaseTopic = activeCase
+    ? extractLastKnownTopic(activeCase.problemSummary ?? activeCase.title ?? activeCase.messages.find((message) => message.senderType === "CUSTOMER")?.originalText)
+    : undefined;
+  const lastKnownTopic = activeCaseTopic ?? storedContext?.contextTopic;
+  const resolvedMessage = resolveShortFollowUp(input.text, lastKnownTopic);
   const activeCaseSnapshots = customerCases
     .filter((item) => ACTIVE_CASE_STATUSES.has(item.status))
     .slice(0, 10)
@@ -403,22 +484,28 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     status: item.status,
     updatedAt: item.updatedAt,
   }));
-  const recentConversation = activeCase?.messages.slice(-20).map((message) => ({
+  const recentConversation = (activeCase?.messages.map((message) => ({
     sender: message.senderType ?? message.direction,
     message: message.originalText,
     createdAt: message.createdAt,
-  })) ?? [];
-  const lastBotMessage = [...(activeCase?.messages ?? [])]
-    .reverse()
-    .find((message) => message.senderType === "BOT")?.originalText;
-  const lastBotQuestion = [...(activeCase?.messages ?? [])]
-    .reverse()
-    .find((message) => message.senderType === "BOT" && message.messageType === "REQUEST_MORE_INFO")?.originalText;
+  })) ?? storedContext?.contextMessages ?? []).slice(-20);
+  const lastBotMessage = activeCase
+    ? [...activeCase.messages].reverse().find((message) => message.senderType === "BOT")?.originalText
+    : [...(storedContext?.contextMessages ?? [])].reverse().find((message) => message.sender === "LINE_BOT")?.message;
+  const lastBotQuestion = activeCase
+    ? [...activeCase.messages]
+      .reverse()
+      .find((message) => message.senderType === "BOT" && message.messageType === "REQUEST_MORE_INFO")?.originalText
+    : [...(storedContext?.contextMessages ?? [])]
+      .reverse()
+      .find((message) => message.sender === "LINE_BOT" && message.message.includes("ไหม"))?.message;
   const detectedQueryIntent = detectCaseQueryIntent(input.text);
   let aiClassifiedIntent: LineMessageIntentClassification;
   try {
     aiClassifiedIntent = await aiCenterClient.classifyLineMessageIntent({
       latestMessage: input.text,
+      lastKnownTopic,
+      resolvedMessage,
       recentConversation,
       lastBotMessage,
       lastBotQuestion,
@@ -438,7 +525,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       reason: "INTENT_CLASSIFIER_ERROR",
     };
   }
-  const classifiedIntent: LineMessageIntentClassification = detectedQueryIntent
+  let classifiedIntent: LineMessageIntentClassification = detectedQueryIntent
     ? {
         ...aiClassifiedIntent,
         intent: detectedQueryIntent,
@@ -449,6 +536,19 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
         reason: "ข้อความตรงกับ deterministic intent guard หลังผ่าน AI classification",
       }
     : aiClassifiedIntent;
+
+  if (!detectedQueryIntent && resolvedMessage && hasActualProblemDescription(resolvedMessage)) {
+    const hasSingleActiveCase = activeCaseSnapshots.length === 1;
+    classifiedIntent = {
+      ...classifiedIntent,
+      intent: hasSingleActiveCase ? "FOLLOW_UP_EXISTING_CASE" : "NEW_SUPPORT_ISSUE",
+      shouldCreateCase: !hasSingleActiveCase,
+      matchedActiveCaseId: hasSingleActiveCase ? activeCaseSnapshots[0]?.id ?? null : null,
+      resolvedMessage,
+      confidence: Math.max(classifiedIntent.confidence, 0.85),
+      reason: `ข้อความสั้นถูกตีความต่อจากหัวข้อ ${lastKnownTopic}`,
+    };
+  }
 
   const intentIsConfident = classifiedIntent.confidence >= INTENT_CONFIDENCE_THRESHOLD;
   console.log({
@@ -667,7 +767,8 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       await lineClient.replyToToken({ replyToken: input.replyToken, text: "ได้ค่ะ รบกวนบอกอาการหรือปัญหาที่พบได้เลยนะคะ" });
       return { processed: true, duplicate: false, caseDetail: undefined };
     }
-    if (classifiedIntent.intent !== "NEW_SUPPORT_ISSUE" || !classifiedIntent.shouldCreateCase || !intentIsConfident || !hasActualProblemDescription(input.text)) {
+    const classificationText = classifiedIntent.resolvedMessage ?? resolvedMessage ?? input.text;
+    if (classifiedIntent.intent !== "NEW_SUPPORT_ISSUE" || !classifiedIntent.shouldCreateCase || !intentIsConfident || !hasActualProblemDescription(classificationText)) {
       await lineClient.replyToToken({ replyToken: input.replyToken, text: "ขอรายละเอียดอาการหรือปัญหาที่ต้องการเปิดเคสอีกนิดนะคะ" });
       return { processed: true, duplicate: false, caseDetail: undefined };
     }
@@ -750,12 +851,15 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     return { processed: true, duplicate: false, caseDetail: undefined };
   }
 
+  const classificationText = classifiedIntent.resolvedMessage ?? resolvedMessage ?? input.text;
   const canCreateNewCase = classifiedIntent.intent === "NEW_SUPPORT_ISSUE"
     && classifiedIntent.shouldCreateCase
     && intentIsConfident
-    && hasActualProblemDescription(input.text);
+    && hasActualProblemDescription(classificationText);
   if (!isNewCaseRequest && !canCreateNewCase && (classifiedIntent.intent === "UNKNOWN" || classifiedIntent.intent === "NEW_SUPPORT_ISSUE")) {
-    const reply = activeCase
+    const reply = isShortFollowUp(input.text) && !lastKnownTopic
+      ? "ขอทราบเพิ่มเติมค่ะ ตอนนี้อะไรทำงานช้า เช่น อินเทอร์เน็ต เครื่องคอมพิวเตอร์ หรือระบบที่กำลังใช้งานอยู่คะ"
+      : activeCase
       ? "ยังไม่แน่ใจว่าต้องการเพิ่มข้อมูลในเรื่องเดิมหรือแจ้งปัญหาใหม่ค่ะ รบกวนพิมพ์ว่า “เรื่องเดิม” หรือ “เปิดเคสใหม่” ให้ชัดเจนอีกครั้งนะคะ"
       : "ยังไม่แน่ใจว่าต้องการสอบถามเรื่องใดค่ะ หากพบปัญหา รบกวนแจ้งอาการหรือหมายเลขเคสเพิ่มเติมได้เลยนะคะ";
     await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
@@ -832,6 +936,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
   }
   const confirmsNewCase = isNewCaseRequest;
   const intakeText = pendingNewCaseText ?? input.text;
+  const analysisIntakeText = classifiedIntent.resolvedMessage ?? resolvedMessage ?? intakeText;
   const confirmsExistingCase = activeCase?.status === "awaiting_confirmation"
     && /(เคสเดิม|เรื่องเดิม|ข้อมูลเพิ่มเติม|ต่อเรื่องเดิม|same case|same issue)/i.test(input.text);
 
@@ -855,6 +960,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     const relatedResult = await caseService.appendLineMessageToCase({
       caseId: relatedCase.id,
       text: intakeText,
+      resolvedText: classifiedIntent.resolvedMessage ?? resolvedMessage,
       externalMessageId: input.messageId,
       webhookEventId: input.webhookEventId,
       receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
@@ -926,7 +1032,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
   });
 
   const analysis = await aiCenterClient.analyzeCustomerMessage({
-    text: intakeText,
+    text: analysisIntakeText,
     customerDisplayName: customer.displayName,
   });
 
@@ -943,7 +1049,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     ? await aiCenterClient.generateTargetedInfoRequest({
         caseTitle: analysis.caseTitle,
         category: analysis.category,
-        originalCustomerText: intakeText,
+        originalCustomerText: analysisIntakeText,
         recentConversation: [],
         requestedText: analysis.missingInformation.slice(0, 2).join(", "),
       })
@@ -1004,10 +1110,10 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     replyType: "INITIAL_CASE_ACK",
     caseNumber: supportCase.caseNumber,
     caseTitle: analysis.caseTitle,
-    originalCustomerText: intakeText,
-    latestCustomerMessage: intakeText,
-    recentConversation: [`CUSTOMER: ${intakeText}`],
-    newCustomerText: intakeText,
+    originalCustomerText: analysisIntakeText,
+    latestCustomerMessage: analysisIntakeText,
+    recentConversation: [`CUSTOMER: ${analysisIntakeText}`],
+    newCustomerText: analysisIntakeText,
     currentSummary: analysis.summary,
     knownFacts: [],
     missingFacts: analysis.missingInformation,
