@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { readJsonObject, requiredString } from "../lib/request";
+import { store } from "../repositories/store";
 import { caseService } from "../services/case-service";
 
 export const confidenceRoutes = new Hono();
@@ -7,6 +8,7 @@ export const confidenceRoutes = new Hono();
 confidenceRoutes.get("/suggestions", async (c) => {
   const cases = await caseService.listCases();
   const suggestions = cases
+    .filter((item) => (item.confidenceReviewStatus ?? "PENDING") === "PENDING")
     .filter((item) => item.status === "awaiting_confirmation" || (item.confidenceScore ?? 0) >= 90)
     .map((item) => {
       const customerMessage = item.messages.find((message) => message.senderType === "CUSTOMER");
@@ -39,6 +41,11 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
   }
 
   const status = result === "approved" ? "resolved" : "awaiting_tech";
-  const updated = await caseService.updateStatus(caseId, status);
-  return c.json({ data: { id: c.req.param("id"), caseId, result, case: updated } });
+  const reviewed = await store.updateCase(caseId, {
+    status,
+    confidenceReviewStatus: result === "approved" ? "APPROVED" : "REJECTED",
+    confidenceReviewedAt: new Date().toISOString(),
+    confidenceReviewedBy: "Tech Support Console",
+  });
+  return c.json({ data: { id: c.req.param("id"), caseId, result, case: reviewed } });
 });

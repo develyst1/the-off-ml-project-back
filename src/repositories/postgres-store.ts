@@ -53,6 +53,9 @@ type DbCase = {
   problem_summary_version: number | null;
   problem_summary_status: SupportCase["problemSummaryStatus"];
   assignee_name: string | null;
+  confidence_review_status: SupportCase["confidenceReviewStatus"];
+  confidence_reviewed_at: Date | null;
+  confidence_reviewed_by: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -181,6 +184,9 @@ function mapCase(row: DbCase): SupportCase {
     problemSummaryVersion: row.problem_summary_version ?? undefined,
     problemSummaryStatus: row.problem_summary_status ?? "PENDING",
     assigneeName: row.assignee_name ?? undefined,
+    confidenceReviewStatus: row.confidence_review_status ?? "PENDING",
+    confidenceReviewedAt: row.confidence_reviewed_at ? dateIso(row.confidence_reviewed_at) : undefined,
+    confidenceReviewedBy: row.confidence_reviewed_by ?? undefined,
     createdAt: dateIso(row.created_at),
     updatedAt: dateIso(row.updated_at),
   };
@@ -405,7 +411,10 @@ export class PostgresStore implements CaseStore {
          problem_summary_version = $27,
          problem_summary_status = $28,
          assignee_name = $29,
-         updated_at = $30
+         confidence_review_status = $30,
+         confidence_reviewed_at = $31,
+         confidence_reviewed_by = $32,
+         updated_at = $33
        where id = $1
        returning *`,
       [
@@ -438,6 +447,9 @@ export class PostgresStore implements CaseStore {
         patch.problemSummaryVersion ?? current.problem_summary_version ?? 1,
         patch.problemSummaryStatus ?? current.problem_summary_status ?? "PENDING",
         "assigneeName" in patch ? patch.assigneeName ?? null : current.assignee_name,
+        patch.confidenceReviewStatus ?? current.confidence_review_status ?? "PENDING",
+        "confidenceReviewedAt" in patch ? patch.confidenceReviewedAt ?? null : current.confidence_reviewed_at,
+        "confidenceReviewedBy" in patch ? patch.confidenceReviewedBy ?? null : current.confidence_reviewed_by,
         nowIso(),
       ],
     );

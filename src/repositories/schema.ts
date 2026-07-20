@@ -44,6 +44,9 @@ create table if not exists support_cases (
   problem_summary_version integer not null default 1,
   problem_summary_status text not null default 'PENDING',
   assignee_name text,
+  confidence_review_status text not null default 'PENDING',
+  confidence_reviewed_at timestamptz,
+  confidence_reviewed_by text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -110,6 +113,9 @@ alter table support_cases add column if not exists problem_summary_source_messag
 alter table support_cases add column if not exists problem_summary_version integer not null default 1;
 alter table support_cases add column if not exists problem_summary_status text not null default 'PENDING';
 alter table support_cases add column if not exists assignee_name text;
+alter table support_cases add column if not exists confidence_review_status text not null default 'PENDING';
+alter table support_cases add column if not exists confidence_reviewed_at timestamptz;
+alter table support_cases add column if not exists confidence_reviewed_by text;
 
 create table if not exists messages (
   id text primary key,

@@ -42,10 +42,10 @@ const { app } = await import("../app");
 
 let sequence = 0;
 
-async function createCase() {
+async function createCase(confidenceScore?: number) {
   sequence += 1;
   const customer = await store.upsertCustomer({ lineUserId: `U-teams-${sequence}`, displayName: `Teams customer ${sequence}` });
-  return store.createCase({ customerId: customer.id, status: "assigned", title: "Teams action test" });
+  return store.createCase({ customerId: customer.id, status: "assigned", title: "Teams action test", confidenceScore });
 }
 
 function postAction(body: Record<string, unknown>) {
@@ -58,6 +58,14 @@ function postAction(body: Record<string, unknown>) {
 
 function postCompose(caseId: string, body: Record<string, unknown>) {
   return app.fetch(new Request(`http://localhost/cases/${caseId}/ai-compose`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }));
+}
+
+function postConfidenceReview(body: Record<string, unknown>, suggestionId: string) {
+  return app.fetch(new Request(`http://localhost/confidence/suggestions/${suggestionId}/review`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -183,5 +191,25 @@ describe("POST /webhooks/teams/actions", () => {
     expect(response.status).toBe(502);
     expect(detail?.status).toBe("assigned");
     expect(detail?.messages.some((message) => message.deliveryStatus === "FAILED")).toBe(true);
+  });
+
+  test("removes a reviewed confidence suggestion after refresh", async () => {
+    const supportCase = await createCase(95);
+    const suggestionsResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const suggestionsBody = await suggestionsResponse.json() as { data: Array<{ id: string; caseId: string }> };
+    const suggestion = suggestionsBody.data.find((item) => item.caseId === supportCase.id);
+
+    expect(suggestion).toBeDefined();
+
+    const reviewResponse = await postConfidenceReview({ caseId: supportCase.id, result: "approved" }, suggestion?.id ?? "missing");
+    const refreshedResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const refreshedBody = await refreshedResponse.json() as { data: Array<{ caseId: string }> };
+    const detail = await store.getCaseDetail(supportCase.id);
+
+    expect(reviewResponse.status).toBe(200);
+    expect(refreshedBody.data.some((item) => item.caseId === supportCase.id)).toBe(false);
+    expect(detail?.status).toBe("resolved");
+    expect(detail?.confidenceReviewStatus).toBe("APPROVED");
+    expect(detail?.confidenceReviewedBy).toBe("Tech Support Console");
   });
 });

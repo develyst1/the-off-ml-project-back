@@ -115,6 +115,9 @@ export type SupportCase = {
   problemSummaryStatus?: "PENDING" | "SUCCESS" | "FAILED";
   assigneeName?: string;
   hasUnreadCustomerMessage?: boolean;
+  confidenceReviewStatus?: "PENDING" | "APPROVED" | "REJECTED";
+  confidenceReviewedAt?: string;
+  confidenceReviewedBy?: string;
   createdAt: string;
   updatedAt: string;
 };
