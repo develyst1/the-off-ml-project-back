@@ -32,7 +32,17 @@ mock.module("./ai-center-client", () => ({
     }),
     analyzeCaseRelation: async () => ({ related: true, confidence: 100, reason: "pending question" }),
     extractPendingInformation: async () => ({ values: {} }),
-    classifyLineMessageIntent: async () => ({ intent: "NEW_SUPPORT_ISSUE", shouldCreateCase: true, targetCaseNumber: null, confidence: 1, reason: "test" }),
+    classifyLineMessageIntent: async (input: { latestMessage: string; activeCases?: Array<{ id: string }> }) => {
+      if (input.latestMessage === "กินข้าวหรือยัง") return { intent: "SMALL_TALK", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "small talk" };
+      if (input.latestMessage === "สวัสดี") return { intent: "GREETING", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "greeting" };
+      if (input.latestMessage === "ขอบคุณครับ") return { intent: "THANK_YOU", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "thanks" };
+      if (input.latestMessage === "วันนี้อินเทอร์เน็ตเร็วไหม") return { intent: "TECH_GENERAL_QUESTION", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "technical general" };
+      if (input.latestMessage === "AI ล่ม") throw new Error("classifier unavailable");
+      if (["ไฟยังติดครับ", "ไฟยังติด", "คณิตศาสตร์", "บ่ายสอง"].includes(input.latestMessage) && (input.activeCases?.length ?? 0) > 0) {
+        return { intent: "FOLLOW_UP_EXISTING_CASE", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "follow up" };
+      }
+      return { intent: "NEW_SUPPORT_ISSUE", shouldCreateCase: true, targetCaseNumber: null, confidence: 1, reason: "test" };
+    },
     generateLineContinuationReply: async (input: { replyType?: string; requestedNextQuestion?: string }) =>
       input.replyType === "FOLLOW_UP_QUESTION" && input.requestedNextQuestion
         ? input.requestedNextQuestion
@@ -170,5 +180,56 @@ describe("LINE case query guards", () => {
 
     expect(lineReplies.at(-1)).toContain("ไม่พบเคสหมายเลขนี้ในประวัติของคุณค่ะ");
     expect(await caseService.getCustomerCases((await store.upsertCustomer({ lineUserId })).id)).toHaveLength(0);
+  });
+});
+
+describe("LINE intent classification guards", () => {
+  test("appends a short follow-up to the only active case instead of creating a new case", async () => {
+    sequence += 1;
+    const lineUserId = `U-follow-up-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Follow-up Customer ${sequence}` });
+    const supportCase = await store.createCase({ customerId: customer.id, status: "awaiting_tech", title: "โน้ตบุ๊กชาร์จไม่เข้า" });
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "outbound_customer",
+      channel: "line",
+      originalText: "ตอนเสียบสายชาร์จมีไฟแสดงสถานะขึ้นไหมคะ",
+      senderType: "BOT",
+      messageType: "REQUEST_MORE_INFO",
+    });
+
+    await sendReply({ lineUserId, messageId: `follow-up-${sequence}`, text: "ไฟยังติดครับ" });
+
+    expect(await caseService.getCustomerCases(customer.id)).toHaveLength(1);
+    const detail = await caseService.getCase(supportCase.id);
+    expect(detail?.messages.some((message) => message.originalText === "ไฟยังติดครับ")).toBe(true);
+  });
+
+  test.each([
+    ["กินข้าวหรือยัง", "ฉันดูแลเรื่องปัญหาการใช้งานระบบ"],
+    ["สวัสดี", "สวัสดีค่ะ"],
+    ["ขอบคุณครับ", "ยินดีค่ะ"],
+    ["วันนี้อินเทอร์เน็ตเร็วไหม", "ตอบเรื่องความรู้ด้านเทคนิคทั่วไปได้ค่ะ"],
+  ])("does not create a case for %s", async (text, expectedReply) => {
+    sequence += 1;
+    const lineUserId = `U-out-of-scope-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Out of scope Customer ${sequence}` });
+    const before = await caseService.getCustomerCases(customer.id);
+
+    await sendReply({ lineUserId, messageId: `out-of-scope-${sequence}`, text });
+
+    expect(await caseService.getCustomerCases(customer.id)).toHaveLength(before.length);
+    expect(lineReplies.at(-1)).toContain(expectedReply);
+  });
+
+  test("uses a safe clarification when the intent classifier fails", async () => {
+    sequence += 1;
+    const lineUserId = `U-classifier-error-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Classifier Error Customer ${sequence}` });
+
+    await sendReply({ lineUserId, messageId: `classifier-error-${sequence}`, text: "AI ล่ม" });
+
+    expect(await caseService.getCustomerCases(customer.id)).toHaveLength(0);
+    expect(lineReplies.at(-1)).toContain("ขอสอบถามเพิ่มเติม");
   });
 });

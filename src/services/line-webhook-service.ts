@@ -67,13 +67,25 @@ const NON_CASE_CREATING_INTENTS = new Set<LineMessageIntentName>([
   "CASE_DETAIL_QUERY",
   "CLOSE_CASE_REQUEST",
   "REOPEN_CASE_REQUEST",
-  "GENERAL_CONVERSATION",
+  "TECH_GENERAL_QUESTION",
+  "SMALL_TALK",
   "GREETING",
   "THANK_YOU",
+  "UNKNOWN",
 ]);
 
 const ACTIVE_CASE_STATUSES = new Set(["analyzing", "awaiting_tech", "assigned", "tech_replied", "analyzing_solution", "awaiting_customer_info", "awaiting_confirmation", "reopened", "in_progress"]);
 const CLOSED_CASE_STATUSES = new Set(["closed", "resolved", "sent_to_customer"]);
+
+const INTENT_CONFIDENCE_THRESHOLD = 0.7;
+
+function getIntentGroup(intent: LineMessageIntentName) {
+  if (intent === "NEW_SUPPORT_ISSUE" || intent === "TECH_GENERAL_QUESTION") return "SUPPORT";
+  if (intent === "FOLLOW_UP_EXISTING_CASE" || intent.startsWith("CASE_") || intent === "CLOSE_CASE_REQUEST" || intent === "REOPEN_CASE_REQUEST") {
+    return "CASE_MANAGEMENT";
+  }
+  return "OUT_OF_SCOPE";
+}
 
 function detectCaseQueryIntent(text: string): LineMessageIntentName | undefined {
   const normalized = text.trim();
@@ -92,6 +104,7 @@ function hasActualProblemDescription(text: string) {
   const normalized = text.trim();
   if (normalized.length < 8) return false;
   if (/^(เปิดเคสใหม่|สร้างเคสใหม่|แจ้งเรื่องใหม่|เคสใหม่|เปิดเคส)$/iu.test(normalized)) return false;
+  if (/^(โอเค|โอเคค่ะ|ครับ|ค่ะ|ขอบคุณ|ขอบคุณครับ|ขอบคุณค่ะ|ยังไม่ได้|วันนี้อินเทอร์เน็ตเร็วไหม)$/iu.test(normalized)) return false;
   return !detectCaseQueryIntent(normalized);
 }
 
@@ -181,10 +194,16 @@ async function handleNonCaseIntent(input: {
     return true;
   }
 
-  if (input.intent.intent === "GREETING" || input.intent.intent === "THANK_YOU" || input.intent.intent === "GENERAL_CONVERSATION") {
+  if (input.intent.intent === "GREETING" || input.intent.intent === "THANK_YOU" || input.intent.intent === "TECH_GENERAL_QUESTION" || input.intent.intent === "SMALL_TALK" || input.intent.intent === "UNKNOWN") {
     const reply = input.intent.intent === "GREETING"
-      ? "สวัสดีค่ะ มีปัญหาหรือต้องการสอบถามเรื่องใด แจ้งเข้ามาได้เลยนะคะ"
-      : "ยินดีค่ะ หากพบปัญหาเพิ่มเติมสามารถแจ้งเข้ามาได้เลยนะคะ";
+      ? "สวัสดีค่ะ มีปัญหาด้านระบบ อุปกรณ์ หรือการใช้งานไอทีส่วนไหนให้ช่วยตรวจสอบคะ"
+      : input.intent.intent === "THANK_YOU"
+      ? "ยินดีค่ะ หากพบปัญหาการใช้งานเพิ่มเติม แจ้งมาได้เลยนะคะ"
+      : input.intent.intent === "TECH_GENERAL_QUESTION"
+      ? "ตอบเรื่องความรู้ด้านเทคนิคทั่วไปได้ค่ะ หากตอนนี้พบอาการใช้งานผิดปกติ เช่น ช้า หลุด หรือเข้าใช้งานไม่ได้ แจ้งรายละเอียดมาได้เลยนะคะ"
+      : input.intent.intent === "SMALL_TALK"
+      ? "ฉันดูแลเรื่องปัญหาการใช้งานระบบ อุปกรณ์ และบริการไอทีเป็นหลักค่ะ หากพบปัญหา แจ้งอาการมาได้เลยนะคะ"
+      : "ขอสอบถามเพิ่มเติมค่ะ ตอนนี้ต้องการแจ้งปัญหาใหม่ หรือต้องการติดตามเคสเดิมคะ";
     await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
     return true;
   }
@@ -360,6 +379,89 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
   const normalizedText = input.text.trim().replace(/\s+/g, " ")
     .replace(/แคส/g, "เคส")
     .replace(/เคด/g, "เคส");
+  const activeCase = await caseService.getActiveLineCase(customer);
+  if (activeCase && customer.activeCaseId !== activeCase.id) {
+    await store.setActiveCase(customer.id, activeCase.id);
+  }
+  const customerCases = await caseService.getCustomerCases(customer.id);
+  const activeCaseSnapshots = customerCases
+    .filter((item) => ACTIVE_CASE_STATUSES.has(item.status))
+    .slice(0, 10)
+    .map((item) => ({
+      id: item.id,
+      caseNumber: item.caseNumber,
+      title: caseService.formatCaseTitle(item),
+      summary: item.problemSummary,
+      status: item.status,
+      updatedAt: item.updatedAt,
+    }));
+  const recentCaseSnapshots = customerCases.slice(0, 10).map((item) => ({
+    id: item.id,
+    caseNumber: item.caseNumber,
+    title: caseService.formatCaseTitle(item),
+    summary: item.problemSummary,
+    status: item.status,
+    updatedAt: item.updatedAt,
+  }));
+  const recentConversation = activeCase?.messages.slice(-20).map((message) => ({
+    sender: message.senderType ?? message.direction,
+    message: message.originalText,
+    createdAt: message.createdAt,
+  })) ?? [];
+  const lastBotMessage = [...(activeCase?.messages ?? [])]
+    .reverse()
+    .find((message) => message.senderType === "BOT")?.originalText;
+  const lastBotQuestion = [...(activeCase?.messages ?? [])]
+    .reverse()
+    .find((message) => message.senderType === "BOT" && message.messageType === "REQUEST_MORE_INFO")?.originalText;
+  const detectedQueryIntent = detectCaseQueryIntent(input.text);
+  let aiClassifiedIntent: LineMessageIntentClassification;
+  try {
+    aiClassifiedIntent = await aiCenterClient.classifyLineMessageIntent({
+      latestMessage: input.text,
+      recentConversation,
+      lastBotMessage,
+      lastBotQuestion,
+      activeCases: activeCaseSnapshots,
+      recentCases: recentCaseSnapshots,
+      activeCaseNumber: activeCase?.caseNumber,
+      conversationState: customer.conversationState,
+    });
+  } catch (error) {
+    console.error({ event: "line_message_intent_classification_guard_failed", lineUserId: input.lineUserId, error: String(error) });
+    aiClassifiedIntent = {
+      intent: "UNKNOWN",
+      shouldCreateCase: false,
+      targetCaseNumber: null,
+      matchedActiveCaseId: null,
+      confidence: 0,
+      reason: "INTENT_CLASSIFIER_ERROR",
+    };
+  }
+  const classifiedIntent: LineMessageIntentClassification = detectedQueryIntent
+    ? {
+        ...aiClassifiedIntent,
+        intent: detectedQueryIntent,
+        shouldCreateCase: false,
+        targetCaseNumber: input.text.match(/\bOFF-\d{4}-\d+\b/i)?.[0] ?? null,
+        matchedActiveCaseId: activeCase?.id ?? null,
+        confidence: 1,
+        reason: "ข้อความตรงกับ deterministic intent guard หลังผ่าน AI classification",
+      }
+    : aiClassifiedIntent;
+
+  const intentIsConfident = classifiedIntent.confidence >= INTENT_CONFIDENCE_THRESHOLD;
+  console.log({
+    event: "line_message_intent_classified",
+    lineUserId: input.lineUserId,
+    intent: classifiedIntent.intent,
+    intentGroup: getIntentGroup(classifiedIntent.intent),
+    shouldCreateCase: classifiedIntent.shouldCreateCase,
+    confidence: classifiedIntent.confidence,
+    matchedCaseId: classifiedIntent.matchedActiveCaseId,
+    action: classifiedIntent.intent === "NEW_SUPPORT_ISSUE" ? "EVALUATE_CASE_CREATION" : "ROUTE_EXISTING_HANDLER",
+    reason: classifiedIntent.reason,
+  });
   const newCaseCommand = /^(เปิดเคสใหม่|สร้างเคสใหม่|แจ้งเรื่องใหม่|เคสใหม่|เปิดเคส|เปิดใหม่|ใหม่|เอาใหม่|ขอเคส)$/i.test(normalizedText);
   const ambiguousNewCaseCommand = /^(เคสไหม|เปิดเคสไหม|เคสใหม|แคสใหม่)$/i.test(input.text.trim());
   const hasNewCaseIntent = /(เปิดเคสใหม่|สร้างเคสใหม่|แจ้งเรื่องใหม่|เคสใหม่|ปัญหาใหม่|เรื่องใหม่)/i.test(normalizedText);
@@ -565,6 +667,10 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       await lineClient.replyToToken({ replyToken: input.replyToken, text: "ได้ค่ะ รบกวนบอกอาการหรือปัญหาที่พบได้เลยนะคะ" });
       return { processed: true, duplicate: false, caseDetail: undefined };
     }
+    if (classifiedIntent.intent !== "NEW_SUPPORT_ISSUE" || !classifiedIntent.shouldCreateCase || !intentIsConfident || !hasActualProblemDescription(input.text)) {
+      await lineClient.replyToToken({ replyToken: input.replyToken, text: "ขอรายละเอียดอาการหรือปัญหาที่ต้องการเปิดเคสอีกนิดนะคะ" });
+      return { processed: true, duplicate: false, caseDetail: undefined };
+    }
     forceNewCaseDetail = true;
     await store.setConversationState(customer.id, "IDLE");
   } else if (/ไหม$/i.test(input.text.trim()) && ambiguousNewCaseCommand) {
@@ -575,7 +681,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     await store.setConversationState(customer.id, "WAITING_NEW_CASE_DETAIL");
     await lineClient.replyToToken({ replyToken: input.replyToken, text: "ได้ค่ะ รบกวนบอกอาการหรือปัญหาที่พบได้เลยนะคะ" });
     return { processed: true, duplicate: false, caseDetail: undefined };
-  } else if (hasNewCaseIntent) {
+  } else if (hasNewCaseIntent && classifiedIntent.intent === "NEW_SUPPORT_ISSUE" && classifiedIntent.shouldCreateCase && intentIsConfident) {
     forceNewCaseDetail = true;
   }
 
@@ -634,43 +740,6 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     }
   }
 
-  const activeCase = await caseService.getActiveLineCase(customer);
-  if (activeCase && customer.activeCaseId !== activeCase.id) {
-    await store.setActiveCase(customer.id, activeCase.id);
-  }
-
-  const customerCases = await caseService.getCustomerCases(customer.id);
-  const activeCaseSnapshots = customerCases
-    .filter((item) => ACTIVE_CASE_STATUSES.has(item.status))
-    .slice(0, 10)
-    .map((item) => ({ caseNumber: item.caseNumber, title: caseService.formatCaseTitle(item), status: item.status, updatedAt: item.updatedAt }));
-  const recentCaseSnapshots = customerCases.slice(0, 10).map((item) => ({ caseNumber: item.caseNumber, title: caseService.formatCaseTitle(item), status: item.status, updatedAt: item.updatedAt }));
-  const detectedQueryIntent = detectCaseQueryIntent(input.text);
-  const classifiedIntent: LineMessageIntentClassification = detectedQueryIntent
-    ? {
-        intent: detectedQueryIntent,
-        shouldCreateCase: false,
-        targetCaseNumber: input.text.match(/\bOFF-\d{4}-\d+\b/i)?.[0] ?? null,
-        confidence: 1,
-        reason: "ข้อความตรงกับ deterministic case query guard",
-      }
-    : await aiCenterClient.classifyLineMessageIntent({
-        latestMessage: input.text,
-        activeCases: activeCaseSnapshots,
-        recentCases: recentCaseSnapshots,
-        activeCaseNumber: activeCase?.caseNumber,
-        conversationState: customer.conversationState,
-      });
-
-  console.log({
-    event: "line_message_intent_classified",
-    lineUserId: input.lineUserId,
-    intent: classifiedIntent.intent,
-    shouldCreateCase: classifiedIntent.shouldCreateCase,
-    confidence: classifiedIntent.confidence,
-    reason: classifiedIntent.reason,
-  });
-
   if (!isNewCaseRequest && NON_CASE_CREATING_INTENTS.has(classifiedIntent.intent)) {
     const handled = await handleNonCaseIntent({ customer, intent: classifiedIntent, text: input.text, replyToken: input.replyToken });
     if (handled) return { processed: true, duplicate: false, caseDetail: undefined };
@@ -683,6 +752,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
 
   const canCreateNewCase = classifiedIntent.intent === "NEW_SUPPORT_ISSUE"
     && classifiedIntent.shouldCreateCase
+    && intentIsConfident
     && hasActualProblemDescription(input.text);
   if (!isNewCaseRequest && !canCreateNewCase && (classifiedIntent.intent === "UNKNOWN" || classifiedIntent.intent === "NEW_SUPPORT_ISSUE")) {
     const reply = activeCase
@@ -712,7 +782,32 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     }
   }
 
-  if (!isNewCaseRequest) {
+  let matchedExistingCase: CaseDetail | undefined;
+  if (!isNewCaseRequest && classifiedIntent.intent === "FOLLOW_UP_EXISTING_CASE" && activeCase) {
+    const activeCandidates = customerCases.filter((item) => ACTIVE_CASE_STATUSES.has(item.status));
+    const matchedId = classifiedIntent.matchedActiveCaseId;
+    if (matchedId) {
+      matchedExistingCase = activeCandidates.find((item) => item.id === matchedId);
+    }
+    if (!matchedExistingCase && activeCandidates.length === 1) {
+      matchedExistingCase = activeCase;
+    }
+    if (!matchedExistingCase && activeCandidates.length > 1) {
+      await store.setPendingCaseSelection(customer.id, {
+        mode: "choose",
+        candidateCaseIds: activeCandidates.slice(0, 5).map((item) => item.id),
+        createdAt: new Date().toISOString(),
+      });
+      const rows = activeCandidates.slice(0, 5).map((item, index) => `${index + 1}. ${item.caseNumber} — ${caseService.formatCaseTitle(item)}`);
+      await lineClient.replyToToken({
+        replyToken: input.replyToken,
+        text: `ต้องการอัปเดตเคสไหนคะ\n\n${rows.join("\n")}\n\nพิมพ์หมายเลข 1-${Math.min(activeCandidates.length, 5)} ได้เลยค่ะ`,
+      });
+      return { processed: true, duplicate: false, caseDetail: undefined };
+    }
+  }
+
+  if (!isNewCaseRequest && !matchedExistingCase && classifiedIntent.intent !== "FOLLOW_UP_EXISTING_CASE") {
     const historyMatch = await caseService.matchLineMessageAgainstHistory({
       customerId: customer.id,
       text: input.text,
@@ -731,11 +826,11 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       });
       return { processed: true, duplicate: false, caseDetail: undefined };
     }
-    isNewCaseRequest = true;
+    // With an active case, a new-looking message still needs confirmation.
+    // Only a customer without an active case may continue directly to creation.
+    isNewCaseRequest = !activeCase;
   }
-  const confirmsNewCase = isNewCaseRequest; /*
-    && /(ปัญหาใหม่|เรื่องใหม่|เคสใหม่|เปิดเคสใหม่|แยกเคส|new issue|new case)/i.test(input.text);
-  */
+  const confirmsNewCase = isNewCaseRequest;
   const intakeText = pendingNewCaseText ?? input.text;
   const confirmsExistingCase = activeCase?.status === "awaiting_confirmation"
     && /(เคสเดิม|เรื่องเดิม|ข้อมูลเพิ่มเติม|ต่อเรื่องเดิม|same case|same issue)/i.test(input.text);
@@ -750,7 +845,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     ? undefined
     : confirmsExistingCase
     ? activeCase
-    : await caseService.findRelatedLineCase({
+    : matchedExistingCase ?? await caseService.findRelatedLineCase({
         customerId: customer.id,
         newText: intakeText,
         receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : undefined,

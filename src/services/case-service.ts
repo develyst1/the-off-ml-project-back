@@ -233,7 +233,7 @@ export const caseService = {
     return store.getCaseDetail(caseId);
   },
   async getActiveLineCase(customer: { id: string; activeCaseId?: string }) {
-    const activeStatuses = ["analyzing", "awaiting_tech", "assigned", "tech_replied", "analyzing_solution", "awaiting_customer_info", "awaiting_confirmation"];
+    const activeStatuses = ["analyzing", "awaiting_tech", "assigned", "tech_replied", "analyzing_solution", "awaiting_customer_info", "awaiting_confirmation", "reopened", "in_progress", "awaiting_tech_review"];
     if (customer.activeCaseId) {
       const activeCase = await store.getCaseDetail(customer.activeCaseId);
       if (activeCase && activeCase.customerId === customer.id && activeStatuses.includes(activeCase.status)) {
@@ -355,7 +355,7 @@ export const caseService = {
 
   async findRelatedLineCase(input: { customerId: string; newText: string; receivedAt?: string }) {
     const cases = (await store.listCases())
-      .filter((item) => item.customer.id === input.customerId && ["analyzing", "awaiting_tech", "assigned", "tech_replied", "analyzing_solution", "awaiting_customer_info", "awaiting_confirmation"].includes(item.status))
+      .filter((item) => item.customer.id === input.customerId && ["analyzing", "awaiting_tech", "assigned", "tech_replied", "analyzing_solution", "awaiting_customer_info", "awaiting_confirmation", "reopened", "in_progress", "awaiting_tech_review"].includes(item.status))
       .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
     const candidate = cases[0];
     if (!candidate) return undefined;

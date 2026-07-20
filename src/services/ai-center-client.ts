@@ -93,7 +93,8 @@ export const LINE_MESSAGE_INTENTS = [
   "CASE_DETAIL_QUERY",
   "CLOSE_CASE_REQUEST",
   "REOPEN_CASE_REQUEST",
-  "GENERAL_CONVERSATION",
+  "TECH_GENERAL_QUESTION",
+  "SMALL_TALK",
   "GREETING",
   "THANK_YOU",
   "UNKNOWN",
@@ -105,6 +106,7 @@ export type LineMessageIntentClassification = {
   intent: LineMessageIntentName;
   shouldCreateCase: boolean;
   targetCaseNumber: string | null;
+  matchedActiveCaseId?: string | null;
   confidence: number;
   reason: string;
 };
@@ -407,24 +409,28 @@ export const aiCenterClient = {
 
   async classifyLineMessageIntent(input: {
     latestMessage: string;
-    activeCases: Array<{ caseNumber: string; title?: string; status: string; updatedAt: string }>;
-    recentCases: Array<{ caseNumber: string; title?: string; status: string; updatedAt: string }>;
+    recentConversation?: Array<{ sender: string; message: string; createdAt?: string }>;
+    lastBotMessage?: string;
+    lastBotQuestion?: string;
+    activeCases: Array<{ id: string; caseNumber: string; title?: string; summary?: string; status: string; updatedAt: string }>;
+    recentCases: Array<{ id: string; caseNumber: string; title?: string; summary?: string; status: string; updatedAt: string }>;
     activeCaseNumber?: string;
     conversationState?: string;
   }): Promise<LineMessageIntentClassification> {
     const fallback: LineMessageIntentClassification = {
-      intent: "NEW_SUPPORT_ISSUE",
-      shouldCreateCase: true,
+      intent: "UNKNOWN",
+      shouldCreateCase: false,
       targetCaseNumber: null,
-      confidence: 0.5,
-      reason: "ใช้เส้นทางแจ้งปัญหาใหม่เป็นค่าเริ่มต้นเมื่อจำแนก intent ไม่ได้",
+      matchedActiveCaseId: null,
+      confidence: 0,
+      reason: "AI_CENTER_UNAVAILABLE_OR_INVALID_RESPONSE",
     };
 
     try {
       const content = await chatWithAiCenter([
         {
           role: "system",
-          content: "คุณคือ AI จำแนก intent ของข้อความลูกค้า LINE สำหรับระบบ Tech Support ตอบเป็น JSON เท่านั้น ห้ามสร้างหรือเปลี่ยนข้อมูลเคส",
+          content: "คุณคือ AI จำแนก intent ของข้อความลูกค้า LINE สำหรับระบบ Tech Support ตอบเป็น JSON เท่านั้น ห้ามสร้างหรือเปลี่ยนข้อมูลเคส ห้ามถือว่าทุกข้อความเป็นการแจ้งปัญหาใหม่",
         },
         {
           role: "user",
@@ -439,11 +445,16 @@ export const aiCenterClient = {
               reason: "short Thai explanation",
             },
             rules: [
+              "NEW_SUPPORT_ISSUE ใช้เมื่อผู้ใช้แจ้งอาการหรือปัญหาการใช้งานใหม่อย่างชัดเจนเท่านั้น",
+              "FOLLOW_UP_EXISTING_CASE ใช้เมื่อข้อความเป็นคำตอบต่อคำถามก่อนหน้า ให้ข้อมูลเพิ่ม หรือแจ้งผลหลังทดลองแก้ปัญหา",
               "คำถามจำนวนเคส ประวัติเคส สถานะเคส หรือรายละเอียดเคส ห้ามสร้างเคสใหม่",
-              "ข้อความตอบคำถามหรือให้ข้อมูลต่อจาก active case ให้เป็น FOLLOW_UP_EXISTING_CASE",
-              "สร้างเคสได้เฉพาะ NEW_SUPPORT_ISSUE ที่มีคำอธิบายปัญหาจริงและ shouldCreateCase=true",
-              "คำทักทาย ขอบคุณ หรือบทสนทนาทั่วไป ห้ามสร้างเคส",
+              "คำถามด้านเทคนิคทั่วไปที่ยังไม่ได้แจ้งอาการจริงให้เป็น TECH_GENERAL_QUESTION และห้ามสร้างเคส",
+              "คำคุยเล่นหรือนอกขอบเขตให้เป็น SMALL_TALK และห้ามสร้างเคส",
+              "คำทักทายและคำขอบคุณห้ามสร้างเคส",
+              "ถ้าไม่มั่นใจให้เป็น UNKNOWN และ shouldCreateCase=false",
+              "confidence ต่ำกว่า 0.70 ให้ shouldCreateCase=false",
               "ถ้ามีเลขเคส ให้ใส่ targetCaseNumber เฉพาะเลขที่ปรากฏในข้อความ",
+              "ถ้ามี active case เดียวและข้อความสั้นเป็นคำตอบต่อคำถามล่าสุด ให้ใช้ FOLLOW_UP_EXISTING_CASE",
               "ห้ามเปิดเผยข้อมูลจากเคสอื่น และอย่าเดา target case เมื่อไม่ชัดเจน",
             ],
             ...input,
@@ -458,10 +469,20 @@ export const aiCenterClient = {
       const confidence = typeof parsed.confidence === "number"
         ? Math.max(0, Math.min(1, parsed.confidence > 1 ? parsed.confidence / 100 : parsed.confidence))
         : 0;
+      const requestedCaseNumber = typeof parsed.targetCaseNumber === "string" ? parsed.targetCaseNumber.trim() : "";
+      const requestedActiveCaseId = typeof parsed.matchedActiveCaseId === "string" ? parsed.matchedActiveCaseId.trim() : "";
+      const knownCaseNumbers = new Set([...input.activeCases, ...input.recentCases].map((item) => item.caseNumber.toLowerCase()));
+      const knownActiveCaseIds = new Set(input.activeCases.map((item) => item.id));
       return {
         intent,
-        shouldCreateCase: intent === "NEW_SUPPORT_ISSUE" && parsed.shouldCreateCase === true,
-        targetCaseNumber: typeof parsed.targetCaseNumber === "string" ? parsed.targetCaseNumber.trim() || null : null,
+        shouldCreateCase: intent === "NEW_SUPPORT_ISSUE"
+          && parsed.shouldCreateCase === true
+          && confidence >= 0.7,
+        targetCaseNumber: requestedCaseNumber
+          && (input.latestMessage.toLowerCase().includes(requestedCaseNumber.toLowerCase()) || knownCaseNumbers.has(requestedCaseNumber.toLowerCase()))
+          ? requestedCaseNumber
+          : null,
+        matchedActiveCaseId: requestedActiveCaseId && knownActiveCaseIds.has(requestedActiveCaseId) ? requestedActiveCaseId : null,
         confidence,
         reason: typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : "AI จำแนกข้อความแล้ว",
       };
