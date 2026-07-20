@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { readJsonObject } from "../lib/request";
 import { caseService } from "../services/case-service";
+import { isSolutionReadyForAutoAnswer } from "../services/auto-answer-guardrail";
 
 type AutomationSettings = {
   enabled: boolean;
@@ -40,14 +41,18 @@ automationRoutes.get("/solutions", async (c) => {
   const cases = await caseService.listCases();
   const solutions = cases.flatMap((item) =>
     item.solutions
-      .filter((solution) => solution.confidence >= settings.caseDiscriminationThreshold)
+      .filter((solution) => isSolutionReadyForAutoAnswer(
+        item.confidenceScore,
+        solution,
+        settings,
+      ))
       .map((solution) => ({
         id: solution.id,
         category: item.category ?? "-",
         solutionText: solution.solutionSteps.join("\n") || solution.rewrittenCustomerText,
         caseUnderstandingConfidence: item.confidenceScore ?? 0,
         caseDiscriminationConfidence: solution.confidence,
-        status: solution.confidence >= settings.caseDiscriminationThreshold ? "ready" : "watching",
+        status: "ready",
       })),
   );
 

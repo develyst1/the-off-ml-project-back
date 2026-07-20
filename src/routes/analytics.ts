@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { caseService } from "../services/case-service";
+import { isSolutionReadyForAutoAnswer } from "../services/auto-answer-guardrail";
 
 export const analyticsRoutes = new Hono();
 
@@ -15,7 +16,13 @@ analyticsRoutes.get("/summary", async (c) => {
   const total = cases.length;
   const solved = cases.filter((item) => item.status === "resolved" || item.status === "sent_to_customer" || item.status === "closed").length;
   const overSla = 0;
-  const readyForAutoAnswer = cases.filter((item) => (item.confidenceScore ?? 0) >= 98).length;
+  const readyForAutoAnswer = cases.filter((item) =>
+    item.solutions.some((solution) => isSolutionReadyForAutoAnswer(
+      item.confidenceScore,
+      solution,
+      { caseUnderstandingThreshold: 98, caseDiscriminationThreshold: 98 },
+    )),
+  ).length;
   const solvedFromExistingSolutionPct = total ? Math.round((solved / total) * 100) : 0;
 
   const categoryCounts = new Map<string, number>();
