@@ -1,4 +1,5 @@
 import type { CaseDetail, Customer, PendingCaseSelection } from "../domain/types";
+import { env } from "../config/env";
 import {
   PENDING_INFORMATION_FIELDS,
   buildMissingInformationQuestion,
@@ -68,6 +69,7 @@ const NON_CASE_CREATING_INTENTS = new Set<LineMessageIntentName>([
   "CLOSE_CASE_REQUEST",
   "REOPEN_CASE_REQUEST",
   "TECH_GENERAL_QUESTION",
+  "OUT_OF_SCOPE",
   "SMALL_TALK",
   "GREETING",
   "THANK_YOU",
@@ -261,6 +263,33 @@ async function handleNonCaseIntent(input: {
     }
     const reply = `เคส ${targetCase.caseNumber} ตอนนี้อยู่ในสถานะ “${getCustomerCaseStatusLabel(targetCase.status)}” ค่ะ\n\nอัปเดตล่าสุดเมื่อ ${formatCustomerCaseDate(targetCase.updatedAt)}${input.intent.intent === "CASE_DETAIL_QUERY" ? `\nเรื่อง: ${caseService.formatCaseTitle(targetCase)}` : ""}`;
     await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
+    return true;
+  }
+
+  if (input.intent.intent === "OUT_OF_SCOPE") {
+    const reply = await aiCenterClient.generateLineContinuationReply({
+      replyType: "OUT_OF_SCOPE_REPLY",
+      originalCustomerText: input.text,
+      latestCustomerMessage: input.text,
+      recentConversation: [],
+      newCustomerText: input.text,
+      currentCaseStatus: "IDLE",
+    });
+    await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
+    if (env.FORWARD_OUT_OF_SCOPE_TO_TEAMS) {
+      try {
+        await teamsClient.notifyOutOfScope({
+          customerName: input.customer.displayName ?? input.customer.lineUserId,
+          lineUserId: input.customer.lineUserId,
+          text: input.text,
+          reason: input.intent.reason,
+          eventType: input.intent.teamsEventType ?? "OUT_OF_SCOPE_MESSAGE",
+        });
+      } catch (error) {
+        console.error({ event: "line_out_of_scope_teams_forward_failed", error: String(error) });
+      }
+    }
+    await clearPreCaseContext(input.customer);
     return true;
   }
 
@@ -1045,18 +1074,8 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     confidence: analysis.confidence,
     rawJson: analysis,
   });
-  const targetedInfoQuestion = analysis.missingInformation.length > 0
-    ? await aiCenterClient.generateTargetedInfoRequest({
-        caseTitle: analysis.caseTitle,
-        category: analysis.category,
-        originalCustomerText: analysisIntakeText,
-        recentConversation: [],
-        requestedText: analysis.missingInformation.slice(0, 2).join(", "),
-      })
-    : undefined;
-
   await store.updateCase(supportCase.id, {
-    status: targetedInfoQuestion ? "awaiting_customer_info" : "awaiting_tech",
+    status: "awaiting_tech",
     title: analysis.caseTitle,
     aiStatus: analysis.status === "AI_FAILED" ? "AI_FAILED" : analysis.status === "AI_LOW_CONFIDENCE" ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS",
     dataStatus: analysis.missingInformation.length > 0 ? "DATA_INCOMPLETE" : "COMPLETE",
@@ -1075,15 +1094,6 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     problemSummaryStatus: analysis.status === "AI_FAILED" ? "FAILED" : "SUCCESS",
   });
   await store.setActiveCase(customer.id, supportCase.id);
-  if (targetedInfoQuestion) {
-    await caseService.setPendingInformationRequest({
-      customerId: customer.id,
-      caseId: supportCase.id,
-      questionType: "AI_MISSING_INFORMATION",
-      requestedFields: analysis.missingInformation,
-    });
-  }
-
   if (pendingNewCaseText) {
     await store.createMessage({
       caseId: supportCase.id,
@@ -1118,7 +1128,6 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     knownFacts: [],
     missingFacts: analysis.missingInformation,
     currentCaseStatus: supportCase.status,
-    requestedNextQuestion: targetedInfoQuestion,
   });
   const acknowledgementDelivery = await lineClient.replyToToken({
     replyToken: input.replyToken,
@@ -1131,7 +1140,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     channel: "line",
     originalText: acknowledgement,
     senderType: "BOT",
-    messageType: targetedInfoQuestion ? "REQUEST_MORE_INFO" : "CASE_ACKNOWLEDGEMENT",
+    messageType: "CASE_ACKNOWLEDGEMENT",
     deliveryStatus: acknowledgementDelivery.delivered ? "delivered" : "pending",
   });
   await store.updateCase(supportCase.id, {

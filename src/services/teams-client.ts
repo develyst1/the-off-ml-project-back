@@ -152,4 +152,51 @@ export const teamsClient = {
 
     return { delivered: true };
   },
+
+  async notifyOutOfScope(input: {
+    customerName: string;
+    lineUserId: string;
+    text: string;
+    reason?: string;
+    eventType?: string;
+  }): Promise<{ delivered: boolean }> {
+    const text = [
+      "Off ML Project - OUT_OF_SCOPE_MESSAGE",
+      `Customer: ${input.customerName}`,
+      `LINE user: ${input.lineUserId}`,
+      `Message: ${input.text}`,
+      `Reason: ${input.reason ?? "-"}`,
+    ].join("\n");
+    const card = {
+      $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
+      type: "AdaptiveCard",
+      version: "1.2",
+      body: [
+        { type: "TextBlock", size: "Large", weight: "Bolder", text: "Off ML Project - OUT_OF_SCOPE_MESSAGE" },
+        { type: "FactSet", facts: [
+          { title: "Customer", value: input.customerName },
+          { title: "LINE user", value: input.lineUserId },
+          { title: "Event", value: input.eventType ?? "OUT_OF_SCOPE_MESSAGE" },
+        ] },
+        { type: "TextBlock", wrap: true, text: input.text },
+        { type: "TextBlock", wrap: true, isSubtle: true, text: input.reason ?? "No case was created" },
+      ],
+    };
+    const webhookUrl = this.getWebhookUrl();
+    if (!webhookUrl) {
+      console.log("[teams:mock]", text);
+      return { delivered: false };
+    }
+    const status = this.getStatus();
+    if (!status.valid) throw new Error(status.reason ?? "TEAMS_WEBHOOK_URL is invalid");
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(card),
+    });
+    if (!response.ok) {
+      throw new Error(`Teams out-of-scope notification failed: ${response.status} ${await response.text()}`);
+    }
+    return { delivered: true };
+  },
 };

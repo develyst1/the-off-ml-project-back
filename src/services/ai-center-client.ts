@@ -82,7 +82,12 @@ export type MoreInfoRequestSuggestion = {
   reason: string;
 };
 
-export type LineReplyType = "INITIAL_CASE_ACK" | "FOLLOW_UP_QUESTION" | "TROUBLESHOOTING_GUIDANCE";
+export type LineReplyType =
+  | "INITIAL_CASE_ACK"
+  | "FOLLOW_UP_ACK"
+  | "FOLLOW_UP_QUESTION"
+  | "TROUBLESHOOTING_GUIDANCE"
+  | "OUT_OF_SCOPE_REPLY";
 
 export const LINE_MESSAGE_INTENTS = [
   "NEW_SUPPORT_ISSUE",
@@ -94,6 +99,7 @@ export const LINE_MESSAGE_INTENTS = [
   "CLOSE_CASE_REQUEST",
   "REOPEN_CASE_REQUEST",
   "TECH_GENERAL_QUESTION",
+  "OUT_OF_SCOPE",
   "SMALL_TALK",
   "GREETING",
   "THANK_YOU",
@@ -105,6 +111,8 @@ export type LineMessageIntentName = (typeof LINE_MESSAGE_INTENTS)[number];
 export type LineMessageIntentClassification = {
   intent: LineMessageIntentName;
   shouldCreateCase: boolean;
+  shouldForwardToTeams?: boolean;
+  teamsEventType?: "NEW_CASE" | "FOLLOW_UP" | "OUT_OF_SCOPE_MESSAGE" | "CASE_QUERY" | "NONE";
   targetCaseNumber: string | null;
   matchedActiveCaseId?: string | null;
   resolvedMessage?: string;
@@ -346,11 +354,15 @@ export const aiCenterClient = {
   }) {
     const replyType = input.replyType ?? "FOLLOW_UP_QUESTION";
     const fallback = replyType === "INITIAL_CASE_ACK"
-      ? `รับเรื่องเรียบร้อยแล้วค่ะ\n\nหมายเลขเคส: ${input.caseNumber ?? "-"}\nเรื่อง: ${input.caseTitle ?? "ปัญหาที่แจ้ง"}\n\n${input.requestedNextQuestion ?? "ทีมงานกำลังตรวจสอบให้นะคะ"}`
+      ? `รับเรื่องเรียบร้อยแล้วค่ะ\n\nหมายเลขเคส: ${input.caseNumber ?? "-"}\nเรื่อง: ${input.caseTitle ?? "ปัญหาที่แจ้ง"}\n\nทีมงานกำลังตรวจสอบให้นะคะ`
+      : replyType === "FOLLOW_UP_ACK"
+      ? "รับทราบค่ะ เดี๋ยวส่งข้อมูลนี้ให้ทีม Tech ตรวจสอบต่อให้นะคะ"
       : replyType === "FOLLOW_UP_QUESTION"
       ? (input.missingFacts?.length
         ? `ขอทราบเพิ่มเติมค่ะ ${input.missingFacts.slice(0, 2).join(" และ ")} ได้ไหมคะ`
         : "รับทราบค่ะ เดี๋ยวตรวจสอบข้อมูลนี้ต่อให้นะคะ")
+      : replyType === "OUT_OF_SCOPE_REPLY"
+      ? "ขออภัยค่ะ เรื่องนี้อยู่นอกขอบเขตการดูแลของทีม Tech Support หากมีปัญหาด้านระบบหรือการใช้งาน แจ้งรายละเอียดมาได้เลยนะคะ"
       : "ขอบคุณสำหรับข้อมูลค่ะ เดี๋ยวทีมงานตรวจสอบต่อจากรายละเอียดนี้ให้นะคะ";
 
     try {
@@ -365,9 +377,11 @@ export const aiCenterClient = {
             task: "compose_contextual_line_reply",
             rules: [
               "เลือกแนวทางตาม replyType ที่ระบุ",
-              "INITIAL_CASE_ACK ใช้ตอนสร้างเคสใหม่เท่านั้น ต้องแสดงหมายเลขเคสและสรุปปัญหาแบบสั้น ๆ เพียงครั้งนี้ แล้วถามข้อมูลที่จำเป็นถัดไป",
+              "INITIAL_CASE_ACK ใช้ตอนสร้างเคสใหม่เท่านั้น ต้องแสดงหมายเลขเคสและสรุปปัญหาแบบสั้น ๆ เพียงครั้งนี้ แล้วจบด้วยการแจ้งว่าทีมงานกำลังตรวจสอบ ห้ามถามคำถาม ห้ามขอข้อมูลเพิ่ม และห้ามให้ขั้นตอนแก้ปัญหาหลังสร้างเคส",
+              "FOLLOW_UP_ACK ใช้เมื่อข้อความเป็นข้อมูลต่อเนื่องของเคสเดิม ให้ตอบรับสั้น ๆ โดยไม่ถามคำถามและไม่แนะนำขั้นตอนแก้ปัญหา",
               "FOLLOW_UP_QUESTION ใช้เมื่อข้อมูลยังไม่พอ ห้ามแสดงหมายเลขเคสหรือชื่อเรื่องซ้ำ ห้ามทวนข้อความล่าสุดทั้งประโยค ให้ตีความข้อความล่าสุดร่วมกับ lastBotQuestion แล้วถามต่อไม่เกิน 1-2 คำถาม",
               "TROUBLESHOOTING_GUIDANCE ใช้เมื่อมีข้อมูลพอ ให้แนะนำขั้นตอนตรวจสอบที่อ้างอิงจากข้อมูลที่มีเท่านั้น และถามผลหลังทำ ห้ามปิดเคสอัตโนมัติ",
+              "OUT_OF_SCOPE_REPLY ใช้ปฏิเสธอย่างสุภาพและสั้น ๆ โดยไม่สร้างเคส ไม่กล่าวถึงข้อมูลภายในระบบ และไม่ให้ข้อมูลที่ไม่มีหลักฐาน",
               "ถ้ายังไม่มีหลักฐานพอสำหรับคำแนะนำทางเทคนิค ให้รับทราบสั้น ๆ และบอกว่าจะตรวจสอบต่อแทนการเดา",
               "ห้ามพูดเลขเคส ชื่อเรื่อง หรือคำว่าเพิ่มข้อมูลในเคสซ้ำใน FOLLOW_UP_QUESTION และ TROUBLESHOOTING_GUIDANCE",
               "ห้ามพูดว่าบันทึกข้อมูลลงระบบ ห้ามแสดง confidence, category, status ภายใน หรือพูดถึง AI",
@@ -397,6 +411,8 @@ export const aiCenterClient = {
       if (replyType !== "INITIAL_CASE_ACK" && input.caseNumber) {
         cleanedReply = cleanedReply.replace(new RegExp(`\\b${input.caseNumber}\\b`, "gi"), "").replace(/\n{3,}/g, "\n\n").trim();
       }
+      if (replyType === "INITIAL_CASE_ACK" && /[?？]|ไหม|ขอทราบ|รบกวนส่ง|ลองทำ/iu.test(cleanedReply)) return fallback;
+      if ((replyType === "FOLLOW_UP_ACK" || replyType === "OUT_OF_SCOPE_REPLY") && /[?？]|ไหม|ขอทราบ|รบกวนส่ง/iu.test(cleanedReply)) return fallback;
       if (!/(ค่ะ|นะคะ)[.!?]?$/u.test(cleanedReply)) return fallback;
       return cleanedReply;
     } catch (error) {
@@ -443,6 +459,8 @@ export const aiCenterClient = {
             requiredSchema: {
               intent: "one of allowedIntents",
               shouldCreateCase: "boolean",
+              shouldForwardToTeams: "boolean",
+              teamsEventType: "NEW_CASE | FOLLOW_UP | OUT_OF_SCOPE_MESSAGE | CASE_QUERY | NONE",
               targetCaseNumber: "string or null",
               matchedActiveCaseId: "active case id or null",
               resolvedMessage: "context-resolved message or null",
@@ -454,7 +472,7 @@ export const aiCenterClient = {
               "FOLLOW_UP_EXISTING_CASE ใช้เมื่อข้อความเป็นคำตอบต่อคำถามก่อนหน้า ให้ข้อมูลเพิ่ม หรือแจ้งผลหลังทดลองแก้ปัญหา",
               "คำถามจำนวนเคส ประวัติเคส สถานะเคส หรือรายละเอียดเคส ห้ามสร้างเคสใหม่",
               "คำถามด้านเทคนิคทั่วไปที่ยังไม่ได้แจ้งอาการจริงให้เป็น TECH_GENERAL_QUESTION และห้ามสร้างเคส",
-              "คำคุยเล่นหรือนอกขอบเขตให้เป็น SMALL_TALK และห้ามสร้างเคส",
+              "เรื่องที่อยู่นอกขอบเขตการดูแลให้เป็น OUT_OF_SCOPE และห้ามสร้างเคส; SMALL_TALK ใช้เฉพาะการคุยเล่นเท่านั้น",
               "คำทักทายและคำขอบคุณห้ามสร้างเคส",
               "ถ้าไม่มั่นใจให้เป็น UNKNOWN และ shouldCreateCase=false",
               "confidence ต่ำกว่า 0.70 ให้ shouldCreateCase=false",
@@ -485,6 +503,14 @@ export const aiCenterClient = {
         shouldCreateCase: intent === "NEW_SUPPORT_ISSUE"
           && parsed.shouldCreateCase === true
           && confidence >= 0.7,
+        shouldForwardToTeams: parsed.shouldForwardToTeams === true,
+        teamsEventType: parsed.teamsEventType === "NEW_CASE"
+          || parsed.teamsEventType === "FOLLOW_UP"
+          || parsed.teamsEventType === "OUT_OF_SCOPE_MESSAGE"
+          || parsed.teamsEventType === "CASE_QUERY"
+          || parsed.teamsEventType === "NONE"
+          ? parsed.teamsEventType
+          : undefined,
         targetCaseNumber: requestedCaseNumber
           && (input.latestMessage.toLowerCase().includes(requestedCaseNumber.toLowerCase()) || knownCaseNumbers.has(requestedCaseNumber.toLowerCase()))
           ? requestedCaseNumber

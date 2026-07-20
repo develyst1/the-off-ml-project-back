@@ -421,9 +421,7 @@ export const caseService = {
     const lastBotQuestion = [...detail.messages]
       .reverse()
       .find((message) => message.senderType === "BOT" && message.messageType === "REQUEST_MORE_INFO")?.originalText;
-    const replyType = detail.status === "awaiting_customer_info" || lastBotQuestion
-      ? "FOLLOW_UP_QUESTION"
-      : "TROUBLESHOOTING_GUIDANCE";
+    const replyType = "FOLLOW_UP_ACK" as const;
     const continuationReply = await aiCenterClient.generateLineContinuationReply({
       replyType,
       caseNumber: detail.caseNumber,
@@ -522,6 +520,10 @@ export const caseService = {
       originalText: rawText,
       senderType: "TECH",
       messageType: "TECH_RAW_REPLY",
+      metadata: {
+        requestedBy: "TECH",
+        generatedBy: "AI_ASSISTED_TECH",
+      },
       isVisibleToCustomer: false,
     });
 
@@ -717,6 +719,10 @@ export const caseService = {
         originalText: question,
         senderType: "TECH",
         messageType: "TECH_RAW_REPLY",
+        metadata: {
+          requestedBy: "TECH",
+          generatedBy: "TECH",
+        },
         isVisibleToCustomer: false,
       });
       sourceId = rawMessage.id;
@@ -736,6 +742,10 @@ export const caseService = {
       senderType: "TECH",
       messageType: "REQUEST_MORE_INFO",
       sourceMessageId: sourceId,
+      metadata: {
+        requestedBy: "TECH",
+        generatedBy: sourceMessageId ? "AI_ASSISTED_TECH" : "TECH",
+      },
       isVisibleToCustomer: true,
       deliveryStatus: delivery.delivered ? "delivered" : "pending",
     });

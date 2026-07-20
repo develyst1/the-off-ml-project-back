@@ -16,6 +16,7 @@ mock.module("./line-client", () => ({
 mock.module("./teams-client", () => ({
   teamsClient: {
     notifyCase: async () => ({ delivered: true }),
+    notifyOutOfScope: async () => ({ delivered: true }),
   },
 }));
 mock.module("./ai-center-client", () => ({
@@ -27,7 +28,7 @@ mock.module("./ai-center-client", () => ({
       urgency: "medium",
       confidence: 85,
       status: "AI_SUCCESS",
-      missingInformation: [],
+      missingInformation: input.text.includes("ข้อมูลไม่ครบ") ? ["รายละเอียดอาการ"] : [],
       suggestedTeamNote: "ตรวจสอบข้อมูลการส่งงาน",
       sentiment: "neutral",
     }),
@@ -36,6 +37,7 @@ mock.module("./ai-center-client", () => ({
     extractPendingInformation: async () => ({ values: {} }),
     classifyLineMessageIntent: async (input: { latestMessage: string; activeCases?: Array<{ id: string }> }) => {
       if (classifierShouldFail) throw new Error("classifier unavailable");
+      if (input.latestMessage === "เรื่องนี้ไม่เกี่ยวกับระบบ") return { intent: "OUT_OF_SCOPE", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "out of scope" };
       if (input.latestMessage === "ต้องการสอบถามเกี่ยวกับเครื่องเซิร์ฟเวอร์") return { intent: "TECH_GENERAL_QUESTION", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "technical context" };
       if (input.latestMessage === "กินข้าวหรือยัง") return { intent: "SMALL_TALK", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "small talk" };
       if (input.latestMessage === "สวัสดี") return { intent: "GREETING", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "greeting" };
@@ -110,6 +112,7 @@ describe("pending LINE information requests", () => {
     expect(cases).toHaveLength(1);
     expect(detail?.messages.some((message) => message.originalText === "คณิตศาสตร์ ช่วงสองโมง" && message.messageType === "CUSTOMER_ADDITIONAL_INFO")).toBe(true);
     expect(detail?.messages.some((message) => message.messageType === "CASE_FORWARDED")).toBe(true);
+    expect(detail?.messages.find((message) => message.messageType === "REQUEST_MORE_INFO")?.metadata).toMatchObject({ requestedBy: "TECH", generatedBy: "TECH" });
     expect(detail?.messages.some((message) => message.originalText.includes("วิชา/ทีม คณิตศาสตร์") && message.originalText.includes("ส่งงานช่วงสองโมง"))).toBe(true);
     expect(updatedCustomer.pendingCaseSelection).toBeUndefined();
   });
@@ -188,6 +191,31 @@ describe("LINE case query guards", () => {
 });
 
 describe("LINE intent classification guards", () => {
+  test("creates a new case with an acknowledgement only, even when analysis reports missing information", async () => {
+    sequence += 1;
+    const lineUserId = `U-new-case-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `New Case Customer ${sequence}` });
+
+    await sendReply({ lineUserId, messageId: `new-case-${sequence}`, text: "แจ้งปัญหาข้อมูลไม่ครบ ระบบทำงานผิดปกติ" });
+
+    const cases = await caseService.getCustomerCases(customer.id);
+    const detail = cases[0] ? await caseService.getCase(cases[0].id) : undefined;
+    expect(cases).toHaveLength(1);
+    expect(detail?.status).toBe("awaiting_tech");
+    expect(detail?.messages.some((message) => message.messageType === "REQUEST_MORE_INFO")).toBe(false);
+    expect(detail?.messages.filter((message) => message.senderType === "BOT").at(-1)?.messageType).toBe("CASE_ACKNOWLEDGEMENT");
+  });
+
+  test("handles an out-of-scope intent without creating a case", async () => {
+    sequence += 1;
+    const lineUserId = `U-out-of-scope-intent-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Out of Scope Intent Customer ${sequence}` });
+
+    await sendReply({ lineUserId, messageId: `out-of-scope-intent-${sequence}`, text: "เรื่องนี้ไม่เกี่ยวกับระบบ" });
+
+    expect(await caseService.getCustomerCases(customer.id)).toHaveLength(0);
+  });
+
   test("appends a short follow-up to the only active case instead of creating a new case", async () => {
     sequence += 1;
     const lineUserId = `U-follow-up-${sequence}`;
