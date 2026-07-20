@@ -2,13 +2,14 @@ import { describe, expect, mock, test } from "bun:test";
 import { InMemoryStore } from "../repositories/in-memory-store";
 
 const store = new InMemoryStore();
+const lineReplies: string[] = [];
 
 mock.module("../repositories/store", () => ({ store }));
 mock.module("./line-client", () => ({
   lineClient: {
     getProfile: async () => undefined,
     reply: async () => ({ delivered: true }),
-    replyToToken: async () => ({ delivered: true }),
+    replyToToken: async (input: { text: string }) => { lineReplies.push(input.text); return { delivered: true }; },
   },
 }));
 mock.module("./teams-client", () => ({
@@ -31,7 +32,11 @@ mock.module("./ai-center-client", () => ({
     }),
     analyzeCaseRelation: async () => ({ related: true, confidence: 100, reason: "pending question" }),
     extractPendingInformation: async () => ({ values: {} }),
-    generateLineContinuationReply: async () => "รับทราบค่ะ เดี๋ยวส่งข้อมูลให้ทีมตรวจสอบต่อนะคะ",
+    classifyLineMessageIntent: async () => ({ intent: "NEW_SUPPORT_ISSUE", shouldCreateCase: true, targetCaseNumber: null, confidence: 1, reason: "test" }),
+    generateLineContinuationReply: async (input: { replyType?: string; requestedNextQuestion?: string }) =>
+      input.replyType === "FOLLOW_UP_QUESTION" && input.requestedNextQuestion
+        ? input.requestedNextQuestion
+        : "รับทราบค่ะ เดี๋ยวตรวจสอบข้อมูลนี้ต่อให้นะคะ",
     generateProblemSummary: async (input: { currentProblemSummary?: string; latestCustomerMessage: string }) => ({
       problemSummary: input.currentProblemSummary ?? input.latestCustomerMessage,
       shouldUpdate: !input.currentProblemSummary,
@@ -120,7 +125,9 @@ describe("pending LINE information requests", () => {
     const updatedCustomer = await store.upsertCustomer({ lineUserId });
     expect(cases).toHaveLength(1);
     expect(detail?.messages.some((message) => message.originalText === "บ่ายสอง" && message.messageType === "CUSTOMER_ADDITIONAL_INFO")).toBe(true);
-    expect(detail?.messages.some((message) => message.originalText.includes("เพิ่มข้อมูลในเคส") && message.originalText.includes(supportCase.caseNumber))).toBe(true);
+    const latestReply = detail?.messages.filter((message) => message.senderType === "BOT").at(-1)?.originalText ?? "";
+    expect(latestReply).not.toContain("เพิ่มข้อมูลในเคส");
+    expect(latestReply).not.toContain(supportCase.caseNumber);
     expect(updatedCustomer.pendingCaseSelection).toBeUndefined();
   });
 
@@ -135,5 +142,33 @@ describe("pending LINE information requests", () => {
     expect(updatedCustomer.pendingCaseSelection?.pendingAction).toBe("REQUEST_MORE_INFO");
     expect(updatedCustomer.pendingCaseSelection?.pendingCollectedFields?.submittedAtText).toBe("บ่ายสอง");
     expect(latestRequest?.originalText).toContain("ชื่อวิชาหรือทีมที่ส่งงาน");
+  });
+});
+
+describe("LINE case query guards", () => {
+  test("answers a case count query without creating a new case", async () => {
+    sequence += 1;
+    const lineUserId = `U-case-query-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Query Customer ${sequence}` });
+    await store.createCase({ customerId: customer.id, status: "awaiting_tech", title: "ปัญหาการเชื่อมต่อ" });
+
+    const before = await caseService.getCustomerCases(customer.id);
+    await sendReply({ lineUserId, messageId: `case-query-${sequence}`, text: "ตอนนี้ฉันเปิดไปกี่เคส" });
+    const after = await caseService.getCustomerCases(customer.id);
+
+    expect(after).toHaveLength(before.length);
+    expect(lineReplies.at(-1)).toContain(`คุณเคยเปิดเคสทั้งหมด ${before.length} เคสค่ะ`);
+  });
+
+  test("does not expose another customer's case when checking a case status", async () => {
+    sequence += 1;
+    const lineUserId = `U-case-status-${sequence}`;
+    const otherCustomer = await store.upsertCustomer({ lineUserId: `U-other-${sequence}`, displayName: "Other Customer" });
+    const otherCase = await store.createCase({ customerId: otherCustomer.id, status: "awaiting_tech", title: "ข้อมูลส่วนตัวของอีกคน" });
+
+    await sendReply({ lineUserId, messageId: `case-status-${sequence}`, text: `สถานะเคส ${otherCase.caseNumber}` });
+
+    expect(lineReplies.at(-1)).toContain("ไม่พบเคสหมายเลขนี้ในประวัติของคุณค่ะ");
+    expect(await caseService.getCustomerCases((await store.upsertCustomer({ lineUserId })).id)).toHaveLength(0);
   });
 });

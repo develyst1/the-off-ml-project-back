@@ -82,6 +82,33 @@ export type MoreInfoRequestSuggestion = {
   reason: string;
 };
 
+export type LineReplyType = "INITIAL_CASE_ACK" | "FOLLOW_UP_QUESTION" | "TROUBLESHOOTING_GUIDANCE";
+
+export const LINE_MESSAGE_INTENTS = [
+  "NEW_SUPPORT_ISSUE",
+  "FOLLOW_UP_EXISTING_CASE",
+  "CASE_COUNT_QUERY",
+  "CASE_HISTORY_QUERY",
+  "CASE_STATUS_QUERY",
+  "CASE_DETAIL_QUERY",
+  "CLOSE_CASE_REQUEST",
+  "REOPEN_CASE_REQUEST",
+  "GENERAL_CONVERSATION",
+  "GREETING",
+  "THANK_YOU",
+  "UNKNOWN",
+] as const;
+
+export type LineMessageIntentName = (typeof LINE_MESSAGE_INTENTS)[number];
+
+export type LineMessageIntentClassification = {
+  intent: LineMessageIntentName;
+  shouldCreateCase: boolean;
+  targetCaseNumber: string | null;
+  confidence: number;
+  reason: string;
+};
+
 export type CustomerReplyComposeSuggestion = {
   suggestedMessage: string;
   suggestedMode: "CUSTOMER_REPLY" | "REQUEST_MORE_INFO";
@@ -299,38 +326,74 @@ export const aiCenterClient = {
     }
   },
 
-  async generateLineContinuationReply(input: { originalCustomerText: string; recentConversation: string[]; newCustomerText: string }) {
-    const fallback = "ได้ข้อมูลแล้วค่ะ เดี๋ยวส่งให้ทีมงานตรวจสอบต่อนะคะ";
+  async generateLineContinuationReply(input: {
+    replyType?: LineReplyType;
+    caseNumber?: string;
+    caseTitle?: string;
+    originalCustomerText: string;
+    latestCustomerMessage?: string;
+    recentConversation: string[];
+    newCustomerText: string;
+    lastBotQuestion?: string;
+    currentSummary?: string;
+    knownFacts?: string[];
+    missingFacts?: string[];
+    currentCaseStatus?: string;
+    requestedNextQuestion?: string;
+  }) {
+    const replyType = input.replyType ?? "FOLLOW_UP_QUESTION";
+    const fallback = replyType === "INITIAL_CASE_ACK"
+      ? `รับเรื่องเรียบร้อยแล้วค่ะ\n\nหมายเลขเคส: ${input.caseNumber ?? "-"}\nเรื่อง: ${input.caseTitle ?? "ปัญหาที่แจ้ง"}\n\n${input.requestedNextQuestion ?? "ทีมงานกำลังตรวจสอบให้นะคะ"}`
+      : replyType === "FOLLOW_UP_QUESTION"
+      ? (input.missingFacts?.length
+        ? `ขอทราบเพิ่มเติมค่ะ ${input.missingFacts.slice(0, 2).join(" และ ")} ได้ไหมคะ`
+        : "รับทราบค่ะ เดี๋ยวตรวจสอบข้อมูลนี้ต่อให้นะคะ")
+      : "ขอบคุณสำหรับข้อมูลค่ะ เดี๋ยวทีมงานตรวจสอบต่อจากรายละเอียดนี้ให้นะคะ";
 
     try {
       const content = await chatWithAiCenter([
         {
           role: "system",
-          content: "คุณเป็นเจ้าหน้าที่ Tech Support ตอบลูกค้าทาง LINE เป็นภาษาไทยแบบสุภาพและเป็นกันเอง ตอบสั้นเพียง 1 ประโยค",
+          content: "คุณคือเจ้าหน้าที่ Tech Support ที่ตอบลูกค้าผ่าน LINE เป็นภาษาไทยสุภาพ เป็นกันเอง และต่อเนื่องเหมือนเจ้าหน้าที่จริง ห้ามเปิดเผยข้อมูลภายในระบบ",
         },
         {
           role: "user",
           content: JSON.stringify({
-            task: "write_continuation_acknowledgement",
+            task: "compose_contextual_line_reply",
             rules: [
-              "ลงท้ายด้วย ค่ะ หรือ นะคะ",
-              "อ้างอิงบริบทจากข้อความก่อนหน้า",
-              "สรุปข้อมูลสำคัญที่ลูกค้าเพิ่งให้มาแบบสั้น ๆ โดยห้ามแต่งข้อมูล",
-              "ไม่ต้องใช้คำว่า เคสเดิม หรือ ได้รับข้อมูลเพิ่มเติมแล้ว ซ้ำ ๆ",
-              "ห้ามแต่งผลการตรวจสอบ ห้ามรับปากว่าจะแก้ไขได้แน่นอน",
-              "ถ้าลูกค้าทำตามคำแนะนำแล้วแต่ยังไม่ได้ ให้ตอบรับและบอกว่าจะตรวจสอบต่อ",
+              "เลือกแนวทางตาม replyType ที่ระบุ",
+              "INITIAL_CASE_ACK ใช้ตอนสร้างเคสใหม่เท่านั้น ต้องแสดงหมายเลขเคสและสรุปปัญหาแบบสั้น ๆ เพียงครั้งนี้ แล้วถามข้อมูลที่จำเป็นถัดไป",
+              "FOLLOW_UP_QUESTION ใช้เมื่อข้อมูลยังไม่พอ ห้ามแสดงหมายเลขเคสหรือชื่อเรื่องซ้ำ ห้ามทวนข้อความล่าสุดทั้งประโยค ให้ตีความข้อความล่าสุดร่วมกับ lastBotQuestion แล้วถามต่อไม่เกิน 1-2 คำถาม",
+              "TROUBLESHOOTING_GUIDANCE ใช้เมื่อมีข้อมูลพอ ให้แนะนำขั้นตอนตรวจสอบที่อ้างอิงจากข้อมูลที่มีเท่านั้น และถามผลหลังทำ ห้ามปิดเคสอัตโนมัติ",
+              "ถ้ายังไม่มีหลักฐานพอสำหรับคำแนะนำทางเทคนิค ให้รับทราบสั้น ๆ และบอกว่าจะตรวจสอบต่อแทนการเดา",
+              "ห้ามพูดเลขเคส ชื่อเรื่อง หรือคำว่าเพิ่มข้อมูลในเคสซ้ำใน FOLLOW_UP_QUESTION และ TROUBLESHOOTING_GUIDANCE",
+              "ห้ามพูดว่าบันทึกข้อมูลลงระบบ ห้ามแสดง confidence, category, status ภายใน หรือพูดถึง AI",
+              "ห้ามแต่งผลการตรวจสอบ ห้ามรับปากว่าจะแก้ไขได้แน่นอน และถ้าลูกค้าทำตามคำแนะนำแล้วแต่ยังไม่ได้ ให้ตอบรับและบอกว่าจะตรวจสอบต่อ",
+              "ใช้ย่อหน้าสั้น ๆ ถ้ามีหลายขั้นตอนให้เรียงเป็นข้อ และลงท้ายด้วย ค่ะ หรือ นะคะ",
               "ตอบเป็นข้อความธรรมดาเท่านั้น ไม่ต้องใส่เครื่องหมายคำพูดและไม่ต้องใส่ JSON",
             ],
+            replyType,
+            caseNumber: input.caseNumber,
+            caseTitle: input.caseTitle,
+            latestCustomerMessage: input.latestCustomerMessage ?? input.newCustomerText,
             originalCustomerText: input.originalCustomerText,
+            lastBotQuestion: input.lastBotQuestion,
+            currentSummary: input.currentSummary,
+            knownFacts: input.knownFacts ?? [],
+            missingFacts: input.missingFacts ?? [],
+            currentCaseStatus: input.currentCaseStatus,
+            requestedNextQuestion: input.requestedNextQuestion,
             recentConversation: input.recentConversation,
-            newCustomerText: input.newCustomerText,
           }),
         },
       ]);
 
       const reply = content?.trim();
-      if (!reply || reply.length > 180 || reply.includes("http://") || reply.includes("https://")) return fallback;
-      const cleanedReply = reply.replace(/^['"]|['"]$/g, "").trim();
+      if (!reply || reply.length > 700 || reply.includes("http://") || reply.includes("https://")) return fallback;
+      let cleanedReply = reply.replace(/^['"]|['"]$/g, "").trim();
+      if (replyType !== "INITIAL_CASE_ACK" && input.caseNumber) {
+        cleanedReply = cleanedReply.replace(new RegExp(`\\b${input.caseNumber}\\b`, "gi"), "").replace(/\n{3,}/g, "\n\n").trim();
+      }
       if (!/(ค่ะ|นะคะ)[.!?]?$/u.test(cleanedReply)) return fallback;
       return cleanedReply;
     } catch (error) {
@@ -338,6 +401,72 @@ export const aiCenterClient = {
         event: "ai_center_continuation_reply_failed",
         message: error instanceof Error ? error.message : "Unexpected AI CENTER error",
       });
+      return fallback;
+    }
+  },
+
+  async classifyLineMessageIntent(input: {
+    latestMessage: string;
+    activeCases: Array<{ caseNumber: string; title?: string; status: string; updatedAt: string }>;
+    recentCases: Array<{ caseNumber: string; title?: string; status: string; updatedAt: string }>;
+    activeCaseNumber?: string;
+    conversationState?: string;
+  }): Promise<LineMessageIntentClassification> {
+    const fallback: LineMessageIntentClassification = {
+      intent: "NEW_SUPPORT_ISSUE",
+      shouldCreateCase: true,
+      targetCaseNumber: null,
+      confidence: 0.5,
+      reason: "ใช้เส้นทางแจ้งปัญหาใหม่เป็นค่าเริ่มต้นเมื่อจำแนก intent ไม่ได้",
+    };
+
+    try {
+      const content = await chatWithAiCenter([
+        {
+          role: "system",
+          content: "คุณคือ AI จำแนก intent ของข้อความลูกค้า LINE สำหรับระบบ Tech Support ตอบเป็น JSON เท่านั้น ห้ามสร้างหรือเปลี่ยนข้อมูลเคส",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "classify_line_message_intent_before_case_creation",
+            allowedIntents: LINE_MESSAGE_INTENTS,
+            requiredSchema: {
+              intent: "one of allowedIntents",
+              shouldCreateCase: "boolean",
+              targetCaseNumber: "string or null",
+              confidence: "number from 0 to 1",
+              reason: "short Thai explanation",
+            },
+            rules: [
+              "คำถามจำนวนเคส ประวัติเคส สถานะเคส หรือรายละเอียดเคส ห้ามสร้างเคสใหม่",
+              "ข้อความตอบคำถามหรือให้ข้อมูลต่อจาก active case ให้เป็น FOLLOW_UP_EXISTING_CASE",
+              "สร้างเคสได้เฉพาะ NEW_SUPPORT_ISSUE ที่มีคำอธิบายปัญหาจริงและ shouldCreateCase=true",
+              "คำทักทาย ขอบคุณ หรือบทสนทนาทั่วไป ห้ามสร้างเคส",
+              "ถ้ามีเลขเคส ให้ใส่ targetCaseNumber เฉพาะเลขที่ปรากฏในข้อความ",
+              "ห้ามเปิดเผยข้อมูลจากเคสอื่น และอย่าเดา target case เมื่อไม่ชัดเจน",
+            ],
+            ...input,
+          }),
+        },
+      ]);
+      if (!content) return fallback;
+      const parsed = parseJsonObject<Partial<LineMessageIntentClassification>>(content, fallback);
+      const intent = LINE_MESSAGE_INTENTS.includes(parsed.intent as LineMessageIntentName)
+        ? parsed.intent as LineMessageIntentName
+        : "UNKNOWN";
+      const confidence = typeof parsed.confidence === "number"
+        ? Math.max(0, Math.min(1, parsed.confidence > 1 ? parsed.confidence / 100 : parsed.confidence))
+        : 0;
+      return {
+        intent,
+        shouldCreateCase: intent === "NEW_SUPPORT_ISSUE" && parsed.shouldCreateCase === true,
+        targetCaseNumber: typeof parsed.targetCaseNumber === "string" ? parsed.targetCaseNumber.trim() || null : null,
+        confidence,
+        reason: typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : "AI จำแนกข้อความแล้ว",
+      };
+    } catch (error) {
+      console.error({ event: "ai_center_line_intent_classification_failed", message: String(error) });
       return fallback;
     }
   },

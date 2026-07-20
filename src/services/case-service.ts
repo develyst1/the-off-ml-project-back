@@ -414,10 +414,28 @@ export const caseService = {
           conversationContext: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
         })
       : undefined;
+    const lastBotQuestion = [...detail.messages]
+      .reverse()
+      .find((message) => message.senderType === "BOT" && message.messageType === "REQUEST_MORE_INFO")?.originalText;
+    const replyType = detail.status === "awaiting_customer_info" || lastBotQuestion
+      ? "FOLLOW_UP_QUESTION"
+      : "TROUBLESHOOTING_GUIDANCE";
     const continuationReply = await aiCenterClient.generateLineContinuationReply({
+      replyType,
+      caseNumber: detail.caseNumber,
+      caseTitle: this.formatCaseTitle(detail),
       originalCustomerText: detail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? input.text,
+      latestCustomerMessage: input.text,
       recentConversation: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
       newCustomerText: input.text,
+      lastBotQuestion,
+      currentSummary: detail.problemSummary ?? detail.title ?? "",
+      knownFacts: detail.messages
+        .filter((message) => message.senderType === "CUSTOMER")
+        .slice(-6)
+        .map((message) => message.originalText),
+      missingFacts: analysis?.missingInformation ?? [],
+      currentCaseStatus: detail.status,
     });
 
     if (analysis) {

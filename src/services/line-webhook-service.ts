@@ -4,12 +4,13 @@ import {
   buildMissingInformationQuestion,
   extractPendingInformationFallback,
   formatPendingInformation,
+  getPendingInformationLabel,
   getMissingPendingInformationFields,
   type PendingInformationField,
   type PendingInformationValues,
 } from "../lib/pending-information";
 import { store } from "../repositories/store";
-import { aiCenterClient } from "./ai-center-client";
+import { aiCenterClient, type LineMessageIntentClassification, type LineMessageIntentName } from "./ai-center-client";
 import { caseService } from "./case-service";
 import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
@@ -59,6 +60,143 @@ function getStoredPendingInformation(selection: PendingCaseSelection): PendingIn
   ) as PendingInformationValues;
 }
 
+const NON_CASE_CREATING_INTENTS = new Set<LineMessageIntentName>([
+  "CASE_COUNT_QUERY",
+  "CASE_HISTORY_QUERY",
+  "CASE_STATUS_QUERY",
+  "CASE_DETAIL_QUERY",
+  "CLOSE_CASE_REQUEST",
+  "REOPEN_CASE_REQUEST",
+  "GENERAL_CONVERSATION",
+  "GREETING",
+  "THANK_YOU",
+]);
+
+const ACTIVE_CASE_STATUSES = new Set(["analyzing", "awaiting_tech", "assigned", "tech_replied", "analyzing_solution", "awaiting_customer_info", "awaiting_confirmation", "reopened", "in_progress"]);
+const CLOSED_CASE_STATUSES = new Set(["closed", "resolved", "sent_to_customer"]);
+
+function detectCaseQueryIntent(text: string): LineMessageIntentName | undefined {
+  const normalized = text.trim();
+  if (/เปิดไปกี่เคส|มีทั้งหมดกี่เคส|ตอนนี้มีกี่เคส|เปิดอยู่กี่เคส|กำลังดำเนินการอยู่กี่เคส|เคสไหนยังไม่ปิด/iu.test(normalized)) return "CASE_COUNT_QUERY";
+  if (/มีเคสอะไรบ้าง|เคสที่เคยแจ้ง|ประวัติเคส|ดูเคสของฉัน|เคสล่าสุด|รายการเคส/iu.test(normalized)) return "CASE_HISTORY_QUERY";
+  if (/สถานะเคส|สถานะ.*เคส|เคส.*สถานะ|ตอนนี้.*อยู่ขั้นตอนไหน|ความคืบหน้า.*เคส/iu.test(normalized)) return "CASE_STATUS_QUERY";
+  if (/รายละเอียดเคส|ข้อมูลของเคส|ดูรายละเอียด.*เคส/iu.test(normalized)) return "CASE_DETAIL_QUERY";
+  if (/ขอปิดเคส|ปิดเคสให้หน่อย|ปิดเรื่องนี้/iu.test(normalized)) return "CLOSE_CASE_REQUEST";
+  if (/เปิดเคสเดิม|เปิดเรื่องเดิม|ขอเปิดเคส|เคสที่\s*\d+|เรื่องที่แจ้ง|ยังไม่หาย/iu.test(normalized)) return "REOPEN_CASE_REQUEST";
+  if (/^(สวัสดี|หวัดดี|ดีค่ะ|ดีครับ|hello|hi)\b/iu.test(normalized)) return "GREETING";
+  if (/^(ขอบคุณ|ขอบคุณค่ะ|ขอบคุณครับ|แต๊งกิ้ว)/iu.test(normalized)) return "THANK_YOU";
+  return undefined;
+}
+
+function hasActualProblemDescription(text: string) {
+  const normalized = text.trim();
+  if (normalized.length < 8) return false;
+  if (/^(เปิดเคสใหม่|สร้างเคสใหม่|แจ้งเรื่องใหม่|เคสใหม่|เปิดเคส)$/iu.test(normalized)) return false;
+  return !detectCaseQueryIntent(normalized);
+}
+
+function formatCustomerCaseDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "ไม่ทราบวันที่";
+  return new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(date);
+}
+
+function getCustomerCaseStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    new: "รอเริ่มดำเนินการ",
+    analyzing: "กำลังวิเคราะห์",
+    awaiting_tech: "รอทีม Tech ตอบ",
+    assigned: "ทีม Tech รับเคสแล้ว",
+    tech_replied: "กำลังตรวจสอบ",
+    analyzing_solution: "กำลังวิเคราะห์วิธีแก้ไข",
+    awaiting_customer_info: "รอลูกค้าให้ข้อมูล",
+    awaiting_confirmation: "รอยืนยันจากลูกค้า",
+    reopened: "เปิดเคสอีกครั้งแล้ว",
+    in_progress: "กำลังดำเนินการ",
+    resolved: "แก้ไขแล้ว",
+    sent_to_customer: "ส่งคำตอบให้ลูกค้าแล้ว",
+    closed: "ปิดเคสแล้ว",
+  };
+  return labels[status] ?? "กำลังดำเนินการ";
+}
+
+async function handleNonCaseIntent(input: {
+  customer: Customer;
+  intent: LineMessageIntentClassification;
+  text: string;
+  replyToken?: string;
+}): Promise<boolean> {
+  const cases = await caseService.getCustomerCases(input.customer.id);
+  const activeCases = cases.filter((item) => ACTIVE_CASE_STATUSES.has(item.status));
+  const recentCases = cases.slice(0, 5);
+  const caseNumberMatch = input.text.match(/\bOFF-\d{4}-\d+\b/i)?.[0];
+  const requestedOpenOnly = /เปิดอยู่|กำลังดำเนินการ|ยังไม่ปิด/iu.test(input.text);
+
+  if (input.intent.intent === "CASE_COUNT_QUERY") {
+    const count = requestedOpenOnly ? activeCases.length : cases.length;
+    if (count === 0) {
+      const reply = requestedOpenOnly
+        ? "ตอนนี้ไม่มีเคสที่กำลังดำเนินการอยู่ค่ะ\n\nเคสก่อนหน้าของคุณปิดเรียบร้อยแล้วทั้งหมดนะคะ"
+        : "ตอนนี้ยังไม่มีเคสในประวัติของคุณค่ะ หากพบปัญหา สามารถแจ้งรายละเอียดเข้ามาได้เลยนะคะ";
+      await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
+      return true;
+    }
+    const shown = (requestedOpenOnly ? activeCases : cases).slice(0, 5);
+    const remaining = count - shown.length;
+    const rows = shown.map((item) => `• ${item.caseNumber} — ${caseService.formatCaseTitle(item)} — ${getCustomerCaseStatusLabel(item.status)}`);
+    const reply = requestedOpenOnly
+      ? `ตอนนี้คุณมีเคสที่กำลังดำเนินการอยู่ ${count} เคสค่ะ\n\n${rows.join("\n")}\n${remaining > 0 ? `\nยังมีอีก ${remaining} เคสค่ะ\n` : "\n"}ต้องการดูรายละเอียดของเคสไหน แจ้งเลขเคสได้เลยค่ะ`
+      : `คุณเคยเปิดเคสทั้งหมด ${count} เคสค่ะ\n\n• กำลังดำเนินการ ${activeCases.length} เคส\n• ปิดแล้ว ${cases.filter((item) => CLOSED_CASE_STATUSES.has(item.status)).length} เคส\n\n${remaining > 0 ? `แสดงรายการล่าสุด 5 เคส และยังมีอีก ${remaining} เคสค่ะ\n\n` : ""}ต้องการดูรายละเอียดของเคสไหน แจ้งเลขเคสได้เลยค่ะ`;
+    await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
+    return true;
+  }
+
+  if (input.intent.intent === "CASE_HISTORY_QUERY") {
+    const rows = recentCases.map((item) => `• ${item.caseNumber} — ${caseService.formatCaseTitle(item)} — ${getCustomerCaseStatusLabel(item.status)}`);
+    const reply = rows.length > 0
+      ? `เคสล่าสุดของคุณมีดังนี้ค่ะ\n\n${rows.join("\n")}\n\nต้องการดูรายละเอียดของเคสไหน แจ้งเลขเคสได้เลยค่ะ`
+      : "ยังไม่พบประวัติเคสของคุณค่ะ หากพบปัญหาใหม่สามารถแจ้งรายละเอียดเข้ามาได้เลยนะคะ";
+    await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
+    return true;
+  }
+
+  if (input.intent.intent === "CASE_STATUS_QUERY" || input.intent.intent === "CASE_DETAIL_QUERY") {
+    let targetCase = caseNumberMatch ? cases.find((item) => item.caseNumber.toLowerCase() === caseNumberMatch.toLowerCase()) : undefined;
+    if (caseNumberMatch && !targetCase) {
+      await lineClient.replyToToken({ replyToken: input.replyToken, text: "ไม่พบเคสหมายเลขนี้ในประวัติของคุณค่ะ กรุณาตรวจสอบหมายเลขเคสอีกครั้งนะคะ" });
+      return true;
+    }
+    if (!targetCase && activeCases.length === 1) targetCase = activeCases[0];
+    if (!targetCase && activeCases.length > 1) {
+      const rows = activeCases.slice(0, 5).map((item) => `• ${item.caseNumber} — ${caseService.formatCaseTitle(item)}`);
+      await lineClient.replyToToken({ replyToken: input.replyToken, text: `ตอนนี้มีหลายเคสที่กำลังดำเนินการอยู่ค่ะ\n\n${rows.join("\n")}\n\nรบกวนแจ้งเลขเคสที่ต้องการดูสถานะนะคะ` });
+      return true;
+    }
+    if (!targetCase) {
+      await lineClient.replyToToken({ replyToken: input.replyToken, text: "ยังไม่พบเคสที่กำลังดำเนินการอยู่ค่ะ หากต้องการดูเคสที่ปิดแล้ว แจ้งหมายเลขเคสได้เลยนะคะ" });
+      return true;
+    }
+    const reply = `เคส ${targetCase.caseNumber} ตอนนี้อยู่ในสถานะ “${getCustomerCaseStatusLabel(targetCase.status)}” ค่ะ\n\nอัปเดตล่าสุดเมื่อ ${formatCustomerCaseDate(targetCase.updatedAt)}${input.intent.intent === "CASE_DETAIL_QUERY" ? `\nเรื่อง: ${caseService.formatCaseTitle(targetCase)}` : ""}`;
+    await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
+    return true;
+  }
+
+  if (input.intent.intent === "GREETING" || input.intent.intent === "THANK_YOU" || input.intent.intent === "GENERAL_CONVERSATION") {
+    const reply = input.intent.intent === "GREETING"
+      ? "สวัสดีค่ะ มีปัญหาหรือต้องการสอบถามเรื่องใด แจ้งเข้ามาได้เลยนะคะ"
+      : "ยินดีค่ะ หากพบปัญหาเพิ่มเติมสามารถแจ้งเข้ามาได้เลยนะคะ";
+    await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
+    return true;
+  }
+
+  if (input.intent.intent === "CLOSE_CASE_REQUEST") {
+    await lineClient.replyToToken({ replyToken: input.replyToken, text: "รับทราบค่ะ เดี๋ยวทีมงานตรวจสอบสถานะเคสให้ก่อนนะคะ หากต้องการปิดเคส รบกวนแจ้งหมายเลขเคสด้วยค่ะ" });
+    return true;
+  }
+
+  return false;
+}
+
 async function handlePendingInformationResponse(
   input: LineTextMessageInput,
   customer: Customer,
@@ -97,6 +235,11 @@ async function handlePendingInformationResponse(
     receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
   });
   const collectedText = formatPendingInformation(collectedValues);
+  const updatedPendingDetail = relatedResult.detail ?? await caseService.getCase(caseId);
+  const pendingConversation = updatedPendingDetail?.messages ?? caseDetail.messages;
+  const lastBotQuestion = [...pendingConversation]
+    .reverse()
+    .find((message) => message.senderType === "BOT" && message.messageType === "REQUEST_MORE_INFO")?.originalText;
 
   if (collectedText) {
     await store.createMessage({
@@ -113,7 +256,21 @@ async function handlePendingInformationResponse(
 
   if (missingFields.length > 0) {
     const question = buildMissingInformationQuestion(missingFields);
-    const reply = `ขอข้อมูลเพิ่มเติมสำหรับเคส ${caseDetail.caseNumber}\n\n${question}`;
+    const reply = await aiCenterClient.generateLineContinuationReply({
+      replyType: "FOLLOW_UP_QUESTION",
+      caseNumber: caseDetail.caseNumber,
+      caseTitle: caseService.formatCaseTitle(caseDetail),
+      originalCustomerText: caseDetail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? input.text,
+      latestCustomerMessage: input.text,
+      recentConversation: pendingConversation.slice(-10).map((message) => `${message.direction}: ${message.originalText}`),
+      newCustomerText: input.text,
+      lastBotQuestion,
+      currentSummary: caseDetail.problemSummary ?? caseDetail.title ?? "",
+      knownFacts: collectedText ? [collectedText] : [],
+      missingFacts: missingFields.map(getPendingInformationLabel),
+      currentCaseStatus: caseDetail.status,
+      requestedNextQuestion: question,
+    });
     const delivery = await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
     await store.createMessage({
       caseId,
@@ -140,8 +297,20 @@ async function handlePendingInformationResponse(
     return { processed: true, duplicate: false, caseDetail: await caseService.getCase(caseId) };
   }
 
-  const details = collectedText ? `${collectedText} ` : "";
-  const acknowledgement = `รับทราบค่ะ ${details}เพิ่มข้อมูลในเคส ${caseDetail.caseNumber} ให้แล้วนะคะ`;
+  const acknowledgement = await aiCenterClient.generateLineContinuationReply({
+    replyType: "TROUBLESHOOTING_GUIDANCE",
+    caseNumber: caseDetail.caseNumber,
+    caseTitle: caseService.formatCaseTitle(caseDetail),
+    originalCustomerText: caseDetail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? input.text,
+    latestCustomerMessage: input.text,
+    recentConversation: pendingConversation.slice(-10).map((message) => `${message.direction}: ${message.originalText}`),
+    newCustomerText: input.text,
+    lastBotQuestion,
+    currentSummary: caseDetail.problemSummary ?? caseDetail.title ?? "",
+    knownFacts: collectedText ? [collectedText] : [],
+    missingFacts: [],
+    currentCaseStatus: caseDetail.status,
+  });
   const delivery = await lineClient.replyToToken({ replyToken: input.replyToken, text: acknowledgement });
   await store.createMessage({
     caseId,
@@ -465,6 +634,64 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     }
   }
 
+  const activeCase = await caseService.getActiveLineCase(customer);
+  if (activeCase && customer.activeCaseId !== activeCase.id) {
+    await store.setActiveCase(customer.id, activeCase.id);
+  }
+
+  const customerCases = await caseService.getCustomerCases(customer.id);
+  const activeCaseSnapshots = customerCases
+    .filter((item) => ACTIVE_CASE_STATUSES.has(item.status))
+    .slice(0, 10)
+    .map((item) => ({ caseNumber: item.caseNumber, title: caseService.formatCaseTitle(item), status: item.status, updatedAt: item.updatedAt }));
+  const recentCaseSnapshots = customerCases.slice(0, 10).map((item) => ({ caseNumber: item.caseNumber, title: caseService.formatCaseTitle(item), status: item.status, updatedAt: item.updatedAt }));
+  const detectedQueryIntent = detectCaseQueryIntent(input.text);
+  const classifiedIntent: LineMessageIntentClassification = detectedQueryIntent
+    ? {
+        intent: detectedQueryIntent,
+        shouldCreateCase: false,
+        targetCaseNumber: input.text.match(/\bOFF-\d{4}-\d+\b/i)?.[0] ?? null,
+        confidence: 1,
+        reason: "ข้อความตรงกับ deterministic case query guard",
+      }
+    : await aiCenterClient.classifyLineMessageIntent({
+        latestMessage: input.text,
+        activeCases: activeCaseSnapshots,
+        recentCases: recentCaseSnapshots,
+        activeCaseNumber: activeCase?.caseNumber,
+        conversationState: customer.conversationState,
+      });
+
+  console.log({
+    event: "line_message_intent_classified",
+    lineUserId: input.lineUserId,
+    intent: classifiedIntent.intent,
+    shouldCreateCase: classifiedIntent.shouldCreateCase,
+    confidence: classifiedIntent.confidence,
+    reason: classifiedIntent.reason,
+  });
+
+  if (!isNewCaseRequest && NON_CASE_CREATING_INTENTS.has(classifiedIntent.intent)) {
+    const handled = await handleNonCaseIntent({ customer, intent: classifiedIntent, text: input.text, replyToken: input.replyToken });
+    if (handled) return { processed: true, duplicate: false, caseDetail: undefined };
+  }
+
+  if (!isNewCaseRequest && classifiedIntent.intent === "FOLLOW_UP_EXISTING_CASE" && !activeCase) {
+    await lineClient.replyToToken({ replyToken: input.replyToken, text: "ยังไม่พบเคสที่กำลังดำเนินการอยู่ค่ะ หากต้องการเปิดเคสใหม่ รบกวนพิมพ์รายละเอียดปัญหาเข้ามาได้เลยนะคะ" });
+    return { processed: true, duplicate: false, caseDetail: undefined };
+  }
+
+  const canCreateNewCase = classifiedIntent.intent === "NEW_SUPPORT_ISSUE"
+    && classifiedIntent.shouldCreateCase
+    && hasActualProblemDescription(input.text);
+  if (!isNewCaseRequest && !canCreateNewCase && (classifiedIntent.intent === "UNKNOWN" || classifiedIntent.intent === "NEW_SUPPORT_ISSUE")) {
+    const reply = activeCase
+      ? "ยังไม่แน่ใจว่าต้องการเพิ่มข้อมูลในเรื่องเดิมหรือแจ้งปัญหาใหม่ค่ะ รบกวนพิมพ์ว่า “เรื่องเดิม” หรือ “เปิดเคสใหม่” ให้ชัดเจนอีกครั้งนะคะ"
+      : "ยังไม่แน่ใจว่าต้องการสอบถามเรื่องใดค่ะ หากพบปัญหา รบกวนแจ้งอาการหรือหมายเลขเคสเพิ่มเติมได้เลยนะคะ";
+    await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
+    return { processed: true, duplicate: false, caseDetail: undefined };
+  }
+
   const caseNumberMatch = input.text.match(/\bOFF-\d{4}-\d+\b/i);
   if (caseNumberMatch) {
     const referencedCase = await caseService.getCaseByNumber(caseNumberMatch[0]);
@@ -485,10 +712,6 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     }
   }
 
-  const activeCase = await caseService.getActiveLineCase(customer);
-  if (activeCase && customer.activeCaseId !== activeCase.id) {
-    await store.setActiveCase(customer.id, activeCase.id);
-  }
   if (!isNewCaseRequest) {
     const historyMatch = await caseService.matchLineMessageAgainstHistory({
       customerId: customer.id,
@@ -682,9 +905,20 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     timestamp: input.timestamp,
   });
 
-  const acknowledgement = targetedInfoQuestion
-    ? `รับเรื่องเรียบร้อยแล้วค่ะ\n\nหมายเลขเคส: ${supportCase.caseNumber}\nเรื่อง: ${analysis.caseTitle}\n\n${targetedInfoQuestion}`
-    : `รับเรื่องเรียบร้อยแล้วค่ะ\n\nหมายเลขเคส: ${supportCase.caseNumber}\nเรื่อง: ${analysis.caseTitle}\n\nทีมงานกำลังตรวจสอบให้นะคะ`;
+  const acknowledgement = await aiCenterClient.generateLineContinuationReply({
+    replyType: "INITIAL_CASE_ACK",
+    caseNumber: supportCase.caseNumber,
+    caseTitle: analysis.caseTitle,
+    originalCustomerText: intakeText,
+    latestCustomerMessage: intakeText,
+    recentConversation: [`CUSTOMER: ${intakeText}`],
+    newCustomerText: intakeText,
+    currentSummary: analysis.summary,
+    knownFacts: [],
+    missingFacts: analysis.missingInformation,
+    currentCaseStatus: supportCase.status,
+    requestedNextQuestion: targetedInfoQuestion,
+  });
   const acknowledgementDelivery = await lineClient.replyToToken({
     replyToken: input.replyToken,
     text: acknowledgement,
