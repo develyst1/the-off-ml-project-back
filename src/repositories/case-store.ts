@@ -1,4 +1,4 @@
-import type { Analysis, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { Analysis, AutomationSettings, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 
 export type CaseStore = {
   upsertCustomer(input: { lineUserId: string; displayName?: string }): Promise<Customer>;
@@ -13,6 +13,9 @@ export type CaseStore = {
   getMessageByWebhookEventId(webhookEventId: string): Promise<Message | undefined>;
   createAnalysis(input: Omit<Analysis, "id" | "createdAt">): Promise<Analysis>;
   createSolution(input: Omit<Solution, "id" | "createdAt">): Promise<Solution>;
+  updateSolution(id: string, patch: Pick<Solution, "validatedByTeam" | "validatedAt" | "validatedBy">): Promise<Solution>;
+  getAutomationSettings(): Promise<AutomationSettings>;
+  updateAutomationSettings(patch: Partial<Pick<AutomationSettings, "enabled" | "caseUnderstandingThreshold" | "caseDiscriminationThreshold" | "emergencyDisabledAt">>): Promise<AutomationSettings>;
   createCaseMatchLog(input: Omit<CaseMatchLog, "id" | "createdAt">): Promise<CaseMatchLog>;
   updateCaseMatchLogDecision(id: string, finalUserDecision: NonNullable<CaseMatchLog["finalUserDecision"]>): Promise<CaseMatchLog>;
   listCases(): Promise<CaseDetail[]>;

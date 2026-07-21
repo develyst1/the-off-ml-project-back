@@ -1,4 +1,4 @@
-import type { Analysis, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { Analysis, AutomationSettings, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore } from "./case-store";
 import { normalizeCaseMessage } from "./case-message-normalizer";
@@ -12,6 +12,12 @@ export class InMemoryStore implements CaseStore {
   private analyses = new Map<string, Analysis>();
   private solutions = new Map<string, Solution>();
   private caseMatchLogs = new Map<string, CaseMatchLog>();
+  private automationSettings: AutomationSettings = {
+    enabled: false,
+    caseUnderstandingThreshold: 98,
+    caseDiscriminationThreshold: 98,
+    updatedAt: nowIso(),
+  };
 
   async upsertCustomer(input: { lineUserId: string; displayName?: string }): Promise<Customer> {
     const existingId = this.customersByLineUserId.get(input.lineUserId);
@@ -158,6 +164,23 @@ export class InMemoryStore implements CaseStore {
 
     this.solutions.set(solution.id, solution);
     return solution;
+  }
+
+  async updateSolution(id: string, patch: Pick<Solution, "validatedByTeam" | "validatedAt" | "validatedBy">): Promise<Solution> {
+    const current = this.solutions.get(id);
+    if (!current) throw new Error("Solution not found");
+    const updated = { ...current, ...patch };
+    this.solutions.set(id, updated);
+    return updated;
+  }
+
+  async getAutomationSettings(): Promise<AutomationSettings> {
+    return this.automationSettings;
+  }
+
+  async updateAutomationSettings(patch: Partial<Pick<AutomationSettings, "enabled" | "caseUnderstandingThreshold" | "caseDiscriminationThreshold" | "emergencyDisabledAt">>): Promise<AutomationSettings> {
+    this.automationSettings = { ...this.automationSettings, ...patch, updatedAt: nowIso() };
+    return this.automationSettings;
   }
 
   async createCaseMatchLog(input: Omit<CaseMatchLog, "id" | "createdAt">): Promise<CaseMatchLog> {

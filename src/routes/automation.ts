@@ -1,15 +1,8 @@
 import { Hono } from "hono";
 import { readJsonObject } from "../lib/request";
+import { store } from "../repositories/store";
 import { caseService } from "../services/case-service";
 import { isSolutionReadyForAutoAnswer } from "../services/auto-answer-guardrail";
-
-type AutomationSettings = {
-  enabled: boolean;
-  caseUnderstandingThreshold: number;
-  caseDiscriminationThreshold: number;
-  emergencyDisabledAt?: string;
-  updatedAt: string;
-};
 
 const LOG_PAGE_SIZES = new Set([10, 20, 50, 100]);
 
@@ -34,37 +27,30 @@ function matchesLogStatus(actualStatus: string | undefined, requestedStatus: str
   return actual === requested;
 }
 
-let settings: AutomationSettings = {
-  enabled: true,
-  caseUnderstandingThreshold: 98,
-  caseDiscriminationThreshold: 98,
-  updatedAt: new Date().toISOString(),
-};
-
 export const automationRoutes = new Hono();
 
-automationRoutes.get("/settings", (c) => c.json({ data: settings }));
+automationRoutes.get("/settings", async (c) => c.json({ data: await store.getAutomationSettings() }));
 
 automationRoutes.patch("/settings", async (c) => {
   const body = await readJsonObject(c);
-  const enabled = typeof body.enabled === "boolean" ? body.enabled : settings.enabled;
+  const current = await store.getAutomationSettings();
+  const enabled = typeof body.enabled === "boolean" ? body.enabled : current.enabled;
   const emergencyDisable = body.emergencyDisable === true;
+  const patch = emergencyDisable
+    ? { enabled: false, emergencyDisabledAt: new Date().toISOString() }
+    : enabled
+      ? { enabled: true, emergencyDisabledAt: undefined }
+      : { enabled: false };
 
-  settings = {
-    ...settings,
-    enabled: emergencyDisable ? false : enabled,
-    emergencyDisabledAt: emergencyDisable ? new Date().toISOString() : settings.emergencyDisabledAt,
-    updatedAt: new Date().toISOString(),
-  };
-
-  return c.json({ data: settings });
+  return c.json({ data: await store.updateAutomationSettings(patch) });
 });
 
 automationRoutes.get("/solutions", async (c) => {
   const cases = await caseService.listCases();
+  const settings = await store.getAutomationSettings();
   const solutions = cases.flatMap((item) =>
     item.solutions
-      .filter((solution) => isSolutionReadyForAutoAnswer(
+      .filter((solution) => settings.enabled && isSolutionReadyForAutoAnswer(
         item.confidenceScore,
         solution,
         settings,

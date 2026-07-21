@@ -193,7 +193,17 @@ export type Solution = {
   rewrittenCustomerText: string;
   confidence: number;
   validatedByTeam: boolean;
+  validatedAt?: string;
+  validatedBy?: string;
   createdAt: string;
+};
+
+export type AutomationSettings = {
+  enabled: boolean;
+  caseUnderstandingThreshold: number;
+  caseDiscriminationThreshold: number;
+  emergencyDisabledAt?: string;
+  updatedAt: string;
 };
 
 export type CaseDetail = SupportCase & {

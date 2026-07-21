@@ -35,17 +35,34 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
   const body = await readJsonObject(c);
   const caseId = requiredString(body, "caseId");
   const result = requiredString(body, "result");
+  const solutionId = typeof body.solutionId === "string" && body.solutionId.trim() ? body.solutionId.trim() : undefined;
 
   if (result !== "approved" && result !== "rejected") {
     return c.json({ error: "invalid_result", allowed: ["approved", "rejected"] }, 400);
   }
 
-  const status = result === "approved" ? "resolved" : "awaiting_tech";
+  const detail = await caseService.getCase(caseId);
+  if (!detail) return c.json({ error: "case_not_found" }, 404);
+
+  const suggestedSolution = solutionId
+    ? detail.solutions.find((solution) => solution.id === solutionId)
+    : undefined;
+  if (result === "approved" && !suggestedSolution) {
+    return c.json({ error: "solution_not_found", message: "กรุณาเลือกวิธีแก้ที่ต้องการยืนยัน" }, 400);
+  }
+
+  if (suggestedSolution) {
+    await store.updateSolution(suggestedSolution.id, {
+      validatedByTeam: result === "approved",
+      validatedAt: result === "approved" ? new Date().toISOString() : undefined,
+      validatedBy: result === "approved" ? "Tech Support Console" : undefined,
+    });
+  }
+
   const reviewed = await store.updateCase(caseId, {
-    status,
     confidenceReviewStatus: result === "approved" ? "APPROVED" : "REJECTED",
     confidenceReviewedAt: new Date().toISOString(),
     confidenceReviewedBy: "Tech Support Console",
   });
-  return c.json({ data: { id: c.req.param("id"), caseId, result, case: reviewed } });
+  return c.json({ data: { id: c.req.param("id"), caseId, result, solutionId: suggestedSolution?.id, case: reviewed } });
 });

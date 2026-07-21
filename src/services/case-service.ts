@@ -6,7 +6,7 @@ import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
 import { inferPendingInformationFields } from "../lib/pending-information";
 import { sanitizeCustomerFacingMessage } from "../lib/customer-facing-message";
-import { isSolutionReadyForAutoAnswer } from "./auto-answer-guardrail";
+import { isAutoAnswerAllowedForSolution } from "./automation-settings";
 
 const CLOSED_CASE_STATUSES: CaseStatus[] = ["closed", "resolved", "sent_to_customer"];
 const RECENT_CLOSED_CASE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
@@ -135,7 +135,7 @@ async function extractAndStoreTechSolution(input: {
     solutionSteps: normalizedSolutionAnalysis.solutionSteps,
     rewrittenCustomerText: normalizedSolutionAnalysis.rewrittenCustomerText,
     confidence: normalizedSolutionAnalysis.confidence,
-    validatedByTeam: true,
+    validatedByTeam: false,
   });
 
   return normalizedSolutionAnalysis;
@@ -429,14 +429,12 @@ export const caseService = {
     const lastBotQuestion = [...detail.messages]
       .reverse()
       .find((message) => message.senderType === "BOT" && message.messageType === "REQUEST_MORE_INFO")?.originalText;
-    const approvedSolution = detail.solutions
-      .slice()
-      .reverse()
-      .find((solution) => isSolutionReadyForAutoAnswer(
-        detail.confidenceScore,
-        solution,
-        { caseUnderstandingThreshold: 98, caseDiscriminationThreshold: 98 },
-      ));
+    const approvedSolution = (await Promise.all(
+      detail.solutions
+        .slice()
+        .reverse()
+        .map(async (solution) => ({ solution, allowed: await isAutoAnswerAllowedForSolution(detail.confidenceScore, solution) })),
+    )).find((item) => item.allowed)?.solution;
     const continuationReply = approvedSolution
       ? await aiCenterClient.generateLineContinuationReply({
           replyType: "TROUBLESHOOTING_GUIDANCE",
@@ -1257,7 +1255,7 @@ export const caseService = {
         solutionSteps: solutionAnalysis.solutionSteps,
         rewrittenCustomerText: messageReview.rewrittenMessage,
         confidence: solutionAnalysis.confidence,
-        validatedByTeam: true,
+        validatedByTeam: false,
       });
     }
 

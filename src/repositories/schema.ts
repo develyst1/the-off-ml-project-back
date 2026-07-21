@@ -161,8 +161,13 @@ create table if not exists solutions (
   rewritten_customer_text text not null,
   confidence numeric not null,
   validated_by_team boolean not null default false,
+  validated_at timestamptz,
+  validated_by text,
   created_at timestamptz not null default now()
 );
+
+alter table solutions add column if not exists validated_at timestamptz;
+alter table solutions add column if not exists validated_by text;
 
 update analyses set category = case upper(category)
   when 'UNCATEGORIZED' then 'ยังไม่ระบุหมวดหมู่'

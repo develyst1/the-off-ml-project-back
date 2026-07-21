@@ -1,6 +1,6 @@
 import pg from "pg";
 import { env } from "../config/env";
-import type { Analysis, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { Analysis, AutomationSettings, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore } from "./case-store";
 import { normalizeCaseMessage } from "./case-message-normalizer";
@@ -111,7 +111,17 @@ type DbSolution = {
   rewritten_customer_text: string;
   confidence: string | number;
   validated_by_team: boolean;
+  validated_at: Date | null;
+  validated_by: string | null;
   created_at: Date;
+};
+
+type DbAutomationSettings = {
+  enabled: boolean;
+  case_understanding_threshold: string | number;
+  case_discrimination_threshold: string | number;
+  emergency_disabled_at: Date | null;
+  updated_at: Date;
 };
 
 type DbCaseMatchLog = {
@@ -134,6 +144,16 @@ function dateIso(value: Date | string) {
 function optionalNumber(value: string | number | null) {
   if (value === null) return undefined;
   return Number(value);
+}
+
+function mapAutomationSettings(row: DbAutomationSettings): AutomationSettings {
+  return {
+    enabled: row.enabled,
+    caseUnderstandingThreshold: Number(row.case_understanding_threshold),
+    caseDiscriminationThreshold: Number(row.case_discrimination_threshold),
+    emergencyDisabledAt: row.emergency_disabled_at ? dateIso(row.emergency_disabled_at) : undefined,
+    updatedAt: dateIso(row.updated_at),
+  };
 }
 
 function mapCustomer(row: DbCustomer): Customer {
@@ -248,6 +268,8 @@ function mapSolution(row: DbSolution): Solution {
     rewrittenCustomerText: row.rewritten_customer_text,
     confidence: Number(row.confidence),
     validatedByTeam: row.validated_by_team,
+    validatedAt: row.validated_at ? dateIso(row.validated_at) : undefined,
+    validatedBy: row.validated_by ?? undefined,
     createdAt: dateIso(row.created_at),
   };
 }
@@ -575,6 +597,49 @@ export class PostgresStore implements CaseStore {
     );
 
     return mapSolution(result.rows[0]);
+  }
+
+  async updateSolution(id: string, patch: Pick<Solution, "validatedByTeam" | "validatedAt" | "validatedBy">): Promise<Solution> {
+    const result = await this.query<DbSolution>(
+      `update solutions
+       set validated_by_team = $2, validated_at = $3, validated_by = $4
+       where id = $1 returning *`,
+      [id, patch.validatedByTeam, patch.validatedAt ?? null, patch.validatedBy ?? null],
+    );
+    if (!result.rows[0]) throw new Error("Solution not found");
+    return mapSolution(result.rows[0]);
+  }
+
+  async getAutomationSettings(): Promise<AutomationSettings> {
+    const result = await this.query<DbAutomationSettings>(
+      `select enabled, case_understanding_threshold, case_discrimination_threshold, emergency_disabled_at, updated_at
+       from automation_settings where id = 'default'`,
+    );
+    if (!result.rows[0]) throw new Error("Automation settings not found");
+    return mapAutomationSettings(result.rows[0]);
+  }
+
+  async updateAutomationSettings(patch: Partial<Pick<AutomationSettings, "enabled" | "caseUnderstandingThreshold" | "caseDiscriminationThreshold" | "emergencyDisabledAt">>): Promise<AutomationSettings> {
+    const result = await this.query<DbAutomationSettings>(
+      `update automation_settings
+       set enabled = coalesce($1, enabled),
+           case_understanding_threshold = coalesce($2, case_understanding_threshold),
+           case_discrimination_threshold = coalesce($3, case_discrimination_threshold),
+           emergency_disabled_at = case when $4 then $5 else emergency_disabled_at end,
+           updated_at = $5
+       where id = 'default'
+       returning enabled, case_understanding_threshold, case_discrimination_threshold, emergency_disabled_at, updated_at`,
+      [
+        patch.enabled ?? null,
+        patch.caseUnderstandingThreshold ?? null,
+        patch.caseDiscriminationThreshold ?? null,
+        "emergencyDisabledAt" in patch,
+        patch.emergencyDisabledAt ?? null,
+        nowIso(),
+      ],
+    );
+    if (!result.rows[0]) throw new Error("Automation settings not found");
+    return mapAutomationSettings(result.rows[0]);
   }
 
   async createCaseMatchLog(input: Omit<CaseMatchLog, "id" | "createdAt">): Promise<CaseMatchLog> {

@@ -7,13 +7,14 @@ export type AutoAnswerGuardrailSettings = {
 
 export function isSolutionReadyForAutoAnswer(
   caseConfidence: number | undefined,
-  solution: Pick<Solution, "confidence" | "validatedByTeam">,
+  solution: Pick<Solution, "confidence" | "validatedByTeam" | "validatedAt">,
   settings: AutoAnswerGuardrailSettings,
 ) {
   return (
     (caseConfidence ?? 0) >= settings.caseUnderstandingThreshold &&
     solution.confidence >= settings.caseDiscriminationThreshold &&
-    solution.validatedByTeam
+    solution.validatedByTeam &&
+    Boolean(solution.validatedAt)
   );
 }
 

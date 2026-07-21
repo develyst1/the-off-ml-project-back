@@ -193,23 +193,62 @@ describe("POST /webhooks/teams/actions", () => {
     expect(detail?.messages.some((message) => message.deliveryStatus === "FAILED")).toBe(true);
   });
 
-  test("removes a reviewed confidence suggestion after refresh", async () => {
+  test("approves the selected solution without resolving the case", async () => {
     const supportCase = await createCase(95);
+    const solution = await store.createSolution({
+      caseId: supportCase.id,
+      rawReplyText: "ให้ลองออกจากระบบแล้วเข้าใหม่",
+      rootCause: "session หมดอายุ",
+      solutionSteps: ["ออกจากระบบ", "เข้าใหม่"],
+      rewrittenCustomerText: "ลองออกจากระบบแล้วเข้าใหม่อีกครั้งนะคะ",
+      confidence: 95,
+      validatedByTeam: false,
+    });
     const suggestionsResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
     const suggestionsBody = await suggestionsResponse.json() as { data: Array<{ id: string; caseId: string }> };
     const suggestion = suggestionsBody.data.find((item) => item.caseId === supportCase.id);
 
     expect(suggestion).toBeDefined();
 
-    const reviewResponse = await postConfidenceReview({ caseId: supportCase.id, result: "approved" }, suggestion?.id ?? "missing");
+    const reviewResponse = await postConfidenceReview({ caseId: supportCase.id, solutionId: solution.id, result: "approved" }, suggestion?.id ?? "missing");
     const refreshedResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
     const refreshedBody = await refreshedResponse.json() as { data: Array<{ caseId: string }> };
     const detail = await store.getCaseDetail(supportCase.id);
 
     expect(reviewResponse.status).toBe(200);
     expect(refreshedBody.data.some((item) => item.caseId === supportCase.id)).toBe(false);
-    expect(detail?.status).toBe("resolved");
+    expect(detail?.status).toBe("assigned");
     expect(detail?.confidenceReviewStatus).toBe("APPROVED");
     expect(detail?.confidenceReviewedBy).toBe("Tech Support Console");
+    expect(detail?.solutions.find((item) => item.id === solution.id)?.validatedByTeam).toBe(true);
+  });
+
+  test("requires a solution before approval and persists the automation switch", async () => {
+    const supportCase = await createCase(99);
+    const suggestionResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const suggestions = await suggestionResponse.json() as { data: Array<{ id: string; caseId: string }> };
+    const suggestion = suggestions.data.find((item) => item.caseId === supportCase.id);
+
+    const rejectedApproval = await postConfidenceReview({ caseId: supportCase.id, result: "approved" }, suggestion?.id ?? "missing");
+    const before = await app.fetch(new Request("http://localhost/automation/settings"));
+    const beforeBody = await before.json() as { data: { enabled: boolean } };
+    const enabled = await app.fetch(new Request("http://localhost/automation/settings", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    }));
+    const enabledBody = await enabled.json() as { data: { enabled: boolean } };
+    const persisted = await app.fetch(new Request("http://localhost/automation/settings"));
+    const persistedBody = await persisted.json() as { data: { enabled: boolean } };
+    await app.fetch(new Request("http://localhost/automation/settings", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    }));
+
+    expect(rejectedApproval.status).toBe(400);
+    expect(beforeBody.data.enabled).toBe(false);
+    expect(enabledBody.data.enabled).toBe(true);
+    expect(persistedBody.data.enabled).toBe(true);
   });
 });

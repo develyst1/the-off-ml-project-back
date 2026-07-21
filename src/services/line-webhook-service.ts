@@ -15,7 +15,7 @@ import { aiCenterClient, type LineMessageIntentClassification, type LineMessageI
 import { caseService } from "./case-service";
 import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
-import { isSolutionReadyForAutoAnswer } from "./auto-answer-guardrail";
+import { isAutoAnswerAllowedForSolution } from "./automation-settings";
 
 export const LINE_ACKNOWLEDGEMENT_TEXT =
   "รับเรื่องเรียบร้อยแล้วค่ะ ทีมงานกำลังตรวจสอบปัญหาให้คุณ";
@@ -100,14 +100,11 @@ const ACTIVE_CASE_STATUSES = new Set(["analyzing", "awaiting_tech", "assigned", 
 const CLOSED_CASE_STATUSES = new Set(["closed", "resolved", "sent_to_customer"]);
 
 const INTENT_CONFIDENCE_THRESHOLD = 0.7;
-const AUTO_ANSWER_GUARDRAIL = { caseUnderstandingThreshold: 98, caseDiscriminationThreshold: 98 };
-
-function hasAutoAnswerReadySolution(caseDetail: CaseDetail) {
-  return caseDetail.solutions.some((solution) => isSolutionReadyForAutoAnswer(
-    caseDetail.confidenceScore,
-    solution,
-    AUTO_ANSWER_GUARDRAIL,
-  ));
+async function hasAutoAnswerReadySolution(caseDetail: CaseDetail) {
+  const readiness = await Promise.all(
+    caseDetail.solutions.map((solution) => isAutoAnswerAllowedForSolution(caseDetail.confidenceScore, solution)),
+  );
+  return readiness.some(Boolean);
 }
 
 function getIntentGroup(intent: LineMessageIntentName) {
@@ -406,7 +403,7 @@ async function handlePendingInformationResponse(
     });
   }
 
-  if (missingFields.length > 0 && hasAutoAnswerReadySolution(caseDetail)) {
+  if (missingFields.length > 0 && await hasAutoAnswerReadySolution(caseDetail)) {
     const question = buildMissingInformationQuestion(missingFields);
     const reply = await aiCenterClient.generateLineContinuationReply({
       replyType: "FOLLOW_UP_QUESTION",
