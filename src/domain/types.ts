@@ -117,7 +117,7 @@ export type SupportCase = {
   problemSummaryStatus?: "PENDING" | "SUCCESS" | "FAILED";
   assigneeName?: string;
   hasUnreadCustomerMessage?: boolean;
-  confidenceReviewStatus?: "PENDING" | "APPROVED" | "REJECTED";
+  confidenceReviewStatus?: "PENDING" | "QUALITY_APPROVED" | "QUALITY_REJECTED" | "AUTO_ANSWER_APPROVED" | "AUTO_ANSWER_REJECTED";
   confidenceReviewedAt?: string;
   confidenceReviewedBy?: string;
   createdAt: string;
@@ -195,6 +195,9 @@ export type Solution = {
   validatedByTeam: boolean;
   validatedAt?: string;
   validatedBy?: string;
+  autoAnswerReviewResult?: "APPROVED" | "REJECTED";
+  autoAnswerReviewedAt?: string;
+  autoAnswerReviewedBy?: string;
   createdAt: string;
 };
 

@@ -166,7 +166,7 @@ export class InMemoryStore implements CaseStore {
     return solution;
   }
 
-  async updateSolution(id: string, patch: Pick<Solution, "validatedByTeam" | "validatedAt" | "validatedBy">): Promise<Solution> {
+  async updateSolution(id: string, patch: Pick<Solution, "validatedByTeam" | "validatedAt" | "validatedBy" | "autoAnswerReviewResult" | "autoAnswerReviewedAt" | "autoAnswerReviewedBy">): Promise<Solution> {
     const current = this.solutions.get(id);
     if (!current) throw new Error("Solution not found");
     const updated = { ...current, ...patch };

@@ -193,7 +193,7 @@ describe("POST /webhooks/teams/actions", () => {
     expect(detail?.messages.some((message) => message.deliveryStatus === "FAILED")).toBe(true);
   });
 
-  test("approves the selected solution without resolving the case", async () => {
+  test("records 90-97% confirmation as quality review without enabling auto-answer", async () => {
     const supportCase = await createCase(95);
     const solution = await store.createSolution({
       caseId: supportCase.id,
@@ -210,7 +210,7 @@ describe("POST /webhooks/teams/actions", () => {
 
     expect(suggestion).toBeDefined();
 
-    const reviewResponse = await postConfidenceReview({ caseId: supportCase.id, solutionId: solution.id, result: "approved" }, suggestion?.id ?? "missing");
+    const reviewResponse = await postConfidenceReview({ caseId: supportCase.id, solutionId: solution.id, reviewStage: "QUALITY", result: "approved" }, suggestion?.id ?? "missing");
     const refreshedResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
     const refreshedBody = await refreshedResponse.json() as { data: Array<{ caseId: string }> };
     const detail = await store.getCaseDetail(supportCase.id);
@@ -218,18 +218,26 @@ describe("POST /webhooks/teams/actions", () => {
     expect(reviewResponse.status).toBe(200);
     expect(refreshedBody.data.some((item) => item.caseId === supportCase.id)).toBe(false);
     expect(detail?.status).toBe("assigned");
-    expect(detail?.confidenceReviewStatus).toBe("APPROVED");
+    expect(detail?.confidenceReviewStatus).toBe("QUALITY_APPROVED");
     expect(detail?.confidenceReviewedBy).toBe("Tech Support Console");
-    expect(detail?.solutions.find((item) => item.id === solution.id)?.validatedByTeam).toBe(true);
+    expect(detail?.solutions.find((item) => item.id === solution.id)?.validatedByTeam).toBe(false);
   });
 
-  test("requires a solution before approval and persists the automation switch", async () => {
+  test("approves only a 98% solution for auto-answer and persists the automation switch", async () => {
     const supportCase = await createCase(99);
+    const solution = await store.createSolution({
+      caseId: supportCase.id,
+      rawReplyText: "รีสตาร์ตเครื่องแล้วลองใหม่",
+      solutionSteps: ["รีสตาร์ตเครื่อง", "ลองใช้งานอีกครั้ง"],
+      rewrittenCustomerText: "ลองรีสตาร์ตเครื่องแล้วทดสอบอีกครั้งนะคะ",
+      confidence: 99,
+      validatedByTeam: false,
+    });
     const suggestionResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
-    const suggestions = await suggestionResponse.json() as { data: Array<{ id: string; caseId: string }> };
+    const suggestions = await suggestionResponse.json() as { data: Array<{ id: string; caseId: string; reviewStage: string }> };
     const suggestion = suggestions.data.find((item) => item.caseId === supportCase.id);
 
-    const rejectedApproval = await postConfidenceReview({ caseId: supportCase.id, result: "approved" }, suggestion?.id ?? "missing");
+    const approved = await postConfidenceReview({ caseId: supportCase.id, solutionId: solution.id, reviewStage: "AUTO_ANSWER", result: "approved" }, suggestion?.id ?? "missing");
     const before = await app.fetch(new Request("http://localhost/automation/settings"));
     const beforeBody = await before.json() as { data: { enabled: boolean } };
     const enabled = await app.fetch(new Request("http://localhost/automation/settings", {
@@ -246,7 +254,12 @@ describe("POST /webhooks/teams/actions", () => {
       body: JSON.stringify({ enabled: false }),
     }));
 
-    expect(rejectedApproval.status).toBe(400);
+    const detail = await store.getCaseDetail(supportCase.id);
+    expect(approved.status).toBe(200);
+    expect(suggestion?.reviewStage).toBe("AUTO_ANSWER");
+    expect(detail?.confidenceReviewStatus).toBe("AUTO_ANSWER_APPROVED");
+    expect(detail?.solutions.find((item) => item.id === solution.id)?.validatedByTeam).toBe(true);
+    expect(detail?.solutions.find((item) => item.id === solution.id)?.autoAnswerReviewResult).toBe("APPROVED");
     expect(beforeBody.data.enabled).toBe(false);
     expect(enabledBody.data.enabled).toBe(true);
     expect(persistedBody.data.enabled).toBe(true);

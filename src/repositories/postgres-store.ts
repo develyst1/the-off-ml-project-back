@@ -113,6 +113,9 @@ type DbSolution = {
   validated_by_team: boolean;
   validated_at: Date | null;
   validated_by: string | null;
+  auto_answer_review_result: "APPROVED" | "REJECTED" | null;
+  auto_answer_reviewed_at: Date | null;
+  auto_answer_reviewed_by: string | null;
   created_at: Date;
 };
 
@@ -270,6 +273,9 @@ function mapSolution(row: DbSolution): Solution {
     validatedByTeam: row.validated_by_team,
     validatedAt: row.validated_at ? dateIso(row.validated_at) : undefined,
     validatedBy: row.validated_by ?? undefined,
+    autoAnswerReviewResult: row.auto_answer_review_result ?? undefined,
+    autoAnswerReviewedAt: row.auto_answer_reviewed_at ? dateIso(row.auto_answer_reviewed_at) : undefined,
+    autoAnswerReviewedBy: row.auto_answer_reviewed_by ?? undefined,
     createdAt: dateIso(row.created_at),
   };
 }
@@ -599,12 +605,25 @@ export class PostgresStore implements CaseStore {
     return mapSolution(result.rows[0]);
   }
 
-  async updateSolution(id: string, patch: Pick<Solution, "validatedByTeam" | "validatedAt" | "validatedBy">): Promise<Solution> {
+  async updateSolution(id: string, patch: Pick<Solution, "validatedByTeam" | "validatedAt" | "validatedBy" | "autoAnswerReviewResult" | "autoAnswerReviewedAt" | "autoAnswerReviewedBy">): Promise<Solution> {
     const result = await this.query<DbSolution>(
       `update solutions
-       set validated_by_team = $2, validated_at = $3, validated_by = $4
+       set validated_by_team = $2,
+           validated_at = $3,
+           validated_by = $4,
+           auto_answer_review_result = $5,
+           auto_answer_reviewed_at = $6,
+           auto_answer_reviewed_by = $7
        where id = $1 returning *`,
-      [id, patch.validatedByTeam, patch.validatedAt ?? null, patch.validatedBy ?? null],
+      [
+        id,
+        patch.validatedByTeam,
+        patch.validatedAt ?? null,
+        patch.validatedBy ?? null,
+        patch.autoAnswerReviewResult ?? null,
+        patch.autoAnswerReviewedAt ?? null,
+        patch.autoAnswerReviewedBy ?? null,
+      ],
     );
     if (!result.rows[0]) throw new Error("Solution not found");
     return mapSolution(result.rows[0]);
