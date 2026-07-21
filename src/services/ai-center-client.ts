@@ -433,6 +433,7 @@ export const aiCenterClient = {
     missingFacts?: string[];
     currentCaseStatus?: string;
     requestedNextQuestion?: string;
+    approvedSolutionSteps?: string[];
   }) {
     const replyType = input.replyType ?? "FOLLOW_UP_QUESTION";
     const fallback = replyType === "INITIAL_CASE_ACK"
@@ -463,6 +464,7 @@ export const aiCenterClient = {
               "FOLLOW_UP_ACK ใช้เมื่อข้อความเป็นข้อมูลต่อเนื่องของเคสเดิม ให้ตอบรับสั้น ๆ โดยไม่ถามคำถามและไม่แนะนำขั้นตอนแก้ปัญหา",
               "FOLLOW_UP_QUESTION ใช้เมื่อข้อมูลยังไม่พอ ห้ามแสดงหมายเลขเคสหรือชื่อเรื่องซ้ำ ห้ามทวนข้อความล่าสุดทั้งประโยค ให้ตีความข้อความล่าสุดร่วมกับ lastBotQuestion แล้วถามต่อไม่เกิน 1-2 คำถาม",
               "TROUBLESHOOTING_GUIDANCE ใช้เมื่อมีข้อมูลพอ ให้แนะนำขั้นตอนตรวจสอบที่อ้างอิงจากข้อมูลที่มีเท่านั้น และถามผลหลังทำ ห้ามปิดเคสอัตโนมัติ",
+              "TROUBLESHOOTING_GUIDANCE ใช้ได้เฉพาะเมื่อ approvedSolutionSteps มีค่าเท่านั้น ให้ใช้ขั้นตอนที่ยืนยันแล้วนี้เป็นแหล่งข้อมูลเดียว ห้ามแต่งขั้นตอนเพิ่ม",
               "OUT_OF_SCOPE_REPLY ใช้ปฏิเสธอย่างสุภาพและสั้น ๆ โดยไม่สร้างเคส ไม่กล่าวถึงข้อมูลภายในระบบ และไม่ให้ข้อมูลที่ไม่มีหลักฐาน",
               "ถ้ายังไม่มีหลักฐานพอสำหรับคำแนะนำทางเทคนิค ให้รับทราบสั้น ๆ และบอกว่าจะตรวจสอบต่อแทนการเดา",
               "ห้ามพูดเลขเคส ชื่อเรื่อง หรือคำว่าเพิ่มข้อมูลในเคสซ้ำใน FOLLOW_UP_QUESTION และ TROUBLESHOOTING_GUIDANCE",
@@ -482,6 +484,7 @@ export const aiCenterClient = {
             missingFacts: input.missingFacts ?? [],
             currentCaseStatus: input.currentCaseStatus,
             requestedNextQuestion: input.requestedNextQuestion,
+            approvedSolutionSteps: input.approvedSolutionSteps ?? [],
             recentConversation: input.recentConversation,
           }),
         },

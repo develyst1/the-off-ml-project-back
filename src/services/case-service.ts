@@ -6,6 +6,7 @@ import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
 import { inferPendingInformationFields } from "../lib/pending-information";
 import { sanitizeCustomerFacingMessage } from "../lib/customer-facing-message";
+import { isSolutionReadyForAutoAnswer } from "./auto-answer-guardrail";
 
 const CLOSED_CASE_STATUSES: CaseStatus[] = ["closed", "resolved", "sent_to_customer"];
 const RECENT_CLOSED_CASE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
@@ -422,24 +423,34 @@ export const caseService = {
     const lastBotQuestion = [...detail.messages]
       .reverse()
       .find((message) => message.senderType === "BOT" && message.messageType === "REQUEST_MORE_INFO")?.originalText;
-    const replyType = "FOLLOW_UP_ACK" as const;
-    const continuationReply = await aiCenterClient.generateLineContinuationReply({
-      replyType,
-      caseNumber: detail.caseNumber,
-      caseTitle: this.formatCaseTitle(detail),
-      originalCustomerText: detail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? input.text,
-      latestCustomerMessage: contextualText,
-      recentConversation: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
-      newCustomerText: contextualText,
-      lastBotQuestion,
-      currentSummary: detail.problemSummary ?? detail.title ?? "",
-      knownFacts: detail.messages
-        .filter((message) => message.senderType === "CUSTOMER")
-        .slice(-6)
-        .map((message) => message.originalText),
-      missingFacts: analysis?.missingInformation ?? [],
-      currentCaseStatus: detail.status,
-    });
+    const approvedSolution = detail.solutions
+      .slice()
+      .reverse()
+      .find((solution) => isSolutionReadyForAutoAnswer(
+        detail.confidenceScore,
+        solution,
+        { caseUnderstandingThreshold: 98, caseDiscriminationThreshold: 98 },
+      ));
+    const continuationReply = approvedSolution
+      ? await aiCenterClient.generateLineContinuationReply({
+          replyType: "TROUBLESHOOTING_GUIDANCE",
+          caseNumber: detail.caseNumber,
+          caseTitle: this.formatCaseTitle(detail),
+          originalCustomerText: detail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? input.text,
+          latestCustomerMessage: contextualText,
+          recentConversation: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
+          newCustomerText: contextualText,
+          lastBotQuestion,
+          currentSummary: detail.problemSummary ?? detail.title ?? "",
+          knownFacts: detail.messages
+            .filter((message) => message.senderType === "CUSTOMER")
+            .slice(-6)
+            .map((message) => message.originalText),
+          missingFacts: analysis?.missingInformation ?? [],
+          currentCaseStatus: detail.status,
+          approvedSolutionSteps: approvedSolution.solutionSteps,
+        })
+      : `ขอบคุณที่แจ้งข้อมูลเพิ่มเติมนะคะ สำหรับ${this.formatCaseTitle(detail)} ทีมงานจะตรวจสอบต่อให้ค่ะ`;
 
     if (analysis) {
       await store.createAnalysis({
