@@ -1092,7 +1092,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     summary: analysis.summary,
     category: analysis.category,
     confidence: analysis.confidence,
-    rawJson: analysis,
+    rawJson: { ...analysis, caseTitle },
   });
   await store.updateCase(supportCase.id, {
     status: "awaiting_tech",
@@ -1136,30 +1136,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     timestamp: input.timestamp,
   });
 
-  const acknowledgement = buildInitialCaseAcknowledgement({
-    caseNumber: supportCase.caseNumber,
-    caseTitle,
-  });
-  const acknowledgementDelivery = await lineClient.replyToToken({
-    replyToken: input.replyToken,
-    text: acknowledgement,
-  });
-
-  await store.createMessage({
-    caseId: supportCase.id,
-    direction: "outbound_customer",
-    channel: "line",
-    originalText: acknowledgement,
-    senderType: "BOT",
-    messageType: "CASE_ACKNOWLEDGEMENT",
-    deliveryStatus: acknowledgementDelivery.delivered ? "delivered" : "pending",
-  });
-  await store.updateCase(supportCase.id, {
-    lineSentAt: new Date().toISOString(),
-    lineDeliveredAt: acknowledgementDelivery.delivered ? new Date().toISOString() : undefined,
-  });
-
-  const caseDetail = await store.getCaseDetail(supportCase.id);
+  let caseDetail = await store.getCaseDetail(supportCase.id);
   if (caseDetail) {
     try {
       await teamsClient.notifyCase(caseDetail);
@@ -1188,6 +1165,31 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       console.error({ event: "teams_case_delivery_failed", caseId: supportCase.id, error: String(error) });
     }
   }
+
+  const acknowledgement = buildInitialCaseAcknowledgement({
+    caseNumber: supportCase.caseNumber,
+    caseTitle,
+  });
+  const acknowledgementDelivery = await lineClient.replyToToken({
+    replyToken: input.replyToken,
+    text: acknowledgement,
+  });
+
+  await store.createMessage({
+    caseId: supportCase.id,
+    direction: "outbound_customer",
+    channel: "line",
+    originalText: acknowledgement,
+    senderType: "BOT",
+    messageType: "CASE_ACKNOWLEDGEMENT",
+    deliveryStatus: acknowledgementDelivery.delivered ? "delivered" : "pending",
+  });
+  await store.updateCase(supportCase.id, {
+    lineSentAt: new Date().toISOString(),
+    lineDeliveredAt: acknowledgementDelivery.delivered ? new Date().toISOString() : undefined,
+  });
+
+  caseDetail = await store.getCaseDetail(supportCase.id);
 
   return {
     processed: true,

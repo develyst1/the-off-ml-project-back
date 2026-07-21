@@ -4,6 +4,7 @@ import { InMemoryStore } from "../repositories/in-memory-store";
 const store = new InMemoryStore();
 const lineReplies: string[] = [];
 let classifierShouldFail = false;
+let initialReplyComposerCalls = 0;
 
 mock.module("../repositories/store", () => ({ store }));
 mock.module("./line-client", () => ({
@@ -32,6 +33,7 @@ mock.module("./ai-center-client", () => ({
       suggestedTeamNote: "ตรวจสอบข้อมูลการส่งงาน",
       sentiment: "neutral",
     }),
+    generateCaseTitle: async () => "ส่งงานใน Microsoft Teams ไม่สำเร็จ",
     analyzeCaseRelation: async () => ({ related: true, confidence: 100, reason: "pending question" }),
     matchCustomerCaseHistory: async () => ({ intent: "NEW_ISSUE", matchedCaseId: null, isSameProblem: false, confidence: 0, reason: "no matching history" }),
     extractPendingInformation: async () => ({ values: {} }),
@@ -49,10 +51,12 @@ mock.module("./ai-center-client", () => ({
       }
       return { intent: "NEW_SUPPORT_ISSUE", shouldCreateCase: true, targetCaseNumber: null, confidence: 1, reason: "test" };
     },
-    generateLineContinuationReply: async (input: { replyType?: string; requestedNextQuestion?: string }) =>
-      input.replyType === "FOLLOW_UP_QUESTION" && input.requestedNextQuestion
+    generateLineContinuationReply: async (input: { replyType?: string; requestedNextQuestion?: string }) => {
+      if (input.replyType === "INITIAL_CASE_ACK") initialReplyComposerCalls += 1;
+      return input.replyType === "FOLLOW_UP_QUESTION" && input.requestedNextQuestion
         ? input.requestedNextQuestion
-        : "รับทราบค่ะ เดี๋ยวตรวจสอบข้อมูลนี้ต่อให้นะคะ",
+        : "รับทราบค่ะ เดี๋ยวตรวจสอบข้อมูลนี้ต่อให้นะคะ";
+    },
     generateProblemSummary: async (input: { currentProblemSummary?: string; latestCustomerMessage: string }) => ({
       problemSummary: input.currentProblemSummary ?? input.latestCustomerMessage,
       shouldUpdate: !input.currentProblemSummary,
@@ -63,7 +67,7 @@ mock.module("./ai-center-client", () => ({
 }));
 
 const { caseService } = await import("./case-service");
-const { receiveLineTextMessage } = await import("./line-webhook-service");
+const { buildInitialCaseAcknowledgement, receiveLineTextMessage } = await import("./line-webhook-service");
 
 let sequence = 0;
 
@@ -204,6 +208,11 @@ describe("LINE intent classification guards", () => {
     expect(detail?.status).toBe("awaiting_tech");
     expect(detail?.messages.some((message) => message.messageType === "REQUEST_MORE_INFO")).toBe(false);
     expect(detail?.messages.filter((message) => message.senderType === "BOT").at(-1)?.messageType).toBe("CASE_ACKNOWLEDGEMENT");
+    expect(lineReplies.at(-1)).toBe(buildInitialCaseAcknowledgement({
+      caseNumber: detail!.caseNumber,
+      caseTitle: "ส่งงานใน Microsoft Teams ไม่สำเร็จ",
+    }));
+    expect(initialReplyComposerCalls).toBe(0);
   });
 
   test("handles an out-of-scope intent without creating a case", async () => {
