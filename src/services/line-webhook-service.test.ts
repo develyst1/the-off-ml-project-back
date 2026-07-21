@@ -194,6 +194,20 @@ describe("LINE case query guards", () => {
 });
 
 describe("LINE intent classification guards", () => {
+  test("records a customer acknowledgement without changing case status or notifying Teams", async () => {
+    sequence += 1;
+    const lineUserId = `U-acknowledgement-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Acknowledgement Customer ${sequence}` });
+    const supportCase = await store.createCase({ customerId: customer.id, status: "assigned", title: "เข้าใช้งานระบบไม่ได้" });
+
+    await caseService.appendLineMessageToCase({ caseId: supportCase.id, text: "ขอบคุณครับ" });
+
+    const detail = await caseService.getCase(supportCase.id);
+    expect(detail?.status).toBe("assigned");
+    expect(detail?.messages.some((message) => message.originalText === "ขอบคุณครับ" && message.senderType === "CUSTOMER")).toBe(true);
+    expect(detail?.messages.some((message) => message.messageType === "CASE_FORWARDED")).toBe(false);
+  });
+
   test("creates a new case with an acknowledgement only, even when analysis reports missing information", async () => {
     sequence += 1;
     const lineUserId = `U-new-case-${sequence}`;

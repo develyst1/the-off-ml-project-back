@@ -67,6 +67,12 @@ function shouldRefreshProblemSummary(text: string) {
   return normalized.length >= 12 || /(รุ่น|อุปกรณ์|iphone|ipad|android|windows|mac|error|รหัส|เชื่อมต่อ|ค้าง|เด้ง|โหลด|ติดตั้ง|เสียง|หน้าจอ|ล็อกอิน|เข้าใช้|ไม่ได้|ไม่สามารถ|ลองแล้ว)/iu.test(normalized);
 }
 
+function requiresTechFollowUp(text: string) {
+  const normalized = text.trim().replace(/\s+/g, " ");
+  if (!normalized) return false;
+  return !/^(?:ขอบคุณ(?:ครับ|ค่ะ|คะ)?|โอเค(?:ครับ|ค่ะ|คะ)?|รับทราบ(?:ครับ|ค่ะ|คะ)?|ได้(?:ครับ|ค่ะ|คะ)?|ตกลง(?:ครับ|ค่ะ|คะ)?|เข้าใจแล้ว(?:ครับ|ค่ะ|คะ)?|เรียบร้อย(?:แล้ว)?(?:ครับ|ค่ะ|คะ)?|ครับ|ค่ะ|คะ|👍|🙏)[.!！]*$/iu.test(normalized);
+}
+
 function isTemporaryCategory(category: string | undefined) {
   const normalized = category?.trim().toLocaleLowerCase() ?? "";
   return !normalized
@@ -400,13 +406,14 @@ export const caseService = {
       : undefined;
   },
 
-  async appendLineMessageToCase(input: { caseId: string; text: string; resolvedText?: string; externalMessageId?: string; webhookEventId?: string; receivedAt?: string }) {
+  async appendLineMessageToCase(input: { caseId: string; text: string; resolvedText?: string; externalMessageId?: string; webhookEventId?: string; receivedAt?: string; notifyTech?: boolean }) {
     const detail = await store.getCaseDetail(input.caseId);
     if (!detail) throw new Error("Case not found");
 
     // Preserve the raw customer message, but give AI the topic-resolved meaning
     // when a short reply depends on the preceding conversation.
     const contextualText = input.resolvedText?.trim() || input.text;
+    const shouldNotifyTech = input.notifyTech ?? requiresTechFollowUp(contextualText);
 
     const message = await store.createMessage({
       caseId: input.caseId,
@@ -498,7 +505,7 @@ export const caseService = {
       await store.updateCase(input.caseId, { latestCustomerMessageId: message.id });
     }
     await store.updateCase(input.caseId, {
-      status: "awaiting_tech",
+      status: shouldNotifyTech ? "awaiting_tech" : detail.status,
       title: detail.title ?? analysis?.caseTitle,
       aiStatus: analysis ? (analysis.status === "AI_FAILED" ? "AI_FAILED" : analysis.status === "AI_LOW_CONFIDENCE" ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS") : detail.aiStatus,
       aiAnalyzedAt: analysis ? new Date().toISOString() : detail.aiAnalyzedAt,
@@ -513,31 +520,40 @@ export const caseService = {
     const updatedDetail = await store.getCaseDetail(input.caseId);
     if (!updatedDetail) throw new Error("Case detail missing after appending LINE message");
 
-    try {
-      await teamsClient.notifyCase(updatedDetail);
-      await store.createMessage({
-        caseId: input.caseId,
-        direction: "outbound_tech",
-        channel: "ms_teams",
-        originalText: `ส่งข้อมูลล่าสุดของเคส ${updatedDetail.caseNumber} ให้ทีม Tech Support ผ่าน Microsoft Teams แล้ว`,
-        senderType: "SYSTEM",
-        messageType: "CASE_FORWARDED",
-        deliveryStatus: "sent",
-      });
-      await store.updateCase(input.caseId, {
-        teamsDeliveryStatus: "accepted",
-        teamsDeliveryAt: new Date().toISOString(),
-        teamsSentAt: new Date().toISOString(),
-        teamsDeliveryError: undefined,
-      });
-    } catch (error) {
-      await store.updateCase(input.caseId, {
-        teamsDeliveryStatus: "failed",
-        teamsDeliveryAt: new Date().toISOString(),
-        teamsDeliveryError: error instanceof Error ? error.message : String(error),
-        dataStatus: error instanceof Error && error.message.startsWith("DATA_INCOMPLETE") ? "DATA_INCOMPLETE" : undefined,
-      });
-      console.error({ event: "teams_related_case_delivery_failed", caseId: input.caseId, error: String(error) });
+    console.log({
+      event: "line_customer_followup_routing",
+      caseId: input.caseId,
+      shouldNotifyTech,
+      reason: shouldNotifyTech ? "ACTIONABLE_CUSTOMER_UPDATE" : "ACKNOWLEDGEMENT_ONLY",
+    });
+
+    if (shouldNotifyTech) {
+      try {
+        await teamsClient.notifyCase(updatedDetail);
+        await store.createMessage({
+          caseId: input.caseId,
+          direction: "outbound_tech",
+          channel: "ms_teams",
+          originalText: `ส่งข้อมูลล่าสุดของเคส ${updatedDetail.caseNumber} ให้ทีม Tech Support ผ่าน Microsoft Teams แล้ว`,
+          senderType: "SYSTEM",
+          messageType: "CASE_FORWARDED",
+          deliveryStatus: "sent",
+        });
+        await store.updateCase(input.caseId, {
+          teamsDeliveryStatus: "accepted",
+          teamsDeliveryAt: new Date().toISOString(),
+          teamsSentAt: new Date().toISOString(),
+          teamsDeliveryError: undefined,
+        });
+      } catch (error) {
+        await store.updateCase(input.caseId, {
+          teamsDeliveryStatus: "failed",
+          teamsDeliveryAt: new Date().toISOString(),
+          teamsDeliveryError: error instanceof Error ? error.message : String(error),
+          dataStatus: error instanceof Error && error.message.startsWith("DATA_INCOMPLETE") ? "DATA_INCOMPLETE" : undefined,
+        });
+        console.error({ event: "teams_related_case_delivery_failed", caseId: input.caseId, error: String(error) });
+      }
     }
 
     return { detail: await store.getCaseDetail(input.caseId), continuationReply };
