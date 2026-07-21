@@ -20,7 +20,7 @@ export function inferPendingInformationFields(texts: string[]) {
   if (/(ชื่อวิชา|วิชา|ชื่อทีม|ทีมที่ส่ง|subject|team)/u.test(text)) {
     fields.push("subjectOrTeam");
   }
-  if (/(เวลาที่ส่ง|เวลา.*ส่ง|ช่วงเวลา|กี่โมง|โมง|submitted.*time|submit.*time)/u.test(text)) {
+  if (/(?:เวลาที่ส่งงาน|เวลา.*ส่งงาน|ส่งงาน.*(?:เวลา|ช่วงเวลา|กี่โมง)|submitted.*time|submit.*time)/u.test(text)) {
     fields.push("submittedAtText");
   }
 

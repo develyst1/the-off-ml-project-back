@@ -15,6 +15,7 @@ import { aiCenterClient, type LineMessageIntentClassification, type LineMessageI
 import { caseService } from "./case-service";
 import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
+import { isSolutionReadyForAutoAnswer } from "./auto-answer-guardrail";
 
 export const LINE_ACKNOWLEDGEMENT_TEXT =
   "รับเรื่องเรียบร้อยแล้วค่ะ ทีมงานกำลังตรวจสอบปัญหาให้คุณ";
@@ -99,6 +100,15 @@ const ACTIVE_CASE_STATUSES = new Set(["analyzing", "awaiting_tech", "assigned", 
 const CLOSED_CASE_STATUSES = new Set(["closed", "resolved", "sent_to_customer"]);
 
 const INTENT_CONFIDENCE_THRESHOLD = 0.7;
+const AUTO_ANSWER_GUARDRAIL = { caseUnderstandingThreshold: 98, caseDiscriminationThreshold: 98 };
+
+function hasAutoAnswerReadySolution(caseDetail: CaseDetail) {
+  return caseDetail.solutions.some((solution) => isSolutionReadyForAutoAnswer(
+    caseDetail.confidenceScore,
+    solution,
+    AUTO_ANSWER_GUARDRAIL,
+  ));
+}
 
 function getIntentGroup(intent: LineMessageIntentName) {
   if (intent === "NEW_SUPPORT_ISSUE" || intent === "TECH_GENERAL_QUESTION") return "SUPPORT";
@@ -396,7 +406,7 @@ async function handlePendingInformationResponse(
     });
   }
 
-  if (missingFields.length > 0) {
+  if (missingFields.length > 0 && hasAutoAnswerReadySolution(caseDetail)) {
     const question = buildMissingInformationQuestion(missingFields);
     const reply = await aiCenterClient.generateLineContinuationReply({
       replyType: "FOLLOW_UP_QUESTION",
@@ -440,7 +450,7 @@ async function handlePendingInformationResponse(
   }
 
   const acknowledgement = await aiCenterClient.generateLineContinuationReply({
-    replyType: "TROUBLESHOOTING_GUIDANCE",
+    replyType: "FOLLOW_UP_ACK",
     caseNumber: caseDetail.caseNumber,
     caseTitle: caseService.formatCaseTitle(caseDetail),
     originalCustomerText: caseDetail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? input.text,

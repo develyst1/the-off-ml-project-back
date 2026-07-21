@@ -121,18 +121,16 @@ describe("pending LINE information requests", () => {
     expect(updatedCustomer.pendingCaseSelection).toBeUndefined();
   });
 
-  test("keeps the pending state for a short subject answer and asks only for the missing time", async () => {
+  test("forwards a partial answer to Tech without asking another automatic question", async () => {
     const { lineUserId, supportCase } = await createCaseWaitingForSubmissionDetails();
 
     await sendReply({ lineUserId, messageId: "pending-subject", text: "คณิตศาสตร์" });
 
     const detail = await caseService.getCase(supportCase.id);
     const updatedCustomer = await store.upsertCustomer({ lineUserId });
-    const latestRequest = detail?.messages.filter((message) => message.messageType === "REQUEST_MORE_INFO").at(-1);
-    expect(updatedCustomer.pendingCaseSelection?.pendingAction).toBe("REQUEST_MORE_INFO");
-    expect(updatedCustomer.pendingCaseSelection?.pendingCollectedFields?.subjectOrTeam).toBe("คณิตศาสตร์");
-    expect(latestRequest?.originalText).toContain("เวลาที่ส่งงาน");
-    expect(latestRequest?.originalText).not.toContain("ชื่อวิชาหรือทีมที่ส่งงานเพิ่มเติม");
+    expect(updatedCustomer.pendingCaseSelection).toBeUndefined();
+    expect(detail?.messages.some((message) => message.originalText === "คณิตศาสตร์" && message.messageType === "CUSTOMER_ADDITIONAL_INFO")).toBe(true);
+    expect(detail?.messages.filter((message) => message.messageType === "REQUEST_MORE_INFO")).toHaveLength(1);
   });
 
   test("accepts a short time answer after a separate subject answer without creating another case", async () => {
@@ -152,17 +150,16 @@ describe("pending LINE information requests", () => {
     expect(updatedCustomer.pendingCaseSelection).toBeUndefined();
   });
 
-  test("keeps a short time-only answer pending when the subject or team is still missing", async () => {
+  test("forwards a time-only answer to Tech without reusing the pending question", async () => {
     const { lineUserId, supportCase } = await createCaseWaitingForSubmissionDetails();
 
     await sendReply({ lineUserId, messageId: "pending-time", text: "บ่ายสอง" });
 
     const detail = await caseService.getCase(supportCase.id);
     const updatedCustomer = await store.upsertCustomer({ lineUserId });
-    const latestRequest = detail?.messages.filter((message) => message.messageType === "REQUEST_MORE_INFO").at(-1);
-    expect(updatedCustomer.pendingCaseSelection?.pendingAction).toBe("REQUEST_MORE_INFO");
-    expect(updatedCustomer.pendingCaseSelection?.pendingCollectedFields?.submittedAtText).toBe("บ่ายสอง");
-    expect(latestRequest?.originalText).toContain("ชื่อวิชาหรือทีมที่ส่งงาน");
+    expect(updatedCustomer.pendingCaseSelection).toBeUndefined();
+    expect(detail?.messages.some((message) => message.originalText === "บ่ายสอง" && message.messageType === "CUSTOMER_ADDITIONAL_INFO")).toBe(true);
+    expect(detail?.messages.filter((message) => message.messageType === "REQUEST_MORE_INFO")).toHaveLength(1);
   });
 });
 
