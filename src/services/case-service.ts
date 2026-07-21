@@ -67,6 +67,12 @@ function shouldRefreshProblemSummary(text: string) {
   return normalized.length >= 12 || /(รุ่น|อุปกรณ์|iphone|ipad|android|windows|mac|error|รหัส|เชื่อมต่อ|ค้าง|เด้ง|โหลด|ติดตั้ง|เสียง|หน้าจอ|ล็อกอิน|เข้าใช้|ไม่ได้|ไม่สามารถ|ลองแล้ว)/iu.test(normalized);
 }
 
+function isTemporaryCategory(category: string | undefined) {
+  const normalized = category?.trim().toLocaleLowerCase() ?? "";
+  return !normalized
+    || ["-", "uncategorized", "ยังไม่ระบุหมวดหมู่", "ต้องการข้อมูลเพิ่มเติม"].includes(normalized);
+}
+
 async function updateProblemSummaryForMessage(detail: CaseDetail, message: Pick<Message, "id" | "originalText" | "senderType" | "createdAt">) {
   const customerMessages = [...detail.messages, message]
     .filter((item) => item.senderType === "CUSTOMER")
@@ -473,7 +479,9 @@ export const caseService = {
       title: detail.title ?? analysis?.caseTitle,
       aiStatus: analysis ? (analysis.status === "AI_FAILED" ? "AI_FAILED" : analysis.status === "AI_LOW_CONFIDENCE" ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS") : detail.aiStatus,
       aiAnalyzedAt: analysis ? new Date().toISOString() : detail.aiAnalyzedAt,
-      category: detail.category ?? analysis?.category,
+      category: analysis?.category && isTemporaryCategory(detail.category)
+        ? analysis.category
+        : detail.category ?? analysis?.category,
       priority: analysis?.urgency ?? detail.priority,
       confidenceScore: analysis?.confidence ?? detail.confidenceScore,
       latestCustomerMessageId: message.id,
