@@ -21,7 +21,26 @@ export const LINE_ACKNOWLEDGEMENT_TEXT =
 
 export const LINE_CONTINUATION_ACKNOWLEDGEMENT_TEXT = "ได้รับข้อมูลเพิ่มเติมแล้วค่ะ ทีมงานจะนำข้อมูลนี้ไปตรวจสอบต่อในเคสเดิม";
 export const LINE_CASE_CONFIRMATION_TEXT = "ข้อความนี้ดูเหมือนเป็นปัญหาใหม่ ต้องการเปิดเคสใหม่ หรือเพิ่มข้อมูลในเคสเดิมคะ?";
-export const LINE_FIRST_CASE_ACKNOWLEDGEMENT_TEXT = "รับเรื่องเรียบร้อยแล้วค่ะ ทีมงานกำลังตรวจสอบปัญหาให้คุณ";
+export const LINE_FIRST_CASE_ACKNOWLEDGEMENT_TEXT = "รับเรื่องเรียบร้อยแล้วค่ะ";
+
+export type BuildInitialCaseAcknowledgementInput = {
+  caseNumber: string;
+  caseTitle: string;
+};
+
+export function buildInitialCaseAcknowledgement({
+  caseNumber,
+  caseTitle,
+}: BuildInitialCaseAcknowledgementInput): string {
+  return [
+    "รับเรื่องเรียบร้อยแล้วค่ะ",
+    "",
+    `หมายเลขเคส: ${caseNumber}`,
+    `ปัญหา: ${caseTitle}`,
+    "",
+    "ทีม Tech จะตรวจสอบและติดต่อกลับหากต้องการข้อมูลเพิ่มเติมนะคะ",
+  ].join("\n");
+}
 
 export type LineTextMessageInput = {
   lineUserId: string;
@@ -1064,6 +1083,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     text: analysisIntakeText,
     customerDisplayName: customer.displayName,
   });
+  const caseTitle = await aiCenterClient.generateCaseTitle(analysisIntakeText);
 
   await store.createAnalysis({
     caseId: supportCase.id,
@@ -1076,7 +1096,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
   });
   await store.updateCase(supportCase.id, {
     status: "awaiting_tech",
-    title: analysis.caseTitle,
+    title: caseTitle,
     aiStatus: analysis.status === "AI_FAILED" ? "AI_FAILED" : analysis.status === "AI_LOW_CONFIDENCE" ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS",
     dataStatus: analysis.missingInformation.length > 0 ? "DATA_INCOMPLETE" : "COMPLETE",
     aiAnalyzedAt: new Date().toISOString(),
@@ -1116,18 +1136,9 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     timestamp: input.timestamp,
   });
 
-  const acknowledgement = await aiCenterClient.generateLineContinuationReply({
-    replyType: "INITIAL_CASE_ACK",
+  const acknowledgement = buildInitialCaseAcknowledgement({
     caseNumber: supportCase.caseNumber,
-    caseTitle: analysis.caseTitle,
-    originalCustomerText: analysisIntakeText,
-    latestCustomerMessage: analysisIntakeText,
-    recentConversation: [`CUSTOMER: ${analysisIntakeText}`],
-    newCustomerText: analysisIntakeText,
-    currentSummary: analysis.summary,
-    knownFacts: [],
-    missingFacts: analysis.missingInformation,
-    currentCaseStatus: supportCase.status,
+    caseTitle,
   });
   const acknowledgementDelivery = await lineClient.replyToToken({
     replyToken: input.replyToken,

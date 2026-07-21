@@ -49,6 +49,10 @@ export type CustomerMessageAnalysis = {
   status?: "AI_SUCCESS" | "AI_LOW_CONFIDENCE" | "AI_FAILED";
 };
 
+export type AiCaseTitleResult = {
+  caseTitle: string;
+};
+
 export type ProblemSummaryResult = {
   problemSummary: string;
   shouldUpdate: boolean;
@@ -180,6 +184,48 @@ function shortenCaseTitle(text: string) {
   if (normalized.length <= 50) return normalized;
   return `${normalized.slice(0, 47).trimEnd()}...`;
 }
+
+export function createSafeFallbackCaseTitle(customerMessage: string): string {
+  const normalized = customerMessage
+    .replace(/\s+/g, " ")
+    .replace(/[\r\n]+/g, " ")
+    .trim();
+
+  if (!normalized) return "ปัญหาการใช้งานที่ลูกค้าแจ้ง";
+  if (normalized.length <= 100) return normalized;
+  return `${normalized.slice(0, 100).trimEnd()}…`;
+}
+
+function parseAiCaseTitle(content: string): AiCaseTitleResult | undefined {
+  const parsed = parseJsonObject<Partial<AiCaseTitleResult>>(content, {});
+  const caseTitle = typeof parsed.caseTitle === "string"
+    ? parsed.caseTitle.replace(/\s+/g, " ").trim()
+    : "";
+
+  if (
+    caseTitle.length < 3
+    || caseTitle.length > 120
+    || /[\r\n]/u.test(caseTitle)
+    || /[?？]|\b(ไหม|หรือไม่|อย่างไร|ทำอย่างไร|ลอง|แนะนำ|รบกวน|ขอทราบ)\b/iu.test(caseTitle)
+  ) {
+    return undefined;
+  }
+
+  return { caseTitle };
+}
+
+const CASE_TITLE_SYSTEM_PROMPT = `
+คุณมีหน้าที่สรุปข้อความแจ้งปัญหาของลูกค้าให้เป็นหัวข้อปัญหาสั้น ๆ สำหรับระบบ Tech Support
+
+กฎ:
+- คงความหมายเดิมของลูกค้า
+- แก้คำสะกดและเรียบเรียงให้อ่านง่าย
+- สรุปเฉพาะอาการหรือปัญหาหลัก ความยาวประมาณ 5-15 คำ
+- ไม่ขึ้นต้นด้วย "ลูกค้าแจ้งว่า"
+- ไม่ใส่หมายเลขเคส วิธีแก้ คำถาม หรือการวิเคราะห์สาเหตุเกินข้อมูล
+- ไม่แต่งชื่ออุปกรณ์ ระบบ หรือรายละเอียดใหม่
+- คืนค่า JSON เท่านั้นตามรูปแบบ {"caseTitle":"หัวข้อปัญหาที่สรุปแล้ว"}
+`;
 
 function fallbackInfoRequest(input: { category?: string; originalCustomerText: string }) {
   const searchable = `${input.category ?? ""} ${input.originalCustomerText}`.toLowerCase();
@@ -333,6 +379,36 @@ export const aiCenterClient = {
       };
     } catch (error) {
       console.error({ event: "ai_center_pending_information_extract_failed", message: String(error) });
+      return fallback;
+    }
+  },
+
+  async generateCaseTitle(customerMessage: string): Promise<string> {
+    const normalizedMessage = customerMessage.trim();
+    const fallback = createSafeFallbackCaseTitle(normalizedMessage);
+    if (!normalizedMessage) return fallback;
+
+    try {
+      const content = await chatWithAiCenter([
+        { role: "system", content: CASE_TITLE_SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "summarize_customer_problem_as_case_title",
+            customerMessage: normalizedMessage,
+            required_schema: { caseTitle: "string" },
+          }),
+        },
+      ]);
+
+      const result = content ? parseAiCaseTitle(content) : undefined;
+      return result?.caseTitle ?? fallback;
+    } catch (error) {
+      console.error({
+        event: "ai_center_case_title_generation_failed",
+        message: error instanceof Error ? error.message : "Unexpected AI CENTER error",
+        customerMessageLength: normalizedMessage.length,
+      });
       return fallback;
     }
   },
