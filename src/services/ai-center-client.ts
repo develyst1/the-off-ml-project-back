@@ -147,6 +147,12 @@ export type CaseRelationAnalysis = {
   reason: string;
 };
 
+export type AutoAnswerSolutionRelevance = {
+  relevant: boolean;
+  confidence: number;
+  reason: string;
+};
+
 export type CaseHistoryCandidate = {
   caseId: string;
   caseNumber: string;
@@ -271,6 +277,14 @@ function fallbackCaseRelation(input: { caseStatus?: string }): CaseRelationAnaly
     reason: input.caseStatus === "awaiting_customer_info"
       ? "ลูกค้ากำลังตอบกลับจากคำขอข้อมูลเพิ่มเติมของเคสเดิม"
       : "ยังไม่มีผลวิเคราะห์ความเกี่ยวข้องจาก AI CENTER",
+  };
+}
+
+function fallbackAutoAnswerSolutionRelevance(): AutoAnswerSolutionRelevance {
+  return {
+    relevant: false,
+    confidence: 0,
+    reason: "AI_CENTER_UNAVAILABLE",
   };
 }
 
@@ -659,6 +673,55 @@ export const aiCenterClient = {
     } catch (error) {
       console.error({
         event: "ai_center_case_relation_failed",
+        message: error instanceof Error ? error.message : "Unexpected AI CENTER error",
+      });
+      return fallback;
+    }
+  },
+
+  async evaluateAutoAnswerSolutionRelevance(input: {
+    caseTitle?: string;
+    currentSummary?: string;
+    recentConversation: string[];
+    latestCustomerMessage: string;
+    approvedSolutionSteps: string[];
+  }): Promise<AutoAnswerSolutionRelevance> {
+    const fallback = fallbackAutoAnswerSolutionRelevance();
+    try {
+      const content = await chatWithAiCenter([
+        {
+          role: "system",
+          content: "You decide whether an already approved support solution is relevant to the customer's newest LINE message. Return JSON only.",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "judge_auto_answer_solution_relevance",
+            rules: [
+              "Mark relevant=true only when the newest customer message is clearly about the same symptom, a result of a suggested step, or a direct follow-up to the approved solution.",
+              "Mark relevant=false when the customer introduces another problem, a different product or feature, or when context is insufficient.",
+              "Never infer relevance merely because the message belongs to the same open case.",
+              "When uncertain, return relevant=false.",
+            ],
+            required_schema: {
+              relevant: "boolean",
+              confidence: "number 0-100",
+              reason: "string",
+            },
+            caseTitle: input.caseTitle,
+            currentSummary: input.currentSummary,
+            recentConversation: input.recentConversation,
+            latestCustomerMessage: input.latestCustomerMessage,
+            approvedSolutionSteps: input.approvedSolutionSteps,
+          }),
+        },
+      ]);
+
+      if (!content) return fallback;
+      return parseJsonObject<AutoAnswerSolutionRelevance>(content, fallback);
+    } catch (error) {
+      console.error({
+        event: "ai_center_auto_answer_solution_relevance_failed",
         message: error instanceof Error ? error.message : "Unexpected AI CENTER error",
       });
       return fallback;

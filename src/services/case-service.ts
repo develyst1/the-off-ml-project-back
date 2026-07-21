@@ -6,7 +6,7 @@ import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
 import { inferPendingInformationFields } from "../lib/pending-information";
 import { sanitizeCustomerFacingMessage } from "../lib/customer-facing-message";
-import { isAutoAnswerAllowedForSolution } from "./automation-settings";
+import { isAutoAnswerAllowedForRelevance, isAutoAnswerAllowedForSolution } from "./automation-settings";
 
 const CLOSED_CASE_STATUSES: CaseStatus[] = ["closed", "resolved", "sent_to_customer"];
 const RECENT_CLOSED_CASE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
@@ -435,7 +435,30 @@ export const caseService = {
         .reverse()
         .map(async (solution) => ({ solution, allowed: await isAutoAnswerAllowedForSolution(detail.confidenceScore, solution) })),
     )).find((item) => item.allowed)?.solution;
-    const continuationReply = approvedSolution
+    const solutionRelevance = approvedSolution
+      ? await aiCenterClient.evaluateAutoAnswerSolutionRelevance({
+          caseTitle: this.formatCaseTitle(detail),
+          currentSummary: detail.problemSummary ?? detail.title ?? "",
+          recentConversation: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
+          latestCustomerMessage: contextualText,
+          approvedSolutionSteps: approvedSolution.solutionSteps,
+        })
+      : undefined;
+    const canAutoAnswer = Boolean(
+      approvedSolution
+      && solutionRelevance
+      && await isAutoAnswerAllowedForRelevance(solutionRelevance),
+    );
+    console.log({
+      event: "auto_answer_solution_relevance_decision",
+      caseId: input.caseId,
+      solutionId: approvedSolution?.id,
+      relevant: solutionRelevance?.relevant ?? false,
+      confidence: solutionRelevance?.confidence ?? 0,
+      reason: solutionRelevance?.reason ?? "NO_APPROVED_SOLUTION",
+      autoAnswerAllowed: canAutoAnswer,
+    });
+    const continuationReply = approvedSolution && canAutoAnswer
       ? await aiCenterClient.generateLineContinuationReply({
           replyType: "TROUBLESHOOTING_GUIDANCE",
           caseNumber: detail.caseNumber,

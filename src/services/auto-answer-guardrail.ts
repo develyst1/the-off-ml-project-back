@@ -18,3 +18,10 @@ export function isSolutionReadyForAutoAnswer(
   );
 }
 
+export function isAutoAnswerRelevanceReady(
+  relevance: Pick<{ relevant: boolean; confidence: number }, "relevant" | "confidence">,
+  settings: AutoAnswerGuardrailSettings,
+) {
+  return relevance.relevant && relevance.confidence >= settings.caseDiscriminationThreshold;
+}
+

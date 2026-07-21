@@ -35,6 +35,7 @@ mock.module("./ai-center-client", () => ({
     }),
     generateCaseTitle: async () => "ส่งงานใน Microsoft Teams ไม่สำเร็จ",
     analyzeCaseRelation: async () => ({ related: true, confidence: 100, reason: "pending question" }),
+    evaluateAutoAnswerSolutionRelevance: async () => ({ relevant: true, confidence: 100, reason: "test" }),
     matchCustomerCaseHistory: async () => ({ intent: "NEW_ISSUE", matchedCaseId: null, isSameProblem: false, confidence: 0, reason: "no matching history" }),
     extractPendingInformation: async () => ({ values: {} }),
     classifyLineMessageIntent: async (input: { latestMessage: string; activeCases?: Array<{ id: string }> }) => {
