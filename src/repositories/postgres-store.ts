@@ -639,21 +639,29 @@ export class PostgresStore implements CaseStore {
   }
 
   async updateAutomationSettings(patch: Partial<Pick<AutomationSettings, "enabled" | "caseUnderstandingThreshold" | "caseDiscriminationThreshold" | "emergencyDisabledAt">>): Promise<AutomationSettings> {
+    const current = await this.getAutomationSettings();
+    const next = {
+      enabled: patch.enabled ?? current.enabled,
+      caseUnderstandingThreshold: patch.caseUnderstandingThreshold ?? current.caseUnderstandingThreshold,
+      caseDiscriminationThreshold: patch.caseDiscriminationThreshold ?? current.caseDiscriminationThreshold,
+      emergencyDisabledAt: "emergencyDisabledAt" in patch
+        ? patch.emergencyDisabledAt
+        : current.emergencyDisabledAt,
+    };
     const result = await this.query<DbAutomationSettings>(
       `update automation_settings
-       set enabled = coalesce($1, enabled),
-           case_understanding_threshold = coalesce($2, case_understanding_threshold),
-           case_discrimination_threshold = coalesce($3, case_discrimination_threshold),
-           emergency_disabled_at = case when $4 then $5 else emergency_disabled_at end,
+       set enabled = $1,
+           case_understanding_threshold = $2,
+           case_discrimination_threshold = $3,
+           emergency_disabled_at = $4,
            updated_at = $5
        where id = 'default'
        returning enabled, case_understanding_threshold, case_discrimination_threshold, emergency_disabled_at, updated_at`,
       [
-        patch.enabled ?? null,
-        patch.caseUnderstandingThreshold ?? null,
-        patch.caseDiscriminationThreshold ?? null,
-        "emergencyDisabledAt" in patch,
-        patch.emergencyDisabledAt ?? null,
+        next.enabled,
+        next.caseUnderstandingThreshold,
+        next.caseDiscriminationThreshold,
+        next.emergencyDisabledAt ?? null,
         nowIso(),
       ],
     );
