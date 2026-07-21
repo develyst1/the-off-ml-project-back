@@ -361,7 +361,7 @@ export const caseService = {
     return store.getCaseDetail(input.caseId);
   },
 
-  async findRelatedLineCase(input: { customerId: string; newText: string; receivedAt?: string }) {
+  async findRelatedLineCase(input: { customerId: string; newText: string; receivedAt?: string; minimumConfidence?: number }) {
     const cases = (await store.listCases())
       .filter((item) => item.customer.id === input.customerId && ["analyzing", "awaiting_tech", "assigned", "tech_replied", "analyzing_solution", "awaiting_customer_info", "awaiting_confirmation", "reopened", "in_progress", "awaiting_tech_review"].includes(item.status))
       .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
@@ -369,7 +369,7 @@ export const caseService = {
     if (!candidate) return undefined;
 
     const customerMessages = candidate.messages.filter((message) => message.senderType === "CUSTOMER");
-    const originalCustomerText = customerMessages[0]?.originalText;
+    const originalCustomerText = customerMessages[0]?.originalText ?? candidate.problemSummary ?? candidate.title;
     if (!originalCustomerText) return undefined;
 
     const latestActivity = candidate.messages.reduce((latest, message) => {
@@ -395,7 +395,9 @@ export const caseService = {
       reason: relation.reason,
     });
 
-    return relation.related ? candidate : undefined;
+    return relation.related && relation.confidence >= (input.minimumConfidence ?? 0)
+      ? candidate
+      : undefined;
   },
 
   async appendLineMessageToCase(input: { caseId: string; text: string; resolvedText?: string; externalMessageId?: string; webhookEventId?: string; receivedAt?: string }) {

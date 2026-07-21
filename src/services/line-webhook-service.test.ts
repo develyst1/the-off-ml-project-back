@@ -5,6 +5,7 @@ const store = new InMemoryStore();
 const lineReplies: string[] = [];
 let classifierShouldFail = false;
 let initialReplyComposerCalls = 0;
+let caseRelationResult = { related: true, confidence: 100, reason: "pending question" };
 
 mock.module("../repositories/store", () => ({ store }));
 mock.module("./line-client", () => ({
@@ -34,7 +35,7 @@ mock.module("./ai-center-client", () => ({
       sentiment: "neutral",
     }),
     generateCaseTitle: async () => "ส่งงานใน Microsoft Teams ไม่สำเร็จ",
-    analyzeCaseRelation: async () => ({ related: true, confidence: 100, reason: "pending question" }),
+    analyzeCaseRelation: async () => caseRelationResult,
     evaluateAutoAnswerSolutionRelevance: async () => ({ relevant: true, confidence: 100, reason: "test" }),
     matchCustomerCaseHistory: async () => ({ intent: "NEW_ISSUE", matchedCaseId: null, isSameProblem: false, confidence: 0, reason: "no matching history" }),
     extractPendingInformation: async () => ({ values: {} }),
@@ -340,5 +341,25 @@ describe("LINE intent classification guards", () => {
     expect(await caseService.getCustomerCases(customer.id)).toHaveLength(1);
     const detail = await caseService.getCase(supportCase.id);
     expect(detail?.messages.some((message) => message.originalText === "ยังช้าอยู่")).toBe(true);
+  });
+
+  test("asks for confirmation instead of attaching a short symptom when case relation is uncertain", async () => {
+    sequence += 1;
+    const lineUserId = `U-active-short-uncertain-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Uncertain Short Customer ${sequence}` });
+    const supportCase = await store.createCase({ customerId: customer.id, status: "awaiting_tech", title: "ระบบลงทะเบียนใช้งานไม่ได้" });
+
+    caseRelationResult = { related: false, confidence: 25, reason: "different topic" };
+    try {
+      await sendReply({ lineUserId, messageId: `active-short-uncertain-${sequence}`, text: "ช้า" });
+    } finally {
+      caseRelationResult = { related: true, confidence: 100, reason: "pending question" };
+    }
+
+    const detail = await caseService.getCase(supportCase.id);
+    const refreshedCustomer = await store.upsertCustomer({ lineUserId });
+    expect(detail?.messages.some((message) => message.originalText === "ช้า")).toBe(false);
+    expect(detail?.status).toBe("awaiting_confirmation");
+    expect(refreshedCustomer.pendingCaseSelection?.mode).toBe("case_split_confirmation");
   });
 });

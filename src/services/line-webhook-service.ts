@@ -100,6 +100,7 @@ const ACTIVE_CASE_STATUSES = new Set(["analyzing", "awaiting_tech", "assigned", 
 const CLOSED_CASE_STATUSES = new Set(["closed", "resolved", "sent_to_customer"]);
 
 const INTENT_CONFIDENCE_THRESHOLD = 0.7;
+const SHORT_FOLLOW_UP_RELATION_CONFIDENCE_THRESHOLD = 0.85;
 async function hasAutoAnswerReadySolution(caseDetail: CaseDetail) {
   const readiness = await Promise.all(
     caseDetail.solutions.map((solution) => isAutoAnswerAllowedForSolution(caseDetail.confidenceScore, solution)),
@@ -907,6 +908,9 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
   }
 
   const classificationText = classifiedIntent.resolvedMessage ?? resolvedMessage ?? input.text;
+  const requiresShortFollowUpRelationCheck = isShortFollowUp(input.text)
+    && Boolean(classifiedIntent.resolvedMessage ?? resolvedMessage)
+    && classifiedIntent.intent === "FOLLOW_UP_EXISTING_CASE";
   const canCreateNewCase = classifiedIntent.intent === "NEW_SUPPORT_ISSUE"
     && classifiedIntent.shouldCreateCase
     && intentIsConfident
@@ -945,10 +949,10 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
   if (!isNewCaseRequest && classifiedIntent.intent === "FOLLOW_UP_EXISTING_CASE" && activeCase) {
     const activeCandidates = customerCases.filter((item) => ACTIVE_CASE_STATUSES.has(item.status));
     const matchedId = classifiedIntent.matchedActiveCaseId;
-    if (matchedId) {
+    if (matchedId && !requiresShortFollowUpRelationCheck) {
       matchedExistingCase = activeCandidates.find((item) => item.id === matchedId);
     }
-    if (!matchedExistingCase && activeCandidates.length === 1) {
+    if (!matchedExistingCase && activeCandidates.length === 1 && !requiresShortFollowUpRelationCheck) {
       matchedExistingCase = activeCase;
     }
     if (!matchedExistingCase && activeCandidates.length > 1) {
@@ -1007,8 +1011,11 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     ? activeCase
     : matchedExistingCase ?? await caseService.findRelatedLineCase({
         customerId: customer.id,
-        newText: intakeText,
+        newText: classifiedIntent.resolvedMessage ?? resolvedMessage ?? intakeText,
         receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : undefined,
+        minimumConfidence: requiresShortFollowUpRelationCheck
+          ? SHORT_FOLLOW_UP_RELATION_CONFIDENCE_THRESHOLD
+          : undefined,
       });
 
   if (relatedCase) {
