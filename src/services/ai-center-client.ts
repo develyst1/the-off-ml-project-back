@@ -83,6 +83,7 @@ export type TechMessageReview = {
 
 export type InfoRequestRewrite = {
   rewrittenMessage: string;
+  usedFallback?: boolean;
 };
 
 export type MoreInfoRequestSuggestion = {
@@ -925,6 +926,8 @@ export const aiCenterClient = {
     rawSupportMessage: string;
     currentCaseStatus: string;
   }): Promise<InfoRequestRewrite> {
+    const fallbackMessage = sanitizeCustomerFacingMessage(input.rawSupportMessage) || MORE_INFO_REQUEST_FALLBACK;
+
     try {
       const content = await chatWithAiCenter([
         {
@@ -963,7 +966,7 @@ export const aiCenterClient = {
       return { rewrittenMessage };
     } catch (error) {
       console.error({ event: "ai_center_info_request_rewrite_failed", message: String(error) });
-      throw new Error("AI ไม่สามารถเรียบเรียงข้อความได้ในขณะนี้ คุณยังสามารถแก้ไขและส่งข้อความเดิมได้");
+      return { rewrittenMessage: fallbackMessage, usedFallback: true };
     }
   },
 

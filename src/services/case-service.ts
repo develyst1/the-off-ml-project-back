@@ -546,7 +546,7 @@ export const caseService = {
       currentCaseStatus: detail.status,
     });
 
-    const rewrittenMessage = await store.createMessage({
+    const rewrittenMessage = rewrite.usedFallback ? undefined : await store.createMessage({
       caseId,
       direction: "INTERNAL",
       channel: "system",
@@ -557,7 +557,12 @@ export const caseService = {
       isVisibleToCustomer: false,
     });
 
-    return { rewrittenMessage: rewrite.rewrittenMessage, rawMessageId: rawMessage.id, rewrittenMessageId: rewrittenMessage.id };
+    return {
+      rewrittenMessage: rewrite.rewrittenMessage,
+      rawMessageId: rawMessage.id,
+      rewrittenMessageId: rewrittenMessage?.id,
+      usedFallback: rewrite.usedFallback,
+    };
   },
 
   async generateMoreInfoRequest(caseId: string, requestedInformation?: string) {
