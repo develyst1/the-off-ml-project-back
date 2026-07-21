@@ -5,6 +5,11 @@ import {
   type PendingInformationValues,
   sanitizePendingInformationValues,
 } from "../lib/pending-information";
+import {
+  CUSTOMER_REPLY_FALLBACK,
+  MORE_INFO_REQUEST_FALLBACK,
+  sanitizeCustomerFacingMessage,
+} from "../lib/customer-facing-message";
 
 type ChatRole = "system" | "user" | "assistant";
 
@@ -902,7 +907,7 @@ export const aiCenterClient = {
       ]);
       const reply = content?.trim().replace(/^['"]|['"]$/g, "");
       if (!reply || reply.length > 240 || !/(ค่ะ|นะคะ)[.!?]?$/u.test(reply)) return fallback;
-      return reply;
+      return sanitizeCustomerFacingMessage(reply) || fallback;
     } catch (error) {
       console.error({ event: "ai_center_info_request_failed", message: String(error) });
       return fallback;
@@ -925,7 +930,7 @@ export const aiCenterClient = {
         {
           role: "system",
           content:
-            "คุณมีหน้าที่เรียบเรียงข้อความจากทีม Tech Support เพื่อขอข้อมูลเพิ่มเติมจากลูกค้าผ่าน LINE ตอบกลับเป็น JSON เท่านั้น",
+            "คุณมีหน้าที่เรียบเรียงข้อความจากทีม Tech Support เพื่อขอข้อมูลเพิ่มเติมผ่าน LINE ตอบกลับเป็น JSON เท่านั้น ห้ามเรียกผู้รับว่า ลูกค้า หรือ คุณลูกค้า",
         },
         {
           role: "user",
@@ -938,6 +943,8 @@ export const aiCenterClient = {
               "ความยาว 1-3 ประโยค ถามเฉพาะข้อมูลที่ต้องการให้ชัดเจน ไม่เกิน 3 รายการ",
               "ห้ามถามข้อมูลที่ลูกค้าให้มาแล้วหรือที่เคยขอไปแล้ว เว้นแต่ข้อมูลนั้นยังไม่ครบ",
               "ห้ามเพิ่มข้อมูลหรือคำขอที่ทีมไม่ได้ระบุ ห้ามรับปากว่าจะแก้ปัญหาได้แน่นอน",
+              "ห้ามใช้คำว่า ลูกค้า, คุณลูกค้า, เรียนลูกค้า, เรียนคุณลูกค้า, เรียนท่าน, ทางลูกค้า หรือ รบกวนลูกค้า ในข้อความที่จะแสดงให้ผู้รับ",
+              "ไม่ต้องใส่คำขึ้นต้นแบบจดหมายหรือคำเรียกผู้รับโดยตรง",
               "ห้ามอธิบายการทำงานของ AI และส่งกลับเฉพาะข้อความพร้อมแสดงให้ลูกค้า",
             ],
             required_schema: { rewrittenMessage: "string" },
@@ -948,7 +955,7 @@ export const aiCenterClient = {
 
       if (!content) throw new Error("AI_CENTER_EMPTY_RESPONSE");
       const parsed = parseJsonObject<InfoRequestRewrite>(content, { rewrittenMessage: "" });
-      const rewrittenMessage = parsed.rewrittenMessage?.trim();
+      const rewrittenMessage = sanitizeCustomerFacingMessage(parsed.rewrittenMessage?.trim() ?? "");
       if (!rewrittenMessage || rewrittenMessage.length > 600 || !/(ค่ะ|นะคะ)[.!?]?$/u.test(rewrittenMessage)) {
         throw new Error("AI_CENTER_INVALID_REWRITE");
       }
@@ -971,7 +978,7 @@ export const aiCenterClient = {
     requestedInformation?: string;
   }): Promise<MoreInfoRequestSuggestion> {
     const fallback: MoreInfoRequestSuggestion = {
-      suggestedMessage: "รบกวนแจ้งรายละเอียดเพิ่มเติมที่เกี่ยวข้องกับปัญหานี้ให้หน่อยนะคะ",
+      suggestedMessage: MORE_INFO_REQUEST_FALLBACK,
       requestedFields: [],
       reason: "AI ไม่สามารถระบุข้อมูลที่ขาดได้",
     };
@@ -979,7 +986,7 @@ export const aiCenterClient = {
       const content = await chatWithAiCenter([
         {
           role: "system",
-          content: "คุณช่วยทีม Tech Support สร้างข้อความขอข้อมูลเพิ่มเติมจากลูกค้า ตอบกลับเป็น JSON เท่านั้น",
+          content: "คุณช่วยทีม Tech Support สร้างข้อความขอข้อมูลเพิ่มเติมผ่าน LINE ตอบกลับเป็น JSON เท่านั้น ห้ามเรียกผู้รับว่า ลูกค้า หรือ คุณลูกค้า",
         },
         {
           role: "user",
@@ -992,6 +999,8 @@ export const aiCenterClient = {
               "ถามไม่เกิน 1-3 รายการ ใช้ภาษาไทยสุภาพ เป็นธรรมชาติ และลงท้ายด้วย ค่ะ หรือ นะคะ",
               "ห้ามใช้คำถามกว้าง เช่น ขอรายละเอียดเพิ่มเติม",
               "ห้ามกล่าวถึง AI หรือรับปากว่าจะแก้ปัญหาได้แน่นอน",
+              "ห้ามใช้คำว่า ลูกค้า, คุณลูกค้า, เรียนลูกค้า, เรียนคุณลูกค้า, เรียนท่าน, ทางลูกค้า หรือ รบกวนลูกค้า ในข้อความที่จะแสดงให้ผู้รับ",
+              "ไม่ต้องใส่คำขึ้นต้นแบบจดหมายหรือคำเรียกผู้รับโดยตรง",
               "ส่งเฉพาะข้อความที่เจ้าหน้าที่ตรวจสอบก่อนส่งได้",
             ],
             ...input,
@@ -1000,7 +1009,7 @@ export const aiCenterClient = {
       ]);
       if (!content) return fallback;
       const parsed = parseJsonObject<Partial<MoreInfoRequestSuggestion>>(content, fallback);
-      const suggestedMessage = parsed.suggestedMessage?.trim();
+      const suggestedMessage = sanitizeCustomerFacingMessage(parsed.suggestedMessage?.trim() ?? "");
       const requestedFields = Array.isArray(parsed.requestedFields)
         ? parsed.requestedFields.filter((field): field is string => typeof field === "string").map((field) => field.trim()).filter(Boolean).slice(0, 3)
         : [];
@@ -1027,17 +1036,17 @@ export const aiCenterClient = {
     supportInstruction?: string;
   }): Promise<CustomerReplyComposeSuggestion> {
     const fallback: CustomerReplyComposeSuggestion = {
-      suggestedMessage: "",
-      suggestedMode: "REQUEST_MORE_INFO",
-      missingInformation: ["ข้อมูลที่จำเป็นต่อการตอบลูกค้า"],
-      reason: "ข้อมูลยังไม่เพียงพอสำหรับร่างคำตอบอย่างถูกต้อง",
+      suggestedMessage: CUSTOMER_REPLY_FALLBACK,
+      suggestedMode: "CUSTOMER_REPLY",
+      missingInformation: [],
+      reason: "AI ไม่สามารถสร้างร่างคำตอบได้ จึงใช้ข้อความสำรองที่สุภาพ",
     };
 
     try {
       const content = await chatWithAiCenter([
         {
           role: "system",
-          content: "คุณช่วยทีม Tech Support ร่างข้อความตอบกลับลูกค้าผ่าน LINE ให้ตอบเป็น JSON เท่านั้น",
+          content: "คุณช่วยทีม Tech Support ร่างข้อความตอบกลับผ่าน LINE ให้ตอบเป็น JSON เท่านั้น ห้ามเรียกผู้รับว่า ลูกค้า หรือ คุณลูกค้า",
         },
         {
           role: "user",
@@ -1056,6 +1065,9 @@ export const aiCenterClient = {
               "ใช้ภาษาไทยสุภาพ เป็นธรรมชาติ เข้าใจง่าย ความยาว 1-4 ประโยค และลงท้ายด้วย ค่ะ หรือ นะคะ",
               "ให้แนวทางตรวจสอบทีละขั้นตอนอย่างกระชับเมื่อมีข้อมูลเพียงพอ",
               "ห้ามแต่งผลการตรวจสอบ ห้ามรับปากว่าจะแก้ไขได้แน่นอน และห้ามกล่าวถึง AI",
+              "ใช้ supportInstruction เป็นใจความจากทีม Tech เป็นหลัก ห้ามสร้างวิธีแก้หรือคำถามใหม่ที่ทีมไม่ได้ระบุ",
+              "ห้ามใช้คำว่า ลูกค้า, คุณลูกค้า, เรียนลูกค้า, เรียนคุณลูกค้า, เรียนท่าน, ทางลูกค้า หรือ รบกวนลูกค้า ในข้อความที่จะแสดงให้ผู้รับ",
+              "ไม่ต้องใส่คำขึ้นต้นแบบจดหมายหรือคำเรียกผู้รับโดยตรง",
               "ห้ามใส่หมายเลขเคสหรือหัวข้อเคสใน suggestedMessage เพราะระบบจะเติมภายหลัง",
               "หากข้อมูลไม่พอจริง ให้ suggestedMode เป็น REQUEST_MORE_INFO, suggestedMessage ว่าง และระบุ missingInformation",
             ],
@@ -1069,7 +1081,9 @@ export const aiCenterClient = {
       const missingInformation = Array.isArray(parsed.missingInformation)
         ? parsed.missingInformation.filter((value): value is string => typeof value === "string").map((value) => value.trim()).filter(Boolean).slice(0, 5)
         : [];
-      const suggestedMessage = typeof parsed.suggestedMessage === "string" ? parsed.suggestedMessage.trim() : "";
+      const suggestedMessage = typeof parsed.suggestedMessage === "string"
+        ? sanitizeCustomerFacingMessage(parsed.suggestedMessage)
+        : "";
       if (suggestedMode === "CUSTOMER_REPLY" && (!suggestedMessage || suggestedMessage.length > 1000)) return fallback;
       return {
         suggestedMessage,
@@ -1091,15 +1105,16 @@ export const aiCenterClient = {
     rawSupportMessage: string;
     mode: "NORMAL_REPLY" | "CLOSING_REPLY";
   }): Promise<{ rewrittenMessage: string }> {
+    const safeRawMessage = sanitizeCustomerFacingMessage(input.rawSupportMessage);
     const fallback = input.mode === "CLOSING_REPLY"
-      ? `${input.rawSupportMessage.trim()}\n\nระบบกำลังปิดเคสนี้ให้ก่อนนะคะ หากยังพบปัญหาสามารถติดต่อกลับมาได้ค่ะ`
-      : input.rawSupportMessage.trim();
+      ? `${safeRawMessage}\n\nระบบกำลังปิดเคสนี้ให้ก่อนนะคะ หากยังพบปัญหาสามารถติดต่อกลับมาได้ค่ะ`
+      : safeRawMessage || CUSTOMER_REPLY_FALLBACK;
 
     try {
       const content = await chatWithAiCenter([
         {
           role: "system",
-          content: "Rewrite a Thai customer support reply. Return JSON only.",
+          content: "คุณเป็นเจ้าหน้าที่ Tech Support ที่ช่วยเรียบเรียงข้อความตอบกลับผ่าน LINE ตอบเป็น JSON เท่านั้น ห้ามเรียกผู้รับว่า ลูกค้า หรือ คุณลูกค้า",
         },
         {
           role: "user",
@@ -1111,6 +1126,9 @@ export const aiCenterClient = {
               "Do not invent investigation results or promise that the issue is fixed.",
               "NORMAL_REPLY: concise reply for the customer, 1-3 sentences.",
               "CLOSING_REPLY: include the result summary, state that this case is being closed, and say the customer can contact support again if the problem continues.",
+              "ใช้ rawSupportMessage เป็นใจความหลัก ห้ามสร้างวิธีแก้หรือผลตรวจสอบใหม่",
+              "ห้ามใช้คำว่า ลูกค้า, คุณลูกค้า, เรียนลูกค้า, เรียนคุณลูกค้า, เรียนท่าน, ทางลูกค้า หรือ รบกวนลูกค้า ในข้อความที่จะแสดงให้ผู้รับ",
+              "ไม่ต้องใส่คำขึ้นต้นแบบจดหมายหรือคำเรียกผู้รับโดยตรง",
             ],
             ...input,
           }),
@@ -1119,7 +1137,8 @@ export const aiCenterClient = {
       if (!content) return { rewrittenMessage: fallback };
       const parsed = parseJsonObject<{ rewrittenMessage?: string }>(content, {});
       const rewrittenMessage = parsed.rewrittenMessage?.trim();
-      return { rewrittenMessage: rewrittenMessage && rewrittenMessage.length <= 1000 ? rewrittenMessage : fallback };
+      const safeMessage = sanitizeCustomerFacingMessage(rewrittenMessage ?? "");
+      return { rewrittenMessage: safeMessage && safeMessage.length <= 1000 ? safeMessage : fallback };
     } catch (error) {
       console.error({ event: "ai_center_customer_reply_rewrite_failed", message: String(error) });
       return { rewrittenMessage: fallback };

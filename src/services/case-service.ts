@@ -5,6 +5,7 @@ import { aiCenterClient, type CaseHistoryCandidate, type CaseHistoryMatchDecisio
 import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
 import { inferPendingInformationFields } from "../lib/pending-information";
+import { sanitizeCustomerFacingMessage } from "../lib/customer-facing-message";
 
 const CLOSED_CASE_STATUSES: CaseStatus[] = ["closed", "resolved", "sent_to_customer"];
 const RECENT_CLOSED_CASE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
@@ -510,7 +511,7 @@ export const caseService = {
   async rewriteAdditionalInfoRequest(caseId: string, rawSupportMessage: string) {
     const detail = await store.getCaseDetail(caseId);
     if (!detail) throw new Error("Case not found");
-    const rawText = rawSupportMessage.trim();
+    const rawText = sanitizeCustomerFacingMessage(rawSupportMessage);
     if (!rawText) throw new Error("กรุณากรอกข้อความที่ต้องการให้ AI เรียบเรียง");
 
     const rawMessage = await store.createMessage({
@@ -707,7 +708,7 @@ export const caseService = {
   async requestAdditionalInfo(caseId: string, text: string, sourceMessageId?: string) {
     const detail = await store.getCaseDetail(caseId);
     if (!detail) throw new Error("Case not found");
-    const question = text.trim();
+    const question = sanitizeCustomerFacingMessage(text);
     if (!question) throw new Error("กรุณากรอกข้อความที่จะส่งให้ลูกค้า");
 
     let sourceId = sourceMessageId;
@@ -768,7 +769,7 @@ export const caseService = {
   async rewriteCustomerReply(caseId: string, rawSupportMessage: string, mode: "NORMAL_REPLY" | "CLOSING_REPLY") {
     const detail = await store.getCaseDetail(caseId);
     if (!detail) throw new Error("Case not found");
-    const rawText = rawSupportMessage.trim();
+    const rawText = sanitizeCustomerFacingMessage(rawSupportMessage);
     if (!rawText) throw new Error("กรุณากรอกข้อความตอบกลับลูกค้า");
 
     const customerMessages = detail.messages.filter((message) => message.senderType === "CUSTOMER");
@@ -788,7 +789,7 @@ export const caseService = {
     if (!detail.customer.lineUserId?.trim()) throw new Error("Customer LINE user ID is missing");
     if (detail.status === "closed" && !input.closeCase) throw new Error("เคสนี้ปิดแล้ว กรุณาเปิดเคสอีกครั้งก่อนตอบกลับลูกค้า");
 
-    const text = input.text.trim();
+    const text = sanitizeCustomerFacingMessage(input.text);
     if (!text) throw new Error("กรุณากรอกข้อความตอบกลับลูกค้า");
 
     const externalMessageId = input.externalActionId ? `teams-action:${input.externalActionId}` : undefined;
