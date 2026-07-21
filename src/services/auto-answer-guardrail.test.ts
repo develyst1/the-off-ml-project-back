@@ -8,11 +8,13 @@ const settings = {
 
 describe("auto-answer guardrail", () => {
   test("requires both confidence levels and team validation", () => {
-    expect(isSolutionReadyForAutoAnswer(98, { confidence: 98, validatedByTeam: true, validatedAt: "2026-07-21T00:00:00.000Z" }, settings)).toBe(true);
-    expect(isSolutionReadyForAutoAnswer(97, { confidence: 100, validatedByTeam: true, validatedAt: "2026-07-21T00:00:00.000Z" }, settings)).toBe(false);
-    expect(isSolutionReadyForAutoAnswer(100, { confidence: 97, validatedByTeam: true, validatedAt: "2026-07-21T00:00:00.000Z" }, settings)).toBe(false);
-    expect(isSolutionReadyForAutoAnswer(100, { confidence: 100, validatedByTeam: false, validatedAt: undefined }, settings)).toBe(false);
-    expect(isSolutionReadyForAutoAnswer(100, { confidence: 100, validatedByTeam: true, validatedAt: undefined }, settings)).toBe(false);
+    const actionableSteps = ["ลองออกจากระบบแล้วเข้าใหม่"];
+    expect(isSolutionReadyForAutoAnswer(98, { confidence: 98, validatedByTeam: true, validatedAt: "2026-07-21T00:00:00.000Z", solutionSteps: actionableSteps }, settings)).toBe(true);
+    expect(isSolutionReadyForAutoAnswer(97, { confidence: 100, validatedByTeam: true, validatedAt: "2026-07-21T00:00:00.000Z", solutionSteps: actionableSteps }, settings)).toBe(false);
+    expect(isSolutionReadyForAutoAnswer(100, { confidence: 97, validatedByTeam: true, validatedAt: "2026-07-21T00:00:00.000Z", solutionSteps: actionableSteps }, settings)).toBe(false);
+    expect(isSolutionReadyForAutoAnswer(100, { confidence: 100, validatedByTeam: false, validatedAt: undefined, solutionSteps: actionableSteps }, settings)).toBe(false);
+    expect(isSolutionReadyForAutoAnswer(100, { confidence: 100, validatedByTeam: true, validatedAt: undefined, solutionSteps: actionableSteps }, settings)).toBe(false);
+    expect(isSolutionReadyForAutoAnswer(100, { confidence: 100, validatedByTeam: true, validatedAt: "2026-07-21T00:00:00.000Z", solutionSteps: ["ทีมงานดำเนินการเรียบร้อยแล้ว"] }, settings)).toBe(false);
   });
 
   test("requires a high-confidence relevance match before sending an approved solution", () => {

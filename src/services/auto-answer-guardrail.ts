@@ -1,4 +1,5 @@
 import type { Solution } from "../domain/types";
+import { hasActionableSolutionSteps } from "../lib/solution-quality";
 
 export type AutoAnswerGuardrailSettings = {
   caseUnderstandingThreshold: number;
@@ -7,14 +8,15 @@ export type AutoAnswerGuardrailSettings = {
 
 export function isSolutionReadyForAutoAnswer(
   caseConfidence: number | undefined,
-  solution: Pick<Solution, "confidence" | "validatedByTeam" | "validatedAt">,
+  solution: Pick<Solution, "confidence" | "validatedByTeam" | "validatedAt" | "solutionSteps">,
   settings: AutoAnswerGuardrailSettings,
 ) {
   return (
     (caseConfidence ?? 0) >= settings.caseUnderstandingThreshold &&
     solution.confidence >= settings.caseDiscriminationThreshold &&
     solution.validatedByTeam &&
-    Boolean(solution.validatedAt)
+    Boolean(solution.validatedAt) &&
+    hasActionableSolutionSteps(solution.solutionSteps)
   );
 }
 

@@ -3,6 +3,7 @@ import { readJsonObject } from "../lib/request";
 import { store } from "../repositories/store";
 import { caseService } from "../services/case-service";
 import { isSolutionReadyForAutoAnswer } from "../services/auto-answer-guardrail";
+import { hasActionableSolutionSteps } from "../lib/solution-quality";
 
 const LOG_PAGE_SIZES = new Set([10, 20, 50, 100]);
 
@@ -58,7 +59,7 @@ automationRoutes.get("/solutions", async (c) => {
       .map((solution) => ({
         id: solution.id,
         category: item.category ?? "-",
-        solutionText: solution.solutionSteps.join("\n") || solution.rewrittenCustomerText,
+        solutionText: solution.solutionSteps.join("\n"),
         caseUnderstandingConfidence: item.confidenceScore ?? 0,
         caseDiscriminationConfidence: solution.confidence,
         status: "ready",
@@ -89,10 +90,9 @@ automationRoutes.get("/logs", async (c) => {
         answerText: message.originalText,
         eventType: message.messageType ?? "UNKNOWN",
         status: message.deliveryStatus ?? "UNKNOWN",
-        solutionText:
-          item.solutions.at(-1)?.solutionSteps.join("\n") ||
-          item.solutions.at(-1)?.rewrittenCustomerText ||
-          item.solutions.at(-1)?.rawReplyText,
+        solutionText: [...item.solutions].reverse()
+          .find((solution) => hasActionableSolutionSteps(solution.solutionSteps))
+          ?.solutionSteps.join("\n"),
         teamsNotified: true,
       })),
   )

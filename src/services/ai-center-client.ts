@@ -69,6 +69,7 @@ export type ProblemSummaryResult = {
 export type TechSolutionAnalysis = {
   rootCause?: string;
   solutionSteps: string[];
+  hasTroubleshootingSteps?: boolean;
   rewrittenCustomerText: string;
   category?: string;
   confidence: number;
@@ -264,7 +265,8 @@ function failedTechMessageReview(reason: string): TechMessageReview {
 function fallbackTechSolution(text: string): TechSolutionAnalysis {
   return {
     rootCause: undefined,
-    solutionSteps: [text],
+    solutionSteps: [],
+    hasTroubleshootingSteps: false,
     rewrittenCustomerText: text,
     category: "ยังไม่ระบุหมวดหมู่",
     confidence: 50,
@@ -922,12 +924,17 @@ export const aiCenterClient = {
           required_schema: {
             rootCause: "string | undefined",
             solutionSteps: ["string"],
+            hasTroubleshootingSteps: "boolean; true only for concrete troubleshooting or resolution steps, never for acknowledgements, status updates, or closing messages",
             rewrittenCustomerText: "string",
             category: "ชื่อหมวดหมู่ภาษาไทยที่เข้าใจง่าย | undefined",
             confidence: "number 0-100",
           },
           originalCustomerText: input.originalCustomerText,
           techReplyText: input.techReplyText,
+          rules: [
+            "Do not treat a closing message, acknowledgement, status update, or promise to investigate as a solution.",
+            "When there are no concrete troubleshooting steps, return hasTroubleshootingSteps false and an empty solutionSteps array.",
+          ],
         }),
       },
     ]);

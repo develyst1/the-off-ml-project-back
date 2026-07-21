@@ -6,6 +6,7 @@ import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
 import { inferPendingInformationFields } from "../lib/pending-information";
 import { sanitizeCustomerFacingMessage } from "../lib/customer-facing-message";
+import { actionableSolutionSteps } from "../lib/solution-quality";
 import { isAutoAnswerAllowedForRelevance, isAutoAnswerAllowedForSolution } from "./automation-settings";
 
 const CLOSED_CASE_STATUSES: CaseStatus[] = ["closed", "resolved", "sent_to_customer"];
@@ -118,10 +119,13 @@ async function extractAndStoreTechSolution(input: {
     techReplyText: input.techReplyText,
     originalCustomerText,
   });
-  const solutionSteps = solutionAnalysis.solutionSteps.map((step) => step.trim()).filter(Boolean);
+  const solutionSteps = solutionAnalysis.hasTroubleshootingSteps === false
+    ? []
+    : actionableSolutionSteps(solutionAnalysis.solutionSteps);
   const normalizedSolutionAnalysis = {
     ...solutionAnalysis,
-    solutionSteps: solutionSteps.length > 0 ? solutionSteps : [input.techReplyText],
+    hasTroubleshootingSteps: solutionSteps.length > 0,
+    solutionSteps,
     rewrittenCustomerText: solutionAnalysis.rewrittenCustomerText.trim() || input.rewrittenCustomerText,
   };
 
@@ -129,20 +133,22 @@ async function extractAndStoreTechSolution(input: {
     caseId: input.detail.id,
     messageId: input.messageId,
     analysisType: "tech_solution",
-    summary: normalizedSolutionAnalysis.solutionSteps.join("\n"),
+    summary: normalizedSolutionAnalysis.solutionSteps.join("\n") || "NO_ACTIONABLE_SOLUTION",
     category: normalizedSolutionAnalysis.category,
     confidence: normalizedSolutionAnalysis.confidence,
     rawJson: normalizedSolutionAnalysis,
   });
-  await store.createSolution({
-    caseId: input.detail.id,
-    rawReplyText: input.techReplyText,
-    rootCause: normalizedSolutionAnalysis.rootCause,
-    solutionSteps: normalizedSolutionAnalysis.solutionSteps,
-    rewrittenCustomerText: normalizedSolutionAnalysis.rewrittenCustomerText,
-    confidence: normalizedSolutionAnalysis.confidence,
-    validatedByTeam: false,
-  });
+  if (normalizedSolutionAnalysis.hasTroubleshootingSteps) {
+    await store.createSolution({
+      caseId: input.detail.id,
+      rawReplyText: input.techReplyText,
+      rootCause: normalizedSolutionAnalysis.rootCause,
+      solutionSteps: normalizedSolutionAnalysis.solutionSteps,
+      rewrittenCustomerText: normalizedSolutionAnalysis.rewrittenCustomerText,
+      confidence: normalizedSolutionAnalysis.confidence,
+      validatedByTeam: false,
+    });
+  }
 
   return normalizedSolutionAnalysis;
 }
@@ -1276,28 +1282,38 @@ export const caseService = {
     let solutionAnalysis;
     if (shouldExtractSolution) {
       await store.updateCase(input.caseId, { status: "analyzing_solution" });
-      solutionAnalysis = await aiCenterClient.analyzeTechSolution({
+      const extractedAnalysis = await aiCenterClient.analyzeTechSolution({
         techReplyText: input.text,
         originalCustomerText,
       });
+      const solutionSteps = extractedAnalysis.hasTroubleshootingSteps === false
+        ? []
+        : actionableSolutionSteps(extractedAnalysis.solutionSteps);
+      solutionAnalysis = {
+        ...extractedAnalysis,
+        hasTroubleshootingSteps: solutionSteps.length > 0,
+        solutionSteps,
+      };
       await store.createAnalysis({
         caseId: input.caseId,
         messageId: message.id,
         analysisType: "tech_solution",
-        summary: solutionAnalysis.solutionSteps.join("\n"),
+        summary: solutionAnalysis.solutionSteps.join("\n") || "NO_ACTIONABLE_SOLUTION",
         category: solutionAnalysis.category,
         confidence: solutionAnalysis.confidence,
         rawJson: solutionAnalysis,
       });
-      await store.createSolution({
-        caseId: input.caseId,
-        rawReplyText: input.text,
-        rootCause: solutionAnalysis.rootCause,
-        solutionSteps: solutionAnalysis.solutionSteps,
-        rewrittenCustomerText: messageReview.rewrittenMessage,
-        confidence: solutionAnalysis.confidence,
-        validatedByTeam: false,
-      });
+      if (solutionAnalysis.hasTroubleshootingSteps) {
+        await store.createSolution({
+          caseId: input.caseId,
+          rawReplyText: input.text,
+          rootCause: solutionAnalysis.rootCause,
+          solutionSteps: solutionAnalysis.solutionSteps,
+          rewrittenCustomerText: messageReview.rewrittenMessage,
+          confidence: solutionAnalysis.confidence,
+          validatedByTeam: false,
+        });
+      }
     }
 
     const closeCase = input.closeAfterReply || messageReview.messageType === "CLOSE_CASE";

@@ -93,8 +93,7 @@ describe("POST /webhooks/teams/actions", () => {
     expect(lineSendCount).toBe(1);
     expect(sentMessages).toHaveLength(1);
     expect(sentMessages?.[0]?.senderType).toBe("TECH");
-    expect(detail?.solutions).toHaveLength(1);
-    expect(detail?.solutions[0]?.solutionSteps.length).toBeGreaterThan(0);
+    expect(detail?.solutions).toHaveLength(0);
     expect(detail?.analyses.some((analysis) => analysis.analysisType === "tech_solution")).toBe(true);
   });
 
@@ -136,8 +135,7 @@ describe("POST /webhooks/teams/actions", () => {
     expect(closedMessage?.originalText).toContain(`ปิดเคส ${supportCase.caseNumber}`);
     expect(closedMessage?.sentAt).toBeDefined();
     expect(systemEvent?.isVisibleToCustomer).toBe(false);
-    expect(detail?.solutions).toHaveLength(1);
-    expect(detail?.solutions[0]?.solutionSteps.length).toBeGreaterThan(0);
+    expect(detail?.solutions).toHaveLength(0);
     expect(detail?.analyses.some((analysis) => analysis.analysisType === "tech_solution")).toBe(true);
   });
 

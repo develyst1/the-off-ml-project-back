@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { readJsonObject, requiredString } from "../lib/request";
 import { store } from "../repositories/store";
 import { caseService } from "../services/case-service";
+import { hasActionableSolutionSteps } from "../lib/solution-quality";
 
 export const confidenceRoutes = new Hono();
 
@@ -16,7 +17,7 @@ confidenceRoutes.get("/suggestions", async (c) => {
   const suggestions = cases
     .flatMap((item) => {
       const customerMessage = item.messages.find((message) => message.senderType === "CUSTOMER");
-      const latestSolution = item.solutions.at(-1);
+      const latestSolution = [...item.solutions].reverse().find((solution) => hasActionableSolutionSteps(solution.solutionSteps));
       const caseConfidence = item.confidenceScore ?? 0;
       const solutionConfidence = latestSolution?.confidence ?? caseConfidence;
       const reviewStage = getReviewStage(caseConfidence, latestSolution?.confidence);
@@ -26,17 +27,17 @@ confidenceRoutes.get("/suggestions", async (c) => {
       const needsAutoAnswerReview = reviewStage === "AUTO_ANSWER"
         && latestSolution?.autoAnswerReviewResult === undefined;
 
-      if (!needsQualityReview && !needsAutoAnswerReview) return [];
+      if (!latestSolution || (!needsQualityReview && !needsAutoAnswerReview)) return [];
 
       return [{
         id: `match_${item.id}`,
         caseId: item.id,
         caseNumber: item.caseNumber,
         customerName: item.customer.displayName ?? "ลูกค้า LINE",
-        suggestedSolutionId: latestSolution?.id ?? "-",
+        suggestedSolutionId: latestSolution.id,
         category: item.category ?? "-",
         originalText: customerMessage?.originalText ?? "",
-        solutionText: latestSolution?.solutionSteps.join("\n") || latestSolution?.rewrittenCustomerText || "ยังไม่มี solution ที่ยืนยันแล้ว",
+        solutionText: latestSolution.solutionSteps.join("\n"),
         caseUnderstandingConfidence: caseConfidence,
         caseDiscriminationConfidence: solutionConfidence,
         reviewStage,
