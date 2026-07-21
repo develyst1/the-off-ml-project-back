@@ -129,6 +129,14 @@ function detectCaseQueryIntent(text: string): LineMessageIntentName | undefined 
   return undefined;
 }
 
+function detectOutOfScopeIntent(text: string): LineMessageIntentName | undefined {
+  const normalized = text.trim();
+  if (/(?:ชำระเงิน|จ่ายเงิน|โอนเงิน|บัตรเครดิต|บัตรเดบิต|ใบเสร็จ|คืนเงิน|refund|payment|billing|invoice)/iu.test(normalized)) {
+    return "OUT_OF_SCOPE";
+  }
+  return undefined;
+}
+
 function hasActualProblemDescription(text: string) {
   const normalized = text.trim();
   if (normalized.length < 8) return false;
@@ -303,19 +311,6 @@ async function handleNonCaseIntent(input: {
       currentCaseStatus: "IDLE",
     });
     await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
-    if (env.FORWARD_OUT_OF_SCOPE_TO_TEAMS) {
-      try {
-        await teamsClient.notifyOutOfScope({
-          customerName: input.customer.displayName ?? input.customer.lineUserId,
-          lineUserId: input.customer.lineUserId,
-          text: input.text,
-          reason: input.intent.reason,
-          eventType: input.intent.teamsEventType ?? "OUT_OF_SCOPE_MESSAGE",
-        });
-      } catch (error) {
-        console.error({ event: "line_out_of_scope_teams_forward_failed", error: String(error) });
-      }
-    }
     await clearPreCaseContext(input.customer);
     return true;
   }
@@ -326,7 +321,7 @@ async function handleNonCaseIntent(input: {
       : input.intent.intent === "THANK_YOU"
       ? "ยินดีค่ะ หากพบปัญหาการใช้งานเพิ่มเติม แจ้งมาได้เลยนะคะ"
       : input.intent.intent === "TECH_GENERAL_QUESTION"
-      ? "ตอบเรื่องความรู้ด้านเทคนิคทั่วไปได้ค่ะ หากตอนนี้พบอาการใช้งานผิดปกติ เช่น ช้า หลุด หรือเข้าใช้งานไม่ได้ แจ้งรายละเอียดมาได้เลยนะคะ"
+      ? "หากพบปัญหาขณะใช้งาน รบกวนแจ้งอาการที่พบ ระบบหรืออุปกรณ์ที่ใช้ และข้อความผิดพลาดเพิ่มเติมได้เลยนะคะ"
       : input.intent.intent === "SMALL_TALK"
       ? "ฉันดูแลเรื่องปัญหาการใช้งานระบบ อุปกรณ์ และบริการไอทีเป็นหลักค่ะ หากพบปัญหา แจ้งอาการมาได้เลยนะคะ"
       : "ขอสอบถามเพิ่มเติมค่ะ ตอนนี้ต้องการแจ้งปัญหาใหม่ หรือต้องการติดตามเคสเดิมคะ";
@@ -555,7 +550,9 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     : [...(storedContext?.contextMessages ?? [])]
       .reverse()
       .find((message) => message.sender === "LINE_BOT" && message.message.includes("ไหม"))?.message;
+  const detectedBoundaryIntent = detectOutOfScopeIntent(input.text);
   const detectedQueryIntent = detectCaseQueryIntent(input.text);
+  const detectedIntent = detectedBoundaryIntent ?? detectedQueryIntent;
   let aiClassifiedIntent: LineMessageIntentClassification;
   try {
     aiClassifiedIntent = await aiCenterClient.classifyLineMessageIntent({
@@ -581,19 +578,21 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       reason: "INTENT_CLASSIFIER_ERROR",
     };
   }
-  let classifiedIntent: LineMessageIntentClassification = detectedQueryIntent
+  let classifiedIntent: LineMessageIntentClassification = detectedIntent
     ? {
         ...aiClassifiedIntent,
-        intent: detectedQueryIntent,
+        intent: detectedIntent,
         shouldCreateCase: false,
         targetCaseNumber: input.text.match(/\bOFF-\d{4}-\d+\b/i)?.[0] ?? null,
         matchedActiveCaseId: activeCase?.id ?? null,
         confidence: 1,
-        reason: "ข้อความตรงกับ deterministic intent guard หลังผ่าน AI classification",
+        reason: detectedBoundaryIntent
+          ? "ข้อความเกี่ยวกับการชำระเงินอยู่นอกขอบเขต Tech Support"
+          : "ข้อความตรงกับ deterministic intent guard หลังผ่าน AI classification",
       }
     : aiClassifiedIntent;
 
-  if (!detectedQueryIntent && resolvedMessage && hasActualProblemDescription(resolvedMessage)) {
+  if (!detectedIntent && resolvedMessage && hasActualProblemDescription(resolvedMessage)) {
     const hasSingleActiveCase = activeCaseSnapshots.length === 1;
     classifiedIntent = {
       ...classifiedIntent,

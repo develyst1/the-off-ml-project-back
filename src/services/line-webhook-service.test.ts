@@ -55,6 +55,7 @@ mock.module("./ai-center-client", () => ({
     },
     generateLineContinuationReply: async (input: { replyType?: string; requestedNextQuestion?: string }) => {
       if (input.replyType === "INITIAL_CASE_ACK") initialReplyComposerCalls += 1;
+      if (input.replyType === "OUT_OF_SCOPE_REPLY") return "ขออภัยค่ะ เรื่องนี้อยู่นอกขอบเขตการดูแลของทีม Tech Support";
       return input.replyType === "FOLLOW_UP_QUESTION" && input.requestedNextQuestion
         ? input.requestedNextQuestion
         : "รับทราบค่ะ เดี๋ยวตรวจสอบข้อมูลนี้ต่อให้นะคะ";
@@ -238,6 +239,17 @@ describe("LINE intent classification guards", () => {
     expect(await caseService.getCustomerCases(customer.id)).toHaveLength(0);
   });
 
+  test("does not create a case for payment or billing questions", async () => {
+    sequence += 1;
+    const lineUserId = `U-payment-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Payment Customer ${sequence}` });
+
+    await sendReply({ lineUserId, messageId: `payment-${sequence}`, text: "ชำระเงินไม่สำเร็จ ต้องทำอย่างไร" });
+
+    expect(await caseService.getCustomerCases(customer.id)).toHaveLength(0);
+    expect(lineReplies.at(-1)).toContain("อยู่นอกขอบเขตการดูแลของทีม Tech Support");
+  });
+
   test("appends a short follow-up to the only active case instead of creating a new case", async () => {
     sequence += 1;
     const lineUserId = `U-follow-up-${sequence}`;
@@ -263,7 +275,7 @@ describe("LINE intent classification guards", () => {
     ["กินข้าวหรือยัง", "ฉันดูแลเรื่องปัญหาการใช้งานระบบ"],
     ["สวัสดี", "สวัสดีค่ะ"],
     ["ขอบคุณครับ", "ยินดีค่ะ"],
-    ["วันนี้อินเทอร์เน็ตเร็วไหม", "ตอบเรื่องความรู้ด้านเทคนิคทั่วไปได้ค่ะ"],
+    ["วันนี้อินเทอร์เน็ตเร็วไหม", "รบกวนแจ้งอาการที่พบ"],
   ])("does not create a case for %s", async (text, expectedReply) => {
     sequence += 1;
     const lineUserId = `U-out-of-scope-${sequence}`;
