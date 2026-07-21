@@ -1,6 +1,7 @@
 import { env } from "../config/env";
 import { normalizeCategory } from "../lib/category";
 import {
+  PENDING_INFORMATION_FIELDS,
   type PendingInformationField,
   type PendingInformationValues,
   sanitizePendingInformationValues,
@@ -385,6 +386,7 @@ export const aiCenterClient = {
             rules: [
               "สกัดเฉพาะข้อมูลที่มีในข้อความล่าสุด ห้ามเดา",
               "ใช้เฉพาะ key ที่ระบุใน requestedFields",
+              `key ที่รองรับมีเพียง: ${PENDING_INFORMATION_FIELDS.join(", ")}`,
               "หากไม่พบข้อมูลของ field ใด ให้ไม่ต้องส่ง key นั้นกลับมา",
             ],
             required_schema: { values: "object keyed by requestedFields" },
@@ -1071,6 +1073,7 @@ export const aiCenterClient = {
               "ห้ามใช้คำว่า ลูกค้า, คุณลูกค้า, เรียนลูกค้า, เรียนคุณลูกค้า, เรียนท่าน, ทางลูกค้า หรือ รบกวนลูกค้า ในข้อความที่จะแสดงให้ผู้รับ",
               "ไม่ต้องใส่คำขึ้นต้นแบบจดหมายหรือคำเรียกผู้รับโดยตรง",
               "ส่งเฉพาะข้อความที่เจ้าหน้าที่ตรวจสอบก่อนส่งได้",
+              `requestedFields ต้องเลือกเฉพาะ key เหล่านี้: ${PENDING_INFORMATION_FIELDS.join(", ")}`,
             ],
             ...input,
           }),
