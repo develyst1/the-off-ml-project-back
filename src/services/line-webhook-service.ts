@@ -161,7 +161,7 @@ function detectCaseQueryIntent(text: string): LineMessageIntentName | undefined 
   if (/มีเคสอะไรบ้าง|เคสที่เคยแจ้ง|ประวัติเคส|ดูเคสของฉัน|เคสล่าสุด|รายการเคส/iu.test(normalized)) return "CASE_HISTORY_QUERY";
   if (/สถานะเคส|สถานะ.*เคส|เคส.*สถานะ|ตอนนี้.*อยู่ขั้นตอนไหน|ความคืบหน้า.*เคส/iu.test(normalized)) return "CASE_STATUS_QUERY";
   if (/รายละเอียดเคส|ข้อมูลของเคส|ดูรายละเอียด.*เคส/iu.test(normalized)) return "CASE_DETAIL_QUERY";
-  if (/ขอปิดเคส|ปิดเคสให้หน่อย|ปิดเรื่องนี้|ปิดได้เลย|ปิดเลย(?:ครับ|ค่ะ|คะ)?/iu.test(normalized)) return "CLOSE_CASE_REQUEST";
+  if (/ขอปิดเคส|ปิดเคส(?:นี้)?(?:ให้หน่อย)?(?:ครับ|ค่ะ|คะ)?$|ปิดเรื่องนี้|ปิดได้เลย|ปิดเลย(?:ครับ|ค่ะ|คะ)?/iu.test(normalized)) return "CLOSE_CASE_REQUEST";
   if (/เปิดเคสเดิม|เปิดเรื่องเดิม|ขอเปิดเคส|เคสที่\s*\d+|เรื่องที่แจ้ง/iu.test(normalized)) return "REOPEN_CASE_REQUEST";
   if (/^(สวัสดี|หวัดดี|ดีค่ะ|ดีครับ|hello|hi)\b/iu.test(normalized)) return "GREETING";
   if (/^(ขอบคุณ|ขอบคุณค่ะ|ขอบคุณครับ|แต๊งกิ้ว)/iu.test(normalized)) return "THANK_YOU";
@@ -438,7 +438,9 @@ async function handleNonCaseIntent(input: {
     const requestedCaseNumber = input.text.match(/\bOFF-\d{4}-\d+\b/i)?.[0];
     const targetCase = requestedCaseNumber
       ? cases.find((item) => item.caseNumber.toLowerCase() === requestedCaseNumber.toLowerCase())
-      : undefined;
+      : activeCases.length === 1
+        ? activeCases[0]
+        : undefined;
     if (targetCase) {
       await closeCaseFromLineRequest({
         lineUserId: input.customer.lineUserId,
@@ -909,7 +911,10 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     const targetCase = requestedCaseNumber
       ? customerCases.find((item) => item.caseNumber.toLowerCase() === requestedCaseNumber.toLowerCase())
       : undefined;
-    if (!targetCase || !pendingCloseRequest.candidateCaseIds.includes(targetCase.id)) {
+    const candidateCaseIds = Array.isArray(pendingCloseRequest.candidateCaseIds)
+      ? pendingCloseRequest.candidateCaseIds
+      : customerCases.filter((item) => ACTIVE_CASE_STATUSES.has(item.status)).map((item) => item.id);
+    if (!targetCase || !candidateCaseIds.includes(targetCase.id)) {
       await lineClient.replyToToken({
         replyToken: input.replyToken,
         text: "ไม่พบหมายเลขเคสนี้ในรายการของคุณค่ะ รบกวนตรวจสอบและแจ้งหมายเลขเคสอีกครั้งนะคะ",

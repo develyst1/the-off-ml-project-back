@@ -203,27 +203,48 @@ describe("LINE case query guards", () => {
 });
 
 describe("LINE customer close-case requests", () => {
-  test("forwards the close request to Tech after the customer provides its number instead of reopening or closing automatically", async () => {
+  test("forwards a close request for the only active case without asking for its number", async () => {
     sequence += 1;
     const lineUserId = `U-close-request-${sequence}`;
     const customer = await store.upsertCustomer({ lineUserId, displayName: `Close request customer ${sequence}` });
     const supportCase = await store.createCase({ customerId: customer.id, status: "awaiting_tech", title: "ปัญหาการใช้งาน Microsoft Edge" });
 
-    await sendReply({ lineUserId, messageId: `close-request-${sequence}`, text: "ปิดได้เลยครับ" });
-    const waitingCustomer = await store.upsertCustomer({ lineUserId });
-    expect(waitingCustomer.pendingCaseSelection).toMatchObject({ mode: "close_case_request", pendingAction: "CLOSE_CASE" });
-
-    await sendReply({ lineUserId, messageId: `close-number-${sequence}`, text: supportCase.caseNumber });
+    await sendReply({ lineUserId, messageId: `close-request-${sequence}`, text: "ปิดเคส" });
 
     const detail = await caseService.getCase(supportCase.id);
     const refreshedCustomer = await store.upsertCustomer({ lineUserId });
     expect(detail?.status).toBe("awaiting_tech");
-    expect(detail?.messages.some((message) => message.originalText === supportCase.caseNumber && message.senderType === "CUSTOMER")).toBe(true);
+    expect(detail?.messages.some((message) => message.originalText === "ปิดเคส" && message.senderType === "CUSTOMER")).toBe(true);
     expect(detail?.messages.some((message) => message.messageType === "CASE_FORWARDED")).toBe(true);
     expect(detail?.messages.some((message) => message.originalText.includes("ลูกค้าขอปิดเคสผ่าน LINE") && message.senderType === "SYSTEM")).toBe(true);
     expect(lineReplies.at(-1)).toContain("รับคำขอปิดเคส");
+    expect(lineReplies.at(-1)).not.toContain("รบกวนแจ้งหมายเลขเคส");
     expect(refreshedCustomer.activeCaseId).toBe(supportCase.id);
     expect(refreshedCustomer.pendingCaseSelection).toBeUndefined();
+  });
+
+  test("asks for a case number when the customer has multiple active cases", async () => {
+    sequence += 1;
+    const lineUserId = `U-close-request-multiple-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Multiple close request customer ${sequence}` });
+    const firstCase = await store.createCase({ customerId: customer.id, status: "awaiting_tech", title: "ปัญหาการใช้งาน Microsoft Edge" });
+    const secondCase = await store.createCase({ customerId: customer.id, status: "assigned", title: "ปัญหาการเชื่อมต่อเครือข่าย" });
+
+    await sendReply({ lineUserId, messageId: `close-request-multiple-${sequence}`, text: "ปิดเคส" });
+    const waitingCustomer = await store.upsertCustomer({ lineUserId });
+    expect(waitingCustomer.pendingCaseSelection).toMatchObject({
+      mode: "close_case_request",
+      pendingAction: "CLOSE_CASE",
+      candidateCaseIds: expect.arrayContaining([firstCase.id, secondCase.id]),
+    });
+    expect(lineReplies.at(-1)).toContain("รบกวนแจ้งหมายเลขเคส");
+
+    await sendReply({ lineUserId, messageId: `close-number-${sequence}`, text: secondCase.caseNumber });
+
+    const detail = await caseService.getCase(secondCase.id);
+    expect(detail?.status).toBe("awaiting_tech");
+    expect(detail?.messages.some((message) => message.originalText === secondCase.caseNumber && message.senderType === "CUSTOMER")).toBe(true);
+    expect(lineReplies.at(-1)).toContain("รับคำขอปิดเคส");
   });
 });
 
