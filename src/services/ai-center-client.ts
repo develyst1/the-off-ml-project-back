@@ -104,6 +104,12 @@ export type LineReplyType =
 export const LINE_MESSAGE_INTENTS = [
   "NEW_SUPPORT_ISSUE",
   "FOLLOW_UP_EXISTING_CASE",
+  "ISSUE_RESOLVED",
+  "ISSUE_IMPROVED",
+  "ISSUE_STILL_PRESENT",
+  "ISSUE_WORSENED",
+  "TROUBLESHOOTING_RESULT",
+  "FOLLOW_UP_INFORMATION",
   "CASE_COUNT_QUERY",
   "CASE_HISTORY_QUERY",
   "CASE_STATUS_QUERY",
@@ -120,6 +126,23 @@ export const LINE_MESSAGE_INTENTS = [
 
 export type LineMessageIntentName = (typeof LINE_MESSAGE_INTENTS)[number];
 
+export type LineMessageNextAction =
+  | "ASK_CLOSE_CONFIRMATION"
+  | "ACKNOWLEDGE_IMPROVEMENT"
+  | "SEND_UPDATE_TO_TECH"
+  | "ESCALATE_TO_TECH"
+  | "ASK_CLARIFICATION"
+  | "CREATE_CASE"
+  | "NONE";
+
+export type LineConversationCaseContext = {
+  id: string;
+  caseNumber: string;
+  title?: string;
+  summary?: string;
+  status: string;
+};
+
 export type LineMessageIntentClassification = {
   intent: LineMessageIntentName;
   shouldCreateCase: boolean;
@@ -128,6 +151,9 @@ export type LineMessageIntentClassification = {
   targetCaseNumber: string | null;
   matchedActiveCaseId?: string | null;
   resolvedMessage?: string;
+  resolvedMeaning?: string;
+  shouldAppendToCase?: boolean;
+  nextAction?: LineMessageNextAction;
   confidence: number;
   reason: string;
 };
@@ -538,12 +564,19 @@ export const aiCenterClient = {
     recentCases: Array<{ id: string; caseNumber: string; title?: string; summary?: string; status: string; updatedAt: string }>;
     activeCaseNumber?: string;
     conversationState?: string;
+    activeCase?: LineConversationCaseContext;
+    lastTechInstruction?: string;
+    lastTroubleshootingStep?: string;
+    knownFacts?: string[];
+    troubleshootingStepsTried?: string[];
   }): Promise<LineMessageIntentClassification> {
     const fallback: LineMessageIntentClassification = {
       intent: "UNKNOWN",
       shouldCreateCase: false,
       targetCaseNumber: null,
       matchedActiveCaseId: null,
+      shouldAppendToCase: false,
+      nextAction: "ASK_CLARIFICATION",
       confidence: 0,
       reason: "AI_CENTER_UNAVAILABLE_OR_INVALID_RESPONSE",
     };
@@ -562,15 +595,26 @@ export const aiCenterClient = {
             requiredSchema: {
               intent: "one of allowedIntents",
               shouldCreateCase: "boolean",
+              shouldAppendToCase: "boolean",
+              nextAction: "ASK_CLOSE_CONFIRMATION | ACKNOWLEDGE_IMPROVEMENT | SEND_UPDATE_TO_TECH | ESCALATE_TO_TECH | ASK_CLARIFICATION | CREATE_CASE | NONE",
               shouldForwardToTeams: "boolean",
               teamsEventType: "NEW_CASE | FOLLOW_UP | OUT_OF_SCOPE_MESSAGE | CASE_QUERY | NONE",
               targetCaseNumber: "string or null",
               matchedActiveCaseId: "active case id or null",
               resolvedMessage: "context-resolved message or null",
+              resolvedMeaning: "meaning of the latest message in active-case context or null",
               confidence: "number from 0 to 1",
               reason: "short Thai explanation",
             },
             rules: [
+              "Use active-case context before deciding that a message is a new issue. The context contains recent conversation, last Tech instruction, last bot question, known facts, and troubleshooting steps already tried.",
+              "When an active case exists, short results such as 'still slow', 'works now', 'better', 'not fixed', and 'worse' are outcomes for that case, not new issues by themselves.",
+              "ISSUE_RESOLVED: customer clearly says the original symptom is gone or working. Append to the active case, do not close automatically, nextAction=ASK_CLOSE_CONFIRMATION.",
+              "ISSUE_IMPROVED: symptom improved but not confirmed resolved. Append to the active case; nextAction=ACKNOWLEDGE_IMPROVEMENT.",
+              "ISSUE_STILL_PRESENT: a tried step did not fix the original symptom. Append to the active case; nextAction=SEND_UPDATE_TO_TECH.",
+              "ISSUE_WORSENED: symptom became worse or a new serious symptom appears while troubleshooting. Append to the active case; nextAction=ESCALATE_TO_TECH.",
+              "TROUBLESHOOTING_RESULT is a concrete result after an instructed check. FOLLOW_UP_INFORMATION is an answer or additional fact for the active case. Both shouldAppendToCase=true.",
+              "If no active-case context exists, or several active cases are equally plausible, use UNKNOWN and nextAction=ASK_CLARIFICATION. Never create a case from an ambiguous short message.",
               "NEW_SUPPORT_ISSUE ใช้เมื่อผู้ใช้แจ้งอาการหรือปัญหาการใช้งานใหม่อย่างชัดเจนเท่านั้น",
               "FOLLOW_UP_EXISTING_CASE ใช้เมื่อข้อความเป็นคำตอบต่อคำถามก่อนหน้า ให้ข้อมูลเพิ่ม หรือแจ้งผลหลังทดลองแก้ปัญหา",
               "คำถามจำนวนเคส ประวัติเคส สถานะเคส หรือรายละเอียดเคส ห้ามสร้างเคสใหม่",
@@ -602,6 +646,27 @@ export const aiCenterClient = {
       const requestedActiveCaseId = typeof parsed.matchedActiveCaseId === "string" ? parsed.matchedActiveCaseId.trim() : "";
       const knownCaseNumbers = new Set([...input.activeCases, ...input.recentCases].map((item) => item.caseNumber.toLowerCase()));
       const knownActiveCaseIds = new Set(input.activeCases.map((item) => item.id));
+      const nextAction = [
+        "ASK_CLOSE_CONFIRMATION",
+        "ACKNOWLEDGE_IMPROVEMENT",
+        "SEND_UPDATE_TO_TECH",
+        "ESCALATE_TO_TECH",
+        "ASK_CLARIFICATION",
+        "CREATE_CASE",
+        "NONE",
+      ].includes(parsed.nextAction ?? "")
+        ? parsed.nextAction as LineMessageNextAction
+        : intent === "ISSUE_RESOLVED"
+        ? "ASK_CLOSE_CONFIRMATION"
+        : intent === "ISSUE_IMPROVED"
+        ? "ACKNOWLEDGE_IMPROVEMENT"
+        : intent === "ISSUE_WORSENED"
+        ? "ESCALATE_TO_TECH"
+        : intent === "ISSUE_STILL_PRESENT" || intent === "TROUBLESHOOTING_RESULT"
+        ? "SEND_UPDATE_TO_TECH"
+        : intent === "NEW_SUPPORT_ISSUE"
+        ? "CREATE_CASE"
+        : "ASK_CLARIFICATION";
       return {
         intent,
         shouldCreateCase: intent === "NEW_SUPPORT_ISSUE"
@@ -623,6 +688,12 @@ export const aiCenterClient = {
         resolvedMessage: typeof parsed.resolvedMessage === "string" && parsed.resolvedMessage.trim()
           ? parsed.resolvedMessage.trim()
           : input.resolvedMessage,
+        resolvedMeaning: typeof parsed.resolvedMeaning === "string" && parsed.resolvedMeaning.trim()
+          ? parsed.resolvedMeaning.trim()
+          : undefined,
+        shouldAppendToCase: parsed.shouldAppendToCase === true
+          || ["ISSUE_RESOLVED", "ISSUE_IMPROVED", "ISSUE_STILL_PRESENT", "ISSUE_WORSENED", "TROUBLESHOOTING_RESULT", "FOLLOW_UP_INFORMATION"].includes(intent),
+        nextAction,
         confidence,
         reason: typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : "AI จำแนกข้อความแล้ว",
       };

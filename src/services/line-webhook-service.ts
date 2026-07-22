@@ -109,11 +109,50 @@ async function hasAutoAnswerReadySolution(caseDetail: CaseDetail) {
 }
 
 function getIntentGroup(intent: LineMessageIntentName) {
+  if (["ISSUE_RESOLVED", "ISSUE_IMPROVED", "ISSUE_STILL_PRESENT", "ISSUE_WORSENED", "TROUBLESHOOTING_RESULT", "FOLLOW_UP_INFORMATION"].includes(intent)) {
+    return "CASE_OUTCOME";
+  }
   if (intent === "NEW_SUPPORT_ISSUE" || intent === "TECH_GENERAL_QUESTION") return "SUPPORT";
   if (intent === "FOLLOW_UP_EXISTING_CASE" || intent.startsWith("CASE_") || intent === "CLOSE_CASE_REQUEST" || intent === "REOPEN_CASE_REQUEST") {
     return "CASE_MANAGEMENT";
   }
   return "OUT_OF_SCOPE";
+}
+
+const CONTEXTUAL_CASE_OUTCOME_INTENTS = new Set<LineMessageIntentName>([
+  "ISSUE_RESOLVED",
+  "ISSUE_IMPROVED",
+  "ISSUE_STILL_PRESENT",
+  "ISSUE_WORSENED",
+  "TROUBLESHOOTING_RESULT",
+  "FOLLOW_UP_INFORMATION",
+]);
+
+function isContextualCaseOutcome(intent: LineMessageIntentName) {
+  return CONTEXTUAL_CASE_OUTCOME_INTENTS.has(intent);
+}
+
+function buildOutcomeReply(intent: LineMessageIntentName) {
+  switch (intent) {
+    case "ISSUE_RESOLVED":
+      return "ดีใจที่กลับมาใช้งานได้แล้วค่ะ หากต้องการให้ทีมปิดเคสนี้ แจ้งได้เลยนะคะ";
+    case "ISSUE_IMPROVED":
+      return "รับทราบค่ะ อาการดีขึ้นแล้ว เดี๋ยวทีมงานติดตามต่อให้นะคะ";
+    case "ISSUE_STILL_PRESENT":
+      return "รับทราบค่ะ อาการยังไม่หาย เดี๋ยวส่งรายละเอียดให้ทีมตรวจสอบต่อให้นะคะ";
+    case "ISSUE_WORSENED":
+      return "รับทราบค่ะ อาการแย่ลงแล้ว เดี๋ยวเร่งส่งให้ทีมตรวจสอบต่อให้นะคะ";
+    case "TROUBLESHOOTING_RESULT":
+      return "รับทราบผลที่ลองตรวจสอบแล้วค่ะ เดี๋ยวทีมงานตรวจสอบต่อให้นะคะ";
+    case "FOLLOW_UP_INFORMATION":
+      return "ขอบคุณสำหรับข้อมูลค่ะ เดี๋ยวทีมงานตรวจสอบต่อให้นะคะ";
+    default:
+      return "รับทราบค่ะ เดี๋ยวทีมงานตรวจสอบต่อให้นะคะ";
+  }
+}
+
+function getOutcomeNotifyTech(intent: LineMessageIntentName) {
+  return intent !== "ISSUE_RESOLVED";
 }
 
 function detectCaseQueryIntent(text: string): LineMessageIntentName | undefined {
@@ -123,7 +162,7 @@ function detectCaseQueryIntent(text: string): LineMessageIntentName | undefined 
   if (/สถานะเคส|สถานะ.*เคส|เคส.*สถานะ|ตอนนี้.*อยู่ขั้นตอนไหน|ความคืบหน้า.*เคส/iu.test(normalized)) return "CASE_STATUS_QUERY";
   if (/รายละเอียดเคส|ข้อมูลของเคส|ดูรายละเอียด.*เคส/iu.test(normalized)) return "CASE_DETAIL_QUERY";
   if (/ขอปิดเคส|ปิดเคสให้หน่อย|ปิดเรื่องนี้/iu.test(normalized)) return "CLOSE_CASE_REQUEST";
-  if (/เปิดเคสเดิม|เปิดเรื่องเดิม|ขอเปิดเคส|เคสที่\s*\d+|เรื่องที่แจ้ง|ยังไม่หาย/iu.test(normalized)) return "REOPEN_CASE_REQUEST";
+  if (/เปิดเคสเดิม|เปิดเรื่องเดิม|ขอเปิดเคส|เคสที่\s*\d+|เรื่องที่แจ้ง/iu.test(normalized)) return "REOPEN_CASE_REQUEST";
   if (/^(สวัสดี|หวัดดี|ดีค่ะ|ดีครับ|hello|hi)\b/iu.test(normalized)) return "GREETING";
   if (/^(ขอบคุณ|ขอบคุณค่ะ|ขอบคุณครับ|แต๊งกิ้ว)/iu.test(normalized)) return "THANK_YOU";
   return undefined;
@@ -550,6 +589,24 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     : [...(storedContext?.contextMessages ?? [])]
       .reverse()
       .find((message) => message.sender === "LINE_BOT" && message.message.includes("ไหม"))?.message;
+  const lastTechInstruction = activeCase
+    ? [...activeCase.messages]
+      .reverse()
+      .find((message) => message.senderType === "TECH" && message.messageType === "TECH_RAW_REPLY")?.originalText
+    : undefined;
+  const lastTroubleshootingStep = activeCase?.solutions
+    .slice()
+    .reverse()
+    .flatMap((solution) => solution.solutionSteps)
+    .find(Boolean);
+  const knownFacts = activeCase?.messages
+    .filter((message) => message.senderType === "CUSTOMER")
+    .slice(-8)
+    .map((message) => message.originalText) ?? [];
+  const troubleshootingStepsTried = activeCase?.messages
+    .filter((message) => message.senderType === "TECH" || message.senderType === "BOT")
+    .slice(-8)
+    .map((message) => message.originalText) ?? [];
   const detectedBoundaryIntent = detectOutOfScopeIntent(input.text);
   const detectedQueryIntent = detectCaseQueryIntent(input.text);
   const detectedIntent = detectedBoundaryIntent ?? detectedQueryIntent;
@@ -566,6 +623,19 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       recentCases: recentCaseSnapshots,
       activeCaseNumber: activeCase?.caseNumber,
       conversationState: customer.conversationState,
+      activeCase: activeCase
+        ? {
+            id: activeCase.id,
+            caseNumber: activeCase.caseNumber,
+            title: caseService.formatCaseTitle(activeCase),
+            summary: activeCase.problemSummary,
+            status: activeCase.status,
+          }
+        : undefined,
+      lastTechInstruction,
+      lastTroubleshootingStep,
+      knownFacts,
+      troubleshootingStepsTried,
     });
   } catch (error) {
     console.error({ event: "line_message_intent_classification_guard_failed", lineUserId: input.lineUserId, error: String(error) });
@@ -592,7 +662,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       }
     : aiClassifiedIntent;
 
-  if (!detectedIntent && resolvedMessage && hasActualProblemDescription(resolvedMessage)) {
+  if (!detectedIntent && !isContextualCaseOutcome(classifiedIntent.intent) && resolvedMessage && hasActualProblemDescription(resolvedMessage)) {
     const hasSingleActiveCase = activeCaseSnapshots.length === 1;
     classifiedIntent = {
       ...classifiedIntent,
@@ -602,6 +672,18 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       resolvedMessage,
       confidence: Math.max(classifiedIntent.confidence, 0.85),
       reason: `ข้อความสั้นถูกตีความต่อจากหัวข้อ ${lastKnownTopic}`,
+    };
+  }
+
+  if (isContextualCaseOutcome(classifiedIntent.intent) && !activeCase) {
+    classifiedIntent = {
+      ...classifiedIntent,
+      intent: "UNKNOWN",
+      shouldCreateCase: false,
+      shouldAppendToCase: false,
+      matchedActiveCaseId: null,
+      nextAction: "ASK_CLARIFICATION",
+      reason: "OUTCOME_INTENT_WITHOUT_ACTIVE_CASE_CONTEXT",
     };
   }
 
@@ -874,7 +956,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     }
   }
 
-  const reopenIntent = !isNewCaseRequest && /(เปิดเคส|เปิดเรื่อง|ปัญหาเดิม|เรื่องที่แจ้ง|ยังไม่หาย|เคสที่\s*\d+)/i.test(input.text);
+  const reopenIntent = !isNewCaseRequest && /(เปิดเคส|เปิดเรื่อง|ปัญหาเดิม|เรื่องที่แจ้ง|เคสที่\s*\d+)/i.test(input.text);
   if (reopenIntent && !isNewCaseRequest) {
     const ordinalMatch = input.text.match(/เคสที่\s*(\d+)/i);
     if (ordinalMatch) {
@@ -945,7 +1027,11 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
   }
 
   let matchedExistingCase: CaseDetail | undefined;
-  if (!isNewCaseRequest && classifiedIntent.intent === "FOLLOW_UP_EXISTING_CASE" && activeCase) {
+  if (
+    !isNewCaseRequest
+    && activeCase
+    && (classifiedIntent.intent === "FOLLOW_UP_EXISTING_CASE" || isContextualCaseOutcome(classifiedIntent.intent))
+  ) {
     const activeCandidates = customerCases.filter((item) => ACTIVE_CASE_STATUSES.has(item.status));
     const matchedId = classifiedIntent.matchedActiveCaseId;
     if (matchedId && !requiresShortFollowUpRelationCheck) {
@@ -1018,14 +1104,19 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       });
 
   if (relatedCase) {
+    const isOutcome = isContextualCaseOutcome(classifiedIntent.intent);
     const relatedResult = await caseService.appendLineMessageToCase({
       caseId: relatedCase.id,
       text: intakeText,
-      resolvedText: classifiedIntent.resolvedMessage ?? resolvedMessage,
+      resolvedText: classifiedIntent.resolvedMeaning ?? classifiedIntent.resolvedMessage ?? resolvedMessage,
       externalMessageId: input.messageId,
       webhookEventId: input.webhookEventId,
       receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
+      notifyTech: isOutcome ? getOutcomeNotifyTech(classifiedIntent.intent) : undefined,
     });
+    const continuationReply = isOutcome
+      ? buildOutcomeReply(classifiedIntent.intent)
+      : relatedResult.continuationReply;
 
     console.log({
       event: "line_webhook_message_attached_to_existing_case",
@@ -1037,14 +1128,14 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
 
     await lineClient.replyToToken({
       replyToken: input.replyToken,
-      text: relatedResult.continuationReply,
+      text: continuationReply,
     });
 
     await store.createMessage({
       caseId: relatedCase.id,
       direction: "outbound_customer",
       channel: "line",
-      originalText: relatedResult.continuationReply,
+      originalText: continuationReply,
       senderType: "BOT",
       messageType: "CASE_ACKNOWLEDGEMENT",
       deliveryStatus: "sent",

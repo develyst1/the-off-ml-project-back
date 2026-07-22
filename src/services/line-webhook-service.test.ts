@@ -6,6 +6,7 @@ const lineReplies: string[] = [];
 let classifierShouldFail = false;
 let initialReplyComposerCalls = 0;
 let caseRelationResult = { related: true, confidence: 100, reason: "pending question" };
+let forcedIntentClassification: Record<string, unknown> | undefined;
 
 mock.module("../repositories/store", () => ({ store }));
 mock.module("./line-client", () => ({
@@ -41,6 +42,7 @@ mock.module("./ai-center-client", () => ({
     extractPendingInformation: async () => ({ values: {} }),
     classifyLineMessageIntent: async (input: { latestMessage: string; activeCases?: Array<{ id: string }> }) => {
       if (classifierShouldFail) throw new Error("classifier unavailable");
+      if (forcedIntentClassification) return forcedIntentClassification;
       if (input.latestMessage === "เรื่องนี้ไม่เกี่ยวกับระบบ") return { intent: "OUT_OF_SCOPE", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "out of scope" };
       if (input.latestMessage === "ต้องการสอบถามเกี่ยวกับเครื่องเซิร์ฟเวอร์") return { intent: "TECH_GENERAL_QUESTION", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "technical context" };
       if (input.latestMessage === "กินข้าวหรือยัง") return { intent: "SMALL_TALK", shouldCreateCase: false, targetCaseNumber: null, confidence: 1, reason: "small talk" };
@@ -387,5 +389,125 @@ describe("LINE intent classification guards", () => {
     expect(detail?.messages.some((message) => message.originalText === "ช้า")).toBe(false);
     expect(detail?.status).toBe("awaiting_confirmation");
     expect(refreshedCustomer.pendingCaseSelection?.mode).toBe("case_split_confirmation");
+  });
+});
+
+describe("LINE contextual troubleshooting outcomes", () => {
+  async function createActiveCaseForOutcome(title = "ระบบช้า") {
+    sequence += 1;
+    const lineUserId = `U-outcome-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Outcome Customer ${sequence}` });
+    const supportCase = await store.createCase({ customerId: customer.id, status: "assigned", title });
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "outbound_customer",
+      channel: "line",
+      originalText: "ลองปิดและเปิดโปรแกรมใหม่ แล้วแจ้งผลให้ทราบค่ะ",
+      senderType: "BOT",
+      messageType: "REQUEST_MORE_INFO",
+    });
+    await store.setActiveCase(customer.id, supportCase.id);
+    return { customer, lineUserId, supportCase };
+  }
+
+  test.each([
+    ["เซิร์ฟเวอร์", "ยังช้าอยู่", "ISSUE_STILL_PRESENT", "SEND_UPDATE_TO_TECH"],
+    ["เครื่องพิมพ์", "ดีขึ้นนิดหน่อย", "ISSUE_IMPROVED", "ACKNOWLEDGE_IMPROVEMENT"],
+    ["โปรเจคเตอร์", "อาการหนักกว่าเดิม", "ISSUE_WORSENED", "ESCALATE_TO_TECH"],
+    ["ระบบเข้าใช้งาน", "ลองแล้วเข้าไม่ได้", "TROUBLESHOOTING_RESULT", "SEND_UPDATE_TO_TECH"],
+  ])("appends %s outcome to the active case without creating a new case", async (title, text, intent, nextAction) => {
+    const { customer, lineUserId, supportCase } = await createActiveCaseForOutcome(title);
+    forcedIntentClassification = {
+      intent,
+      shouldCreateCase: false,
+      shouldAppendToCase: true,
+      nextAction,
+      targetCaseNumber: null,
+      matchedActiveCaseId: supportCase.id,
+      confidence: 0.96,
+      reason: "contextual troubleshooting outcome",
+    };
+    try {
+      await sendReply({ lineUserId, messageId: `outcome-${sequence}`, text });
+    } finally {
+      forcedIntentClassification = undefined;
+    }
+
+    const cases = await caseService.getCustomerCases(customer.id);
+    const detail = await caseService.getCase(supportCase.id);
+    expect(cases).toHaveLength(1);
+    expect(detail?.messages.some((message) => message.originalText === text && message.senderType === "CUSTOMER")).toBe(true);
+  });
+
+  test("does not close a case automatically when the customer says the issue is resolved", async () => {
+    const { lineUserId, supportCase } = await createActiveCaseForOutcome("ระบบล็อกอิน");
+    forcedIntentClassification = {
+      intent: "ISSUE_RESOLVED",
+      shouldCreateCase: false,
+      shouldAppendToCase: true,
+      nextAction: "ASK_CLOSE_CONFIRMATION",
+      targetCaseNumber: null,
+      matchedActiveCaseId: supportCase.id,
+      confidence: 0.98,
+      reason: "customer confirms resolved",
+    };
+    try {
+      await sendReply({ lineUserId, messageId: `resolved-${sequence}`, text: "ตอนนี้ใช้งานได้แล้ว" });
+    } finally {
+      forcedIntentClassification = undefined;
+    }
+
+    const detail = await caseService.getCase(supportCase.id);
+    expect(detail?.status).toBe("assigned");
+    expect(lineReplies.at(-1)).toContain("ปิดเคส");
+  });
+
+  test("asks for clarification instead of creating a case for an outcome without active-case context", async () => {
+    sequence += 1;
+    const lineUserId = `U-outcome-no-context-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: "No context outcome" });
+    forcedIntentClassification = {
+      intent: "ISSUE_STILL_PRESENT",
+      shouldCreateCase: false,
+      shouldAppendToCase: true,
+      nextAction: "SEND_UPDATE_TO_TECH",
+      targetCaseNumber: null,
+      matchedActiveCaseId: null,
+      confidence: 0.95,
+      reason: "simulated AI outcome without case",
+    };
+    try {
+      await sendReply({ lineUserId, messageId: `outcome-no-context-${sequence}`, text: "ยังช้าอยู่" });
+    } finally {
+      forcedIntentClassification = undefined;
+    }
+
+    expect(await caseService.getCustomerCases(customer.id)).toHaveLength(0);
+    expect(lineReplies.at(-1)).toContain("ขอสอบถามเพิ่มเติม");
+  });
+
+  test("asks the customer to choose when an outcome could belong to multiple active cases", async () => {
+    const { customer, lineUserId, supportCase } = await createActiveCaseForOutcome("เครื่องพิมพ์");
+    await store.createCase({ customerId: customer.id, status: "awaiting_tech", title: "ระบบเครือข่าย" });
+    forcedIntentClassification = {
+      intent: "ISSUE_STILL_PRESENT",
+      shouldCreateCase: false,
+      shouldAppendToCase: true,
+      nextAction: "SEND_UPDATE_TO_TECH",
+      targetCaseNumber: null,
+      matchedActiveCaseId: null,
+      confidence: 0.96,
+      reason: "multiple possible active cases",
+    };
+    try {
+      await sendReply({ lineUserId, messageId: `outcome-ambiguous-${sequence}`, text: "ยังไม่หาย" });
+    } finally {
+      forcedIntentClassification = undefined;
+    }
+
+    const detail = await caseService.getCase(supportCase.id);
+    const refreshedCustomer = await store.upsertCustomer({ lineUserId });
+    expect(detail?.messages.some((message) => message.originalText === "ยังไม่หาย")).toBe(false);
+    expect(refreshedCustomer.pendingCaseSelection?.mode).toBe("choose");
   });
 });
