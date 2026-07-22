@@ -977,7 +977,13 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
         channel: "line",
         originalText: relatedResult.continuationReply,
         senderType: "BOT",
-        messageType: "CASE_ACKNOWLEDGEMENT",
+        messageType: relatedResult.autoAnswer ? "AUTO_ANSWER" : "CASE_ACKNOWLEDGEMENT",
+        metadata: relatedResult.autoAnswer
+          ? {
+              autoAnswerSolutionId: relatedResult.autoAnswer.solutionId,
+              autoAnswerTeamsNotified: relatedResult.autoAnswer.teamsNotified,
+            }
+          : undefined,
         deliveryStatus: "sent",
       });
       return { processed: true, duplicate: false, caseDetail: relatedResult.detail };
@@ -1252,7 +1258,13 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       channel: "line",
       originalText: continuationReply,
       senderType: "BOT",
-      messageType: "CASE_ACKNOWLEDGEMENT",
+      messageType: relatedResult.autoAnswer ? "AUTO_ANSWER" : "CASE_ACKNOWLEDGEMENT",
+      metadata: relatedResult.autoAnswer
+        ? {
+            autoAnswerSolutionId: relatedResult.autoAnswer.solutionId,
+            autoAnswerTeamsNotified: relatedResult.autoAnswer.teamsNotified,
+          }
+        : undefined,
       deliveryStatus: "sent",
     });
 

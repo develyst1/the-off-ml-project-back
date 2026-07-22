@@ -3,7 +3,6 @@ import { readJsonObject } from "../lib/request";
 import { store } from "../repositories/store";
 import { caseService } from "../services/case-service";
 import { isSolutionReadyForAutoAnswer } from "../services/auto-answer-guardrail";
-import { hasActionableSolutionSteps } from "../lib/solution-quality";
 
 const LOG_PAGE_SIZES = new Set([10, 20, 50, 100]);
 
@@ -81,8 +80,14 @@ automationRoutes.get("/logs", async (c) => {
   const cases = await caseService.listCases();
   const logs = cases.flatMap((item) =>
     item.messages
-      .filter((message) => message.direction === "OUTBOUND" && message.isVisibleToCustomer)
-      .map((message) => ({
+      .filter((message) => message.messageType === "AUTO_ANSWER")
+      .map((message) => {
+        const solutionId = typeof message.metadata?.autoAnswerSolutionId === "string"
+          ? message.metadata.autoAnswerSolutionId
+          : undefined;
+        const solution = solutionId ? item.solutions.find((candidate) => candidate.id === solutionId) : undefined;
+
+        return {
         id: message.id,
         time: message.createdAt,
         caseNumber: item.caseNumber,
@@ -90,11 +95,10 @@ automationRoutes.get("/logs", async (c) => {
         answerText: message.originalText,
         eventType: message.messageType ?? "UNKNOWN",
         status: message.deliveryStatus ?? "UNKNOWN",
-        solutionText: [...item.solutions].reverse()
-          .find((solution) => hasActionableSolutionSteps(solution.solutionSteps))
-          ?.solutionSteps.join("\n"),
-        teamsNotified: true,
-      })),
+        solutionText: solution?.solutionSteps.join("\n"),
+        teamsNotified: message.metadata?.autoAnswerTeamsNotified === true,
+        };
+      }),
   )
     .filter((item) => {
       const time = new Date(item.time).getTime();

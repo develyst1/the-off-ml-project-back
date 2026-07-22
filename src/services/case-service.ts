@@ -561,9 +561,11 @@ export const caseService = {
       reason: shouldNotifyTech ? "ACTIONABLE_CUSTOMER_UPDATE" : "ACKNOWLEDGEMENT_ONLY",
     });
 
+    let teamsNotified = false;
     if (shouldNotifyTech) {
       try {
         await teamsClient.notifyCase(updatedDetail);
+        teamsNotified = true;
         await store.createMessage({
           caseId: input.caseId,
           direction: "outbound_tech",
@@ -590,7 +592,13 @@ export const caseService = {
       }
     }
 
-    return { detail: await store.getCaseDetail(input.caseId), continuationReply };
+    return {
+      detail: await store.getCaseDetail(input.caseId),
+      continuationReply,
+      autoAnswer: canAutoAnswer && approvedSolution
+        ? { solutionId: approvedSolution.id, teamsNotified }
+        : undefined,
+    };
   },
 
   async acceptCase(caseId: string) {

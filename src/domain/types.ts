@@ -138,6 +138,7 @@ export type Message = {
     | "system"
     | "CUSTOMER_MESSAGE"
     | "CASE_ACKNOWLEDGEMENT"
+    | "AUTO_ANSWER"
     | "REQUEST_MORE_INFO"
     | "CUSTOMER_ADDITIONAL_INFO"
     | "TECH_RAW_REPLY"
