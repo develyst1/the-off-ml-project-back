@@ -37,6 +37,12 @@ mock.module("./ai-center-client", () => ({
     }),
     generateCaseTitle: async () => "ส่งงานใน Microsoft Teams ไม่สำเร็จ",
     analyzeCaseRelation: async () => caseRelationResult,
+    analyzeTechSolution: async (input: { techReplyText: string }) => ({
+      solutionSteps: [],
+      hasTroubleshootingSteps: false,
+      rewrittenCustomerText: input.techReplyText,
+      confidence: 0,
+    }),
     evaluateAutoAnswerSolutionRelevance: async () => ({ relevant: true, confidence: 100, reason: "test" }),
     matchCustomerCaseHistory: async () => ({ intent: "NEW_ISSUE", matchedCaseId: null, isSameProblem: false, confidence: 0, reason: "no matching history" }),
     extractPendingInformation: async () => ({ values: {} }),
@@ -193,6 +199,31 @@ describe("LINE case query guards", () => {
 
     expect(lineReplies.at(-1)).toContain("ไม่พบเคสหมายเลขนี้ในประวัติของคุณค่ะ");
     expect(await caseService.getCustomerCases((await store.upsertCustomer({ lineUserId })).id)).toHaveLength(0);
+  });
+});
+
+describe("LINE customer close-case requests", () => {
+  test("forwards the close request to Tech after the customer provides its number instead of reopening or closing automatically", async () => {
+    sequence += 1;
+    const lineUserId = `U-close-request-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Close request customer ${sequence}` });
+    const supportCase = await store.createCase({ customerId: customer.id, status: "awaiting_tech", title: "ปัญหาการใช้งาน Microsoft Edge" });
+
+    await sendReply({ lineUserId, messageId: `close-request-${sequence}`, text: "ปิดได้เลยครับ" });
+    const waitingCustomer = await store.upsertCustomer({ lineUserId });
+    expect(waitingCustomer.pendingCaseSelection).toMatchObject({ mode: "close_case_request", pendingAction: "CLOSE_CASE" });
+
+    await sendReply({ lineUserId, messageId: `close-number-${sequence}`, text: supportCase.caseNumber });
+
+    const detail = await caseService.getCase(supportCase.id);
+    const refreshedCustomer = await store.upsertCustomer({ lineUserId });
+    expect(detail?.status).toBe("awaiting_tech");
+    expect(detail?.messages.some((message) => message.originalText === supportCase.caseNumber && message.senderType === "CUSTOMER")).toBe(true);
+    expect(detail?.messages.some((message) => message.messageType === "CASE_FORWARDED")).toBe(true);
+    expect(detail?.messages.some((message) => message.originalText.includes("ลูกค้าขอปิดเคสผ่าน LINE") && message.senderType === "SYSTEM")).toBe(true);
+    expect(lineReplies.at(-1)).toContain("รับคำขอปิดเคส");
+    expect(refreshedCustomer.activeCaseId).toBe(supportCase.id);
+    expect(refreshedCustomer.pendingCaseSelection).toBeUndefined();
   });
 });
 

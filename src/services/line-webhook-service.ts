@@ -161,7 +161,7 @@ function detectCaseQueryIntent(text: string): LineMessageIntentName | undefined 
   if (/มีเคสอะไรบ้าง|เคสที่เคยแจ้ง|ประวัติเคส|ดูเคสของฉัน|เคสล่าสุด|รายการเคส/iu.test(normalized)) return "CASE_HISTORY_QUERY";
   if (/สถานะเคส|สถานะ.*เคส|เคส.*สถานะ|ตอนนี้.*อยู่ขั้นตอนไหน|ความคืบหน้า.*เคส/iu.test(normalized)) return "CASE_STATUS_QUERY";
   if (/รายละเอียดเคส|ข้อมูลของเคส|ดูรายละเอียด.*เคส/iu.test(normalized)) return "CASE_DETAIL_QUERY";
-  if (/ขอปิดเคส|ปิดเคสให้หน่อย|ปิดเรื่องนี้/iu.test(normalized)) return "CLOSE_CASE_REQUEST";
+  if (/ขอปิดเคส|ปิดเคสให้หน่อย|ปิดเรื่องนี้|ปิดได้เลย|ปิดเลย(?:ครับ|ค่ะ|คะ)?/iu.test(normalized)) return "CLOSE_CASE_REQUEST";
   if (/เปิดเคสเดิม|เปิดเรื่องเดิม|ขอเปิดเคส|เคสที่\s*\d+|เรื่องที่แจ้ง/iu.test(normalized)) return "REOPEN_CASE_REQUEST";
   if (/^(สวัสดี|หวัดดี|ดีค่ะ|ดีครับ|hello|hi)\b/iu.test(normalized)) return "GREETING";
   if (/^(ขอบคุณ|ขอบคุณค่ะ|ขอบคุณครับ|แต๊งกิ้ว)/iu.test(normalized)) return "THANK_YOU";
@@ -279,6 +279,67 @@ function getCustomerCaseStatusLabel(status: string) {
   return labels[status] ?? "กำลังดำเนินการ";
 }
 
+async function closeCaseFromLineRequest(input: LineTextMessageInput, customer: Customer, detail: CaseDetail): Promise<LineTextMessageResult> {
+  if (CLOSED_CASE_STATUSES.has(detail.status)) {
+    await lineClient.replyToToken({
+      replyToken: input.replyToken,
+      text: `เคส ${detail.caseNumber} ปิดเรียบร้อยแล้วค่ะ`,
+    });
+    await store.setPendingCaseSelection(customer.id);
+    return { processed: true, duplicate: false, caseDetail: detail };
+  }
+
+  try {
+    const update = await caseService.appendLineMessageToCase({
+      caseId: detail.id,
+      text: input.text,
+      externalMessageId: input.messageId,
+      webhookEventId: input.webhookEventId,
+      receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
+      notifyTech: true,
+    });
+
+    const systemEventText = "ลูกค้าขอปิดเคสผ่าน LINE รอทีม Tech Support ดำเนินการ";
+    await store.createMessage({
+      caseId: detail.id,
+      direction: "INTERNAL",
+      channel: "system",
+      originalText: systemEventText,
+      displayText: systemEventText,
+      senderType: "SYSTEM",
+      contentType: "SYSTEM_EVENT",
+      messageType: "SYSTEM_EVENT",
+      isVisibleToCustomer: false,
+      deliveryStatus: "PROCESSED",
+    });
+
+    const reply = `รับคำขอปิดเคส ${detail.caseNumber} แล้วค่ะ ทีม Tech จะตรวจสอบและดำเนินการปิดเคสให้นะคะ`;
+    await lineClient.replyToToken({ replyToken: input.replyToken, text: reply });
+    await store.createMessage({
+      caseId: detail.id,
+      direction: "outbound_customer",
+      channel: "line",
+      originalText: reply,
+      senderType: "BOT",
+      messageType: "STATUS_UPDATE",
+      isVisibleToCustomer: true,
+      deliveryStatus: "sent",
+    });
+
+    await store.setPendingCaseSelection(customer.id);
+    await store.setActiveCase(customer.id, detail.id);
+    await store.setConversationState(customer.id, "ACTIVE_CASE_CONVERSATION");
+    return { processed: true, duplicate: false, caseDetail: update.detail };
+  } catch (error) {
+    await lineClient.replyToToken({
+      replyToken: input.replyToken,
+      text: "ยังไม่สามารถส่งคำขอปิดเคสให้ทีม Tech ได้ในขณะนี้ค่ะ กรุณาลองใหม่อีกครั้งนะคะ",
+    });
+    console.error({ event: "line_customer_close_case_request_failed", caseId: detail.id, error: String(error) });
+    return { processed: true, duplicate: false, caseDetail: detail };
+  }
+}
+
 async function handleNonCaseIntent(input: {
   customer: Customer;
   intent: LineMessageIntentClassification;
@@ -374,7 +435,28 @@ async function handleNonCaseIntent(input: {
   }
 
   if (input.intent.intent === "CLOSE_CASE_REQUEST") {
-    await lineClient.replyToToken({ replyToken: input.replyToken, text: "รับทราบค่ะ เดี๋ยวทีมงานตรวจสอบสถานะเคสให้ก่อนนะคะ หากต้องการปิดเคส รบกวนแจ้งหมายเลขเคสด้วยค่ะ" });
+    const requestedCaseNumber = input.text.match(/\bOFF-\d{4}-\d+\b/i)?.[0];
+    const targetCase = requestedCaseNumber
+      ? cases.find((item) => item.caseNumber.toLowerCase() === requestedCaseNumber.toLowerCase())
+      : undefined;
+    if (targetCase) {
+      await closeCaseFromLineRequest({
+        lineUserId: input.customer.lineUserId,
+        messageId: `close-request:${targetCase.id}:${Date.now()}`,
+        text: input.text,
+        replyToken: input.replyToken,
+      }, input.customer, targetCase);
+      return true;
+    }
+
+    await store.setPendingCaseSelection(input.customer.id, {
+      mode: "close_case_request",
+      candidateCaseIds: cases.map((item) => item.id),
+      pendingAction: "CLOSE_CASE",
+      pendingCreatedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+    });
+    await lineClient.replyToToken({ replyToken: input.replyToken, text: "รับทราบค่ะ รบกวนแจ้งหมายเลขเคสที่ต้องการปิดด้วยนะคะ" });
     return true;
   }
 
@@ -816,6 +898,25 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
         return { processed: true, duplicate: false, caseDetail: undefined };
       }
     }
+  }
+
+  const pendingCloseRequest = customer.pendingCaseSelection?.mode === "close_case_request"
+    && customer.pendingCaseSelection.pendingAction === "CLOSE_CASE"
+    ? customer.pendingCaseSelection
+    : undefined;
+  if (pendingCloseRequest) {
+    const requestedCaseNumber = input.text.match(/\bOFF-\d{4}-\d+\b/i)?.[0];
+    const targetCase = requestedCaseNumber
+      ? customerCases.find((item) => item.caseNumber.toLowerCase() === requestedCaseNumber.toLowerCase())
+      : undefined;
+    if (!targetCase || !pendingCloseRequest.candidateCaseIds.includes(targetCase.id)) {
+      await lineClient.replyToToken({
+        replyToken: input.replyToken,
+        text: "ไม่พบหมายเลขเคสนี้ในรายการของคุณค่ะ รบกวนตรวจสอบและแจ้งหมายเลขเคสอีกครั้งนะคะ",
+      });
+      return { processed: true, duplicate: false, caseDetail: undefined };
+    }
+    return closeCaseFromLineRequest(input, customer, targetCase);
   }
 
   const pendingInformation = customer.pendingCaseSelection?.mode === "request_more_info"

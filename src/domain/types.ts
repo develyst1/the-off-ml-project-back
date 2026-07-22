@@ -37,7 +37,7 @@ export type Customer = {
 };
 
 export type PendingCaseSelection = {
-  mode: "choose" | "confirm" | "case_split_confirmation" | "case_history_match" | "request_more_info" | "context_only";
+  mode: "choose" | "confirm" | "case_split_confirmation" | "case_history_match" | "request_more_info" | "close_case_request" | "context_only";
   candidateCaseIds: string[];
   selectedCaseId?: string;
   pendingText?: string;
@@ -50,7 +50,7 @@ export type PendingCaseSelection = {
   matchReason?: string;
   matchLogId?: string;
   expiresAt?: string;
-  pendingAction?: "REQUEST_MORE_INFO";
+  pendingAction?: "REQUEST_MORE_INFO" | "CLOSE_CASE";
   pendingCaseId?: string;
   pendingQuestionType?: "AI_MISSING_INFORMATION" | "TECH_REQUEST";
   pendingRequestedFields?: string[];
