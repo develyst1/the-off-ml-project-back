@@ -998,7 +998,7 @@ export const aiCenterClient = {
             rootCause: "string | undefined",
             solutionSteps: ["string"],
             hasTroubleshootingSteps: "boolean; true only for concrete troubleshooting or resolution steps, never for acknowledgements, status updates, or closing messages",
-            teamActions: ["string; concrete internal action already completed by Tech Support, such as reset data, corrected a configuration, or updated a system record; never include greetings, promises, or generic closing statements"],
+            teamActions: ["string; concrete internal action already completed by Tech Support. Infer this from the meaning of the full reply, not keyword matching. Capture the completed action and its target, for example recreated a record, corrected access permissions, replaced a damaged file, or adjusted a system setting. Never include greetings, promises, customer instructions, or generic closing statements"],
             rewrittenCustomerText: "string",
             category: "ชื่อหมวดหมู่ภาษาไทยที่เข้าใจง่าย | undefined",
             confidence: "number 0-100",
@@ -1008,7 +1008,7 @@ export const aiCenterClient = {
           rules: [
             "Do not treat a closing message, acknowledgement, status update, or promise to investigate as a solution.",
             "When there are no concrete troubleshooting steps, return hasTroubleshootingSteps false and an empty solutionSteps array.",
-            "Record completed internal Tech actions in teamActions even when they are not suitable as customer troubleshooting steps.",
+            "Classify teamActions semantically from the whole Tech reply, not from a fixed word list. Record completed internal Tech actions even when they are not suitable as customer troubleshooting steps.",
           ],
         }),
       },
