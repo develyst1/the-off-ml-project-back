@@ -1219,6 +1219,10 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       webhookEventId: input.webhookEventId,
       receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
       notifyTech: isOutcome ? getOutcomeNotifyTech(classifiedIntent.intent) : undefined,
+      customerOutcome: classifiedIntent.intent === "ISSUE_RESOLVED" || classifiedIntent.intent === "ISSUE_IMPROVED"
+        ? classifiedIntent.intent
+        : undefined,
+      outcomeConfidence: classifiedIntent.confidence,
     });
     const continuationReply = isOutcome
       ? buildOutcomeReply(classifiedIntent.intent)

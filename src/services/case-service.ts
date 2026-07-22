@@ -416,7 +416,17 @@ export const caseService = {
       : undefined;
   },
 
-  async appendLineMessageToCase(input: { caseId: string; text: string; resolvedText?: string; externalMessageId?: string; webhookEventId?: string; receivedAt?: string; notifyTech?: boolean }) {
+  async appendLineMessageToCase(input: {
+    caseId: string;
+    text: string;
+    resolvedText?: string;
+    externalMessageId?: string;
+    webhookEventId?: string;
+    receivedAt?: string;
+    notifyTech?: boolean;
+    customerOutcome?: "ISSUE_RESOLVED" | "ISSUE_IMPROVED";
+    outcomeConfidence?: number;
+  }) {
     const detail = await store.getCaseDetail(input.caseId);
     if (!detail) throw new Error("Case not found");
 
@@ -507,6 +517,20 @@ export const caseService = {
         category: analysis.category,
         confidence: analysis.confidence,
         rawJson: analysis,
+      });
+    }
+    if (input.customerOutcome) {
+      await store.createAnalysis({
+        caseId: input.caseId,
+        messageId: message.id,
+        analysisType: "customer_outcome",
+        summary: input.text,
+        category: detail.category,
+        confidence: Math.round(Math.max(0, Math.min(1, input.outcomeConfidence ?? 0)) * 100),
+        rawJson: {
+          outcome: input.customerOutcome === "ISSUE_RESOLVED" ? "RESOLVED" : "IMPROVED",
+          customerConfirmation: input.text,
+        },
       });
     }
     if (shouldAnalyze) {

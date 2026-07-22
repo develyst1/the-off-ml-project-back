@@ -525,6 +525,10 @@ describe("LINE contextual troubleshooting outcomes", () => {
     const detail = await caseService.getCase(supportCase.id);
     expect(detail?.status).toBe("assigned");
     expect(lineReplies.at(-1)).toContain("ปิดเคส");
+    const outcome = detail?.analyses.find((analysis) => analysis.analysisType === "customer_outcome");
+    expect(outcome?.summary).toBe("ตอนนี้ใช้งานได้แล้ว");
+    expect(outcome?.rawJson).toMatchObject({ outcome: "RESOLVED", customerConfirmation: "ตอนนี้ใช้งานได้แล้ว" });
+    expect(detail?.solutions).toHaveLength(0);
   });
 
   test("asks for clarification instead of creating a case for an outcome without active-case context", async () => {

@@ -176,7 +176,7 @@ export type Analysis = {
   id: string;
   caseId: string;
   messageId: string;
-  analysisType: "customer_message" | "tech_solution" | "customer_rewrite" | "case_match" | "tech_message_review";
+  analysisType: "customer_message" | "customer_outcome" | "tech_solution" | "customer_rewrite" | "case_match" | "tech_message_review";
   summary?: string;
   category?: string;
   confidence: number;
