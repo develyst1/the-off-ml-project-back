@@ -421,6 +421,40 @@ describe("LINE intent classification guards", () => {
     expect(detail?.status).toBe("awaiting_confirmation");
     expect(refreshedCustomer.pendingCaseSelection?.mode).toBe("case_split_confirmation");
   });
+
+  test("uses the original issue when a customer confirms a new case after a case split prompt", async () => {
+    sequence += 1;
+    const lineUserId = `U-case-split-new-${sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: `Case Split Customer ${sequence}` });
+    const sourceCase = await store.createCase({
+      customerId: customer.id,
+      status: "awaiting_confirmation",
+      title: "ปัญหาเดิม",
+    });
+    const originalIssue = "อินเทอร์เน็ตเชื่อมต่อไม่ได้";
+
+    await store.setPendingCaseSelection(customer.id, {
+      mode: "case_split_confirmation",
+      candidateCaseIds: [sourceCase.id],
+      selectedCaseId: sourceCase.id,
+      pendingText: originalIssue,
+      previousCaseStatus: "awaiting_tech",
+      externalMessageId: `case-split-issue-${sequence}`,
+      receivedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+    });
+
+    await sendReply({ lineUserId, messageId: `case-split-confirm-${sequence}`, text: "เคสใหม่" });
+
+    const cases = await caseService.getCustomerCases(customer.id);
+    const newCase = cases.find((item) => item.id !== sourceCase.id);
+    const detail = newCase ? await caseService.getCase(newCase.id) : undefined;
+
+    expect(cases).toHaveLength(2);
+    expect(detail?.messages.some((message) => message.originalText === originalIssue)).toBe(true);
+    expect(detail?.problemSummary).toBe(originalIssue);
+    expect(detail?.title).not.toBe("เคสใหม่");
+  });
 });
 
 describe("LINE contextual troubleshooting outcomes", () => {

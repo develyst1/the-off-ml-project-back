@@ -1181,7 +1181,12 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
   }
   const confirmsNewCase = isNewCaseRequest;
   const intakeText = pendingNewCaseText ?? input.text;
-  const analysisIntakeText = classifiedIntent.resolvedMessage ?? resolvedMessage ?? intakeText;
+  // A case-selection reply such as "เคสใหม่" is only a decision, not the issue itself.
+  // Keep the previously captured issue as the source for analysis and the case title.
+  const analysisIntakeText = pendingNewCaseText
+    ?? classifiedIntent.resolvedMessage
+    ?? resolvedMessage
+    ?? intakeText;
   const confirmsExistingCase = activeCase?.status === "awaiting_confirmation"
     && /(เคสเดิม|เรื่องเดิม|ข้อมูลเพิ่มเติม|ต่อเรื่องเดิม|same case|same issue)/i.test(input.text);
 
@@ -1324,7 +1329,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       caseId: supportCase.id,
       direction: "INTERNAL",
       channel: "system",
-      originalText: `ลูกค้ายืนยันเปิดเคสใหม่จากข้อความก่อนหน้า: ${input.text}`,
+      originalText: `ลูกค้ายืนยันเปิดเคสใหม่จากข้อความก่อนหน้า: ${pendingNewCaseText}`,
       externalMessageId: input.messageId,
       webhookEventId: input.webhookEventId,
       senderType: "SYSTEM",
