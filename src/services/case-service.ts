@@ -122,10 +122,14 @@ async function extractAndStoreTechSolution(input: {
   const solutionSteps = solutionAnalysis.hasTroubleshootingSteps === false
     ? []
     : actionableSolutionSteps(solutionAnalysis.solutionSteps);
+  const teamActions = [...new Set((solutionAnalysis.teamActions ?? [])
+    .map((action) => action.trim())
+    .filter(Boolean))];
   const normalizedSolutionAnalysis = {
     ...solutionAnalysis,
     hasTroubleshootingSteps: solutionSteps.length > 0,
     solutionSteps,
+    teamActions,
     rewrittenCustomerText: solutionAnalysis.rewrittenCustomerText.trim() || input.rewrittenCustomerText,
   };
 
@@ -1289,10 +1293,14 @@ export const caseService = {
       const solutionSteps = extractedAnalysis.hasTroubleshootingSteps === false
         ? []
         : actionableSolutionSteps(extractedAnalysis.solutionSteps);
+      const teamActions = [...new Set((extractedAnalysis.teamActions ?? [])
+        .map((action) => action.trim())
+        .filter(Boolean))];
       solutionAnalysis = {
         ...extractedAnalysis,
         hasTroubleshootingSteps: solutionSteps.length > 0,
         solutionSteps,
+        teamActions,
       };
       await store.createAnalysis({
         caseId: input.caseId,

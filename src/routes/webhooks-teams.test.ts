@@ -33,7 +33,11 @@ mock.module("../services/ai-center-client", () => ({
       missingInformation: [],
       reason: "ใช้ข้อความล่าสุดของลูกค้าและประวัติเคส",
     }),
-    analyzeTechSolution: async () => ({ solutionSteps: [], rewrittenCustomerText: "" }),
+    analyzeTechSolution: async () => ({
+      solutionSteps: [],
+      teamActions: ["รีเซ็ตข้อมูลในระบบแล้ว"],
+      rewrittenCustomerText: "",
+    }),
     reviewTechMessageForCustomer: async () => ({ shouldSendToCustomer: false, reviewFailed: false }),
   },
 }));
@@ -95,6 +99,8 @@ describe("POST /webhooks/teams/actions", () => {
     expect(sentMessages?.[0]?.senderType).toBe("TECH");
     expect(detail?.solutions).toHaveLength(0);
     expect(detail?.analyses.some((analysis) => analysis.analysisType === "tech_solution")).toBe(true);
+    const techSolutionAnalysis = detail?.analyses.find((analysis) => analysis.analysisType === "tech_solution");
+    expect((techSolutionAnalysis?.rawJson as { teamActions?: string[] }).teamActions).toEqual(["รีเซ็ตข้อมูลในระบบแล้ว"]);
   });
 
   test("rejects a missing reply and a mismatched case number", async () => {
