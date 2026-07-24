@@ -50,7 +50,7 @@ automationRoutes.get("/solutions", async (c) => {
   const settings = await store.getAutomationSettings();
   const solutions = cases.flatMap((item) =>
     item.solutions
-      .filter((solution) => settings.enabled && isSolutionReadyForAutoAnswer(
+      .filter((solution) => isSolutionReadyForAutoAnswer(
         item.confidenceScore,
         solution,
         settings,

@@ -605,18 +605,20 @@ export class PostgresStore implements CaseStore {
     return mapSolution(result.rows[0]);
   }
 
-  async updateSolution(id: string, patch: Pick<Solution, "validatedByTeam" | "validatedAt" | "validatedBy" | "autoAnswerReviewResult" | "autoAnswerReviewedAt" | "autoAnswerReviewedBy">): Promise<Solution> {
+  async updateSolution(id: string, patch: Partial<Pick<Solution, "confidence" | "validatedByTeam" | "validatedAt" | "validatedBy" | "autoAnswerReviewResult" | "autoAnswerReviewedAt" | "autoAnswerReviewedBy">>): Promise<Solution> {
     const result = await this.query<DbSolution>(
       `update solutions
-       set validated_by_team = $2,
-           validated_at = $3,
-           validated_by = $4,
-           auto_answer_review_result = $5,
-           auto_answer_reviewed_at = $6,
-           auto_answer_reviewed_by = $7
+       set confidence = coalesce($2, confidence),
+           validated_by_team = $3,
+           validated_at = $4,
+           validated_by = $5,
+           auto_answer_review_result = $6,
+           auto_answer_reviewed_at = $7,
+           auto_answer_reviewed_by = $8
        where id = $1 returning *`,
       [
         id,
+        patch.confidence ?? null,
         patch.validatedByTeam,
         patch.validatedAt ?? null,
         patch.validatedBy ?? null,

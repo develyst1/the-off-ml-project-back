@@ -56,9 +56,17 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
   const result = requiredString(body, "result");
   const solutionId = typeof body.solutionId === "string" && body.solutionId.trim() ? body.solutionId.trim() : undefined;
   const requestedStage = body.reviewStage === "QUALITY" || body.reviewStage === "AUTO_ANSWER" ? body.reviewStage : undefined;
+  const rejectionReason = ["CASE_UNDERSTANDING", "SOLUTION_SELECTION", "INSUFFICIENT_CUSTOMER_INFO", "BETTER_SOLUTION"].includes(body.rejectionReason as string)
+    ? body.rejectionReason as "CASE_UNDERSTANDING" | "SOLUTION_SELECTION" | "INSUFFICIENT_CUSTOMER_INFO" | "BETTER_SOLUTION"
+    : undefined;
+  const additionalExplanation = typeof body.additionalExplanation === "string" ? body.additionalExplanation.trim() : "";
+  const correctedSolution = typeof body.correctedSolution === "string" ? body.correctedSolution.trim() : "";
 
   if (result !== "approved" && result !== "rejected") {
     return c.json({ error: "invalid_result", allowed: ["approved", "rejected"] }, 400);
+  }
+  if (result === "rejected" && !rejectionReason) {
+    return c.json({ error: "rejection_reason_is_required" }, 400);
   }
 
   const detail = await caseService.getCase(caseId);
@@ -88,7 +96,55 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
     });
   }
 
+  if (result === "rejected" && suggestedSolution) {
+    if (rejectionReason === "SOLUTION_SELECTION") {
+      await store.updateSolution(suggestedSolution.id, {
+        confidence: Math.max(0, suggestedSolution.confidence - 10),
+        validatedByTeam: suggestedSolution.validatedByTeam,
+        validatedAt: suggestedSolution.validatedAt,
+        validatedBy: suggestedSolution.validatedBy,
+        autoAnswerReviewResult: suggestedSolution.autoAnswerReviewResult,
+        autoAnswerReviewedAt: suggestedSolution.autoAnswerReviewedAt,
+        autoAnswerReviewedBy: suggestedSolution.autoAnswerReviewedBy,
+      });
+    }
+    if (correctedSolution) {
+      await store.createSolution({
+        caseId,
+        rawReplyText: correctedSolution,
+        solutionSteps: correctedSolution.split(/\r?\n/).map((step) => step.trim()).filter(Boolean),
+        rewrittenCustomerText: correctedSolution,
+        confidence: suggestedSolution.confidence,
+        validatedByTeam: true,
+        validatedAt: reviewedAt,
+        validatedBy: "Tech Support Console",
+      });
+    }
+    const reasonLabel = {
+      CASE_UNDERSTANDING: "AI เข้าใจปัญหาผิด",
+      SOLUTION_SELECTION: "AI เลือกวิธีแก้ผิด",
+      INSUFFICIENT_CUSTOMER_INFO: "ข้อมูลจากลูกค้าไม่เพียงพอ",
+      BETTER_SOLUTION: "มีวิธีแก้อื่นที่ถูกต้องกว่า",
+    }[rejectionReason ?? "INSUFFICIENT_CUSTOMER_INFO"];
+    await store.createMessage({
+      caseId,
+      direction: "INTERNAL",
+      channel: "system",
+      originalText: `ทีม Tech ระบุว่า AI ไม่ถูกต้อง: ${reasonLabel}`,
+      displayText: `ทีม Tech ระบุว่า AI ไม่ถูกต้อง: ${reasonLabel}`,
+      senderType: "SYSTEM",
+      contentType: "SYSTEM_EVENT",
+      messageType: "SYSTEM_EVENT",
+      isVisibleToCustomer: false,
+      deliveryStatus: "PROCESSED",
+      metadata: { rejectionReason, additionalExplanation: additionalExplanation || undefined, correctedSolution: correctedSolution || undefined },
+    });
+  }
+
   const reviewed = await store.updateCase(caseId, {
+    confidenceScore: result === "rejected" && rejectionReason === "CASE_UNDERSTANDING"
+      ? Math.max(0, (detail.confidenceScore ?? 0) - 10)
+      : detail.confidenceScore,
     confidenceReviewStatus: reviewStage === "AUTO_ANSWER"
       ? result === "approved" ? "AUTO_ANSWER_APPROVED" : "AUTO_ANSWER_REJECTED"
       : result === "approved" ? "QUALITY_APPROVED" : "QUALITY_REJECTED",
