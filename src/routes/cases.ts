@@ -23,10 +23,18 @@ const statuses: CaseStatus[] = [
 
 export const caseRoutes = new Hono();
 
+function categoryForCase(item: Awaited<ReturnType<typeof caseService.listCases>>[number]) {
+  const latestCustomerAnalysis = [...item.analyses]
+    .filter((analysis) => analysis.analysisType === "customer_message")
+    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+
+  return latestCustomerAnalysis?.category ?? item.category;
+}
+
 caseRoutes.get("/", async (c) => {
   const category = c.req.query("category")?.trim();
   const cases = await caseService.listCases();
-  return c.json({ data: category ? cases.filter((item) => categoryKeyOf(item.category) === category) : cases });
+  return c.json({ data: category ? cases.filter((item) => categoryKeyOf(categoryForCase(item)) === category) : cases });
 });
 
 caseRoutes.get("/:id/messages", async (c) => {

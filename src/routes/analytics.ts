@@ -12,6 +12,14 @@ function bucketConfidence(value: number) {
   return "98-100%";
 }
 
+function categoryForCase(item: Awaited<ReturnType<typeof caseService.listCases>>[number]) {
+  const latestCustomerAnalysis = [...item.analyses]
+    .filter((analysis) => analysis.analysisType === "customer_message")
+    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+
+  return latestCustomerAnalysis?.category ?? item.category;
+}
+
 analyticsRoutes.get("/summary", async (c) => {
   const cases = await caseService.listCases();
   const total = cases.length;
@@ -30,7 +38,7 @@ analyticsRoutes.get("/summary", async (c) => {
   const confidenceCounts = new Map<string, number>();
 
   for (const item of cases) {
-    const category = categoryKeyOf(item.category);
+    const category = categoryKeyOf(categoryForCase(item));
     categoryCounts.set(category, (categoryCounts.get(category) ?? 0) + 1);
     confidenceCounts.set(bucketConfidence(item.confidenceScore ?? 0), (confidenceCounts.get(bucketConfidence(item.confidenceScore ?? 0)) ?? 0) + 1);
   }
