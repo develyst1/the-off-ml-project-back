@@ -884,11 +884,16 @@ export const caseService = {
     if (!rawText) throw new Error("กรุณากรอกข้อความตอบกลับลูกค้า");
 
     const customerMessages = detail.messages.filter((message) => message.senderType === "CUSTOMER");
+    const isClosingSummary = mode === "CLOSING_REPLY";
     return aiCenterClient.rewriteCustomerReply({
       caseNumber: detail.caseNumber,
       caseTitle: caseService.formatCaseTitle(detail),
-      originalCustomerMessage: customerMessages[0]?.originalText ?? "",
-      conversationHistory: detail.messages.slice(-12).map((message) => `${message.senderType ?? message.direction}: ${message.originalText}`),
+      originalCustomerMessage: isClosingSummary ? "" : customerMessages[0]?.originalText ?? "",
+      // Closing summaries use the operator's three fields as the source of truth,
+      // with only a short recent history for tone and continuity.
+      conversationHistory: isClosingSummary
+        ? detail.messages.slice(-6).map((message) => `${message.senderType ?? message.direction}: ${message.originalText}`)
+        : detail.messages.slice(-12).map((message) => `${message.senderType ?? message.direction}: ${message.originalText}`),
       rawSupportMessage: rawText,
       mode,
     });

@@ -1281,6 +1281,8 @@ export const aiCenterClient = {
               "Do not invent investigation results or promise that the issue is fixed.",
               "NORMAL_REPLY: concise reply for the customer, 1-3 sentences.",
               "CLOSING_REPLY: include the result summary, state that this case is being closed, and say the customer can contact support again if the problem continues.",
+              "CLOSING_REPLY: weight rawSupportMessage at 60% as the source of truth for cause, resolution, and prevention. Use conversationHistory at 40% only to make the Thai wording continuous and polite.",
+              "CLOSING_REPLY: never replace, contradict, or invent cause, resolution, prevention, investigation results, or promises from conversationHistory. If history conflicts with rawSupportMessage, follow rawSupportMessage.",
               "ใช้ rawSupportMessage เป็นใจความหลัก ห้ามสร้างวิธีแก้หรือผลตรวจสอบใหม่",
               "ห้ามใช้คำว่า ลูกค้า, คุณลูกค้า, เรียนลูกค้า, เรียนคุณลูกค้า, เรียนท่าน, ทางลูกค้า หรือ รบกวนลูกค้า ในข้อความที่จะแสดงให้ผู้รับ",
               "ไม่ต้องใส่คำขึ้นต้นแบบจดหมายหรือคำเรียกผู้รับโดยตรง",
