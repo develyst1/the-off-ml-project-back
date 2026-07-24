@@ -23,6 +23,18 @@ const statuses: CaseStatus[] = [
 
 export const caseRoutes = new Hono();
 
+const CLOSED_CASE_STATUSES = new Set<CaseStatus>(["resolved", "sent_to_customer", "closed"]);
+const SLA_MONITORED_STATUSES = new Set<CaseStatus>([
+  "new",
+  "analyzing",
+  "awaiting_tech",
+  "assigned",
+  "in_progress",
+  "analyzing_solution",
+  "awaiting_tech_review",
+  "reopened",
+]);
+
 function categoryForCase(item: Awaited<ReturnType<typeof caseService.listCases>>[number]) {
   const latestCustomerAnalysis = [...item.analyses]
     .filter((analysis) => analysis.analysisType === "customer_message")
@@ -31,10 +43,40 @@ function categoryForCase(item: Awaited<ReturnType<typeof caseService.listCases>>
   return latestCustomerAnalysis?.category ?? item.category;
 }
 
+function isSlaBreached(item: Awaited<ReturnType<typeof caseService.listCases>>[number]) {
+  if (!SLA_MONITORED_STATUSES.has(item.status)) return false;
+  const latestCustomerMessage = [...item.messages]
+    .filter((message) => message.senderType === "CUSTOMER")
+    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+  const activityAt = latestCustomerMessage?.receivedAt ?? latestCustomerMessage?.createdAt ?? item.updatedAt;
+  const activityTime = new Date(activityAt).getTime();
+  return Number.isFinite(activityTime) && Date.now() - activityTime >= 4 * 60 * 60 * 1000;
+}
+
+function isClosedThisMonth(item: Awaited<ReturnType<typeof caseService.listCases>>[number]) {
+  if (!CLOSED_CASE_STATUSES.has(item.status)) return false;
+  const closedAt = item.closedAt ? new Date(item.closedAt) : undefined;
+  const now = new Date();
+  return Boolean(closedAt && closedAt.getFullYear() === now.getFullYear() && closedAt.getMonth() === now.getMonth());
+}
+
+function matchesKpi(item: Awaited<ReturnType<typeof caseService.listCases>>[number], kpi?: string) {
+  if (!kpi) return true;
+  if (kpi === "waiting-tech") return item.status === "awaiting_tech";
+  if (kpi === "awaiting-confirmation") return item.status === "awaiting_confirmation";
+  if (kpi === "sla") return isSlaBreached(item);
+  if (kpi === "closed-this-month") return isClosedThisMonth(item);
+  return true;
+}
+
 caseRoutes.get("/", async (c) => {
   const category = c.req.query("category")?.trim();
+  const kpi = c.req.query("kpi")?.trim();
   const cases = await caseService.listCases();
-  return c.json({ data: category ? cases.filter((item) => categoryKeyOf(categoryForCase(item)) === category) : cases });
+  return c.json({ data: cases.filter((item) => (
+    (!category || categoryKeyOf(categoryForCase(item)) === category)
+    && matchesKpi(item, kpi)
+  )) });
 });
 
 caseRoutes.get("/:id/messages", async (c) => {
