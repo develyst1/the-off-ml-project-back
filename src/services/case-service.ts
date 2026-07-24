@@ -1254,6 +1254,8 @@ export const caseService = {
     text: string;
     externalMessageId?: string;
     channel?: MessageChannel;
+    contentType?: "TEXT" | "IMAGE" | "FILE";
+    attachmentUrl?: string;
     closeAfterReply?: boolean;
   }) {
     if (input.externalMessageId) {
@@ -1277,7 +1279,9 @@ export const caseService = {
       originalText: input.text,
       externalMessageId: input.externalMessageId,
       senderType: "TECH",
+      contentType: input.contentType ?? "TEXT",
       messageType: "TECH_RAW_REPLY",
+      metadata: input.attachmentUrl ? { attachmentUrl: input.attachmentUrl } : undefined,
     });
 
     const originalCustomerText = detail.messages.find((item) => item.senderType === "CUSTOMER")?.originalText;
@@ -1300,9 +1304,18 @@ export const caseService = {
       rawJson: messageReview,
     });
 
-    if (messageReview.messageType === "INTERNAL_NOTE") {
-      await store.updateMessage(message.id, { direction: "INTERNAL", messageType: "INTERNAL_NOTE", deliveryStatus: "PROCESSED" });
-    }
+    const techMessageType = input.contentType === "IMAGE" || input.contentType === "FILE"
+      ? "TECH_ATTACHMENT"
+      : messageReview.messageType === "REQUEST_MORE_INFO"
+        ? "TECH_MORE_INFO_REQUEST"
+        : ["CUSTOMER_REPLY", "RESOLUTION", "CLOSE_CASE"].includes(messageReview.messageType)
+          ? "TECH_SOLUTION"
+          : "TECH_GENERAL_MESSAGE";
+    await store.updateMessage(message.id, {
+      direction: messageReview.messageType === "INTERNAL_NOTE" ? "INTERNAL" : message.direction,
+      messageType: techMessageType,
+      deliveryStatus: messageReview.messageType === "INTERNAL_NOTE" ? "PROCESSED" : message.deliveryStatus,
+    });
 
     if (!messageReview.shouldSendToCustomer) {
       await store.updateCase(input.caseId, {

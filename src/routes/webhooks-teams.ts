@@ -105,6 +105,9 @@ teamsWebhookRoutes.post("/", async (c) => {
     ?? (nestedData ? optionalString(nestedData, "requestInfoText") : undefined);
   const requestInfoText = optionalString(body, "requestInfoText")
     ?? (nestedData ? optionalString(nestedData, "requestInfoText") : undefined);
+  const contentTypeValue = optionalString(body, "contentType")
+    ?? (nestedData ? optionalString(nestedData, "contentType") : undefined);
+  const contentType = contentTypeValue === "IMAGE" || contentTypeValue === "FILE" ? contentTypeValue : "TEXT";
 
   if (!caseId && !caseNumberText) {
     return c.json({ error: "caseId_or_caseNumber_is_required" }, 400);
@@ -124,6 +127,8 @@ teamsWebhookRoutes.post("/", async (c) => {
         caseId: resolvedCase.id,
         text: text ?? requiredString(body, "text"),
         externalMessageId: optionalString(body, "eventId"),
+        contentType,
+        attachmentUrl: optionalString(body, "attachmentUrl") ?? (nestedData ? optionalString(nestedData, "attachmentUrl") : undefined),
         closeAfterReply: action === "close",
       });
 
