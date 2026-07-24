@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { CaseStatus } from "../domain/types";
 import { readJsonObject, requiredString } from "../lib/request";
 import { caseService } from "../services/case-service";
+import { categoryKeyOf } from "../lib/category";
 
 const statuses: CaseStatus[] = [
   "new",
@@ -22,7 +23,11 @@ const statuses: CaseStatus[] = [
 
 export const caseRoutes = new Hono();
 
-caseRoutes.get("/", async (c) => c.json({ data: await caseService.listCases() }));
+caseRoutes.get("/", async (c) => {
+  const category = c.req.query("category")?.trim();
+  const cases = await caseService.listCases();
+  return c.json({ data: category ? cases.filter((item) => categoryKeyOf(item.category) === category) : cases });
+});
 
 caseRoutes.get("/:id/messages", async (c) => {
   const detail = await caseService.getCase(c.req.param("id"));

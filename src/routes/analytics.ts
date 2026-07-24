@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { caseService } from "../services/case-service";
 import { isSolutionReadyForAutoAnswer } from "../services/auto-answer-guardrail";
+import { categoryKeyOf, categoryLabelOf } from "../lib/category";
 
 export const analyticsRoutes = new Hono();
 
@@ -29,13 +30,15 @@ analyticsRoutes.get("/summary", async (c) => {
   const confidenceCounts = new Map<string, number>();
 
   for (const item of cases) {
-    const category = item.category ?? "Uncategorized";
+    const category = categoryKeyOf(item.category);
     categoryCounts.set(category, (categoryCounts.get(category) ?? 0) + 1);
     confidenceCounts.set(bucketConfidence(item.confidenceScore ?? 0), (confidenceCounts.get(bucketConfidence(item.confidenceScore ?? 0)) ?? 0) + 1);
   }
 
-  const categories = [...categoryCounts.entries()].map(([label, count]) => ({
-    label,
+  const categories = [...categoryCounts.entries()].map(([key, count]) => ({
+    key,
+    label: categoryLabelOf(key),
+    count,
     value: total ? Math.round((count / total) * 100) : 0,
   }));
 

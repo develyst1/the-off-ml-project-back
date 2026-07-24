@@ -14,8 +14,55 @@ const categoryLabels: Record<string, string> = {
   RESOLVED: "ดำเนินการเรียบร้อย",
 };
 
-export function normalizeCategory(category?: string) {
+const categoryKeys: Record<string, string> = {
+  UNCATEGORIZED: "OTHER",
+  "-": "OTHER",
+  LOGIN_ISSUE: "LOGIN_ACCESS",
+  LOGIN_FAILURE: "LOGIN_ACCESS",
+  "เข้าสู่ระบบไม่ได้": "LOGIN_ACCESS",
+  "ปัญหาการเข้าสู่ระบบ": "LOGIN_ACCESS",
+  NETWORK_ISSUE: "NETWORK_CONNECTION",
+  NETWORK_CONNECTIVITY: "NETWORK_CONNECTION",
+  CONNECTIVITY_ISSUE: "NETWORK_CONNECTION",
+  "ปัญหาการเชื่อมต่อเครือข่าย": "NETWORK_CONNECTION",
+  "ปัญหาการเชื่อมต่อเครือข่ายอินเทอร์เน็ต": "NETWORK_CONNECTION",
+  STATUS_UPDATE: "STATUS_UPDATE",
+  "ปัญหาการอัปเดตสถานะ": "STATUS_UPDATE",
+  "ปัญหาฮาร์ดแวร์": "HARDWARE_DEVICE",
+  "ปัญหาซอฟต์แวร์": "SOFTWARE_APPLICATION",
+  "ปัญหาการแสดงข้อมูล": "DATA_DISPLAY",
+};
+
+const categoryKeyLabels: Record<string, string> = {
+  NETWORK_CONNECTION: "ปัญหาการเชื่อมต่อเครือข่าย",
+  LOGIN_ACCESS: "ปัญหาการเข้าสู่ระบบ",
+  STATUS_UPDATE: "ปัญหาการอัปเดตสถานะ",
+  HARDWARE_DEVICE: "ปัญหาฮาร์ดแวร์",
+  SOFTWARE_APPLICATION: "ปัญหาซอฟต์แวร์",
+  DATA_DISPLAY: "ปัญหาการแสดงข้อมูล",
+  OTHER: "อื่นๆ",
+};
+
+export function categoryKeyOf(category?: string | null) {
   const value = category?.trim();
-  if (!value) return "ยังไม่ระบุหมวดหมู่";
-  return categoryLabels[value.toUpperCase()] ?? value;
+  if (!value || ["undefined", "null", "-", "uncategorized", "ยังไม่ระบุหมวดหมู่"].includes(value.toLowerCase())) return "OTHER";
+  if (value.startsWith("AI_")) return value;
+  const upper = value.toUpperCase();
+  return categoryKeys[upper] ?? categoryKeys[value] ?? (categoryKeyLabels[upper] ? upper : `AI_${encodeURIComponent(value)}`);
+}
+
+export function categoryLabelOf(category?: string | null) {
+  const key = categoryKeyOf(category);
+  if (key.startsWith("AI_")) {
+    try {
+      return decodeURIComponent(key.slice(3));
+    } catch {
+      return "อื่นๆ";
+    }
+  }
+  return categoryKeyLabels[key] ?? "อื่นๆ";
+}
+
+export function normalizeCategory(category?: string) {
+  return categoryKeyOf(category);
 }
