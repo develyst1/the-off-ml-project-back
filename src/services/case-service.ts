@@ -899,7 +899,7 @@ export const caseService = {
     });
   },
 
-  async sendConsoleReply(input: { caseId: string; text: string; closeCase?: boolean; closedBy?: string; externalActionId?: string; closedWithoutTechConfirmation?: boolean }) {
+  async sendConsoleReply(input: { caseId: string; text: string; closeCase?: boolean; closedBy?: string; externalActionId?: string; closedWithoutTechConfirmation?: boolean; closeSummary?: { cause: string; resolution: string; prevention: string } }) {
     const detail = await store.getCaseDetail(input.caseId);
     if (!detail) throw new Error("Case not found");
     if (!detail.customer.lineUserId?.trim()) throw new Error("Customer LINE user ID is missing");
@@ -937,17 +937,24 @@ export const caseService = {
         direction: "INTERNAL",
         channel: "system",
         originalText: text,
-        senderType: "TECH",
-        messageType: "TECH_RAW_REPLY",
+        senderType: "SYSTEM",
+        contentType: "SYSTEM_EVENT",
+        messageType: "CASE_CLOSED",
         isVisibleToCustomer: false,
         deliveryStatus: "PROCESSED",
+        metadata: {
+          source: "SYSTEM",
+          eventType: "CASE_CLOSED",
+          closedWithoutTechConfirmation: input.closedWithoutTechConfirmation === true,
+          closeSummary: input.closeSummary,
+        },
       });
       const outboundMessage = await store.createMessage({
         caseId: input.caseId,
         direction: "OUTBOUND",
         channel: "line",
         originalText: outboundText,
-        senderType: "TECH",
+        senderType: "SYSTEM",
         contentType: "TEXT",
         messageType: "CASE_CLOSED",
         sourceMessageId: rawMessage.id,
@@ -974,20 +981,13 @@ export const caseService = {
         sentAt,
         deliveredAt: sentAt,
       });
-      const solutionAnalysis = await extractAndStoreTechSolution({
-        detail,
-        messageId: rawMessage.id,
-        techReplyText: text,
-        rewrittenCustomerText: supportText,
-      });
       await store.updateCase(input.caseId, {
         status: "closed",
         closedAt: sentAt,
         closedBy: responder,
         lineSentAt: sentAt,
         lineDeliveredAt: sentAt,
-        techRepliedAt: sentAt,
-        category: solutionAnalysis.category ?? detail.category,
+        category: detail.category,
       });
       await store.createMessage({
         caseId: input.caseId,
@@ -997,10 +997,16 @@ export const caseService = {
         displayText: input.closedWithoutTechConfirmation ? "ปิดเคสโดยไม่รอการยืนยันจากทีม Tech" : `ปิดเคสโดย ${responder}`,
         senderType: "SYSTEM",
         contentType: "SYSTEM_EVENT",
-        messageType: "SYSTEM_EVENT",
+        messageType: "CASE_CLOSED",
         isVisibleToCustomer: false,
         deliveryStatus: "PROCESSED",
-        metadata: input.closedWithoutTechConfirmation ? { closedWithoutTechConfirmation: true } : undefined,
+        metadata: {
+          source: "SYSTEM",
+          eventType: "CASE_CLOSED",
+          closedWithoutTechConfirmation: input.closedWithoutTechConfirmation === true,
+          closedBy: responder,
+          closeSummary: input.closeSummary,
+        },
       });
       if (detail.customer.activeCaseId === input.caseId) {
         await store.setActiveCase(detail.customer.id);
@@ -1110,7 +1116,7 @@ export const caseService = {
     return store.getCaseDetail(input.caseId);
   },
 
-  async reopenCaseFromConsole(caseId: string, reopenedBy = "Tech Support Console") {
+  async reopenCaseFromConsole(caseId: string, reopenedBy = "Tech Support Console", reopenReason = "อื่น ๆ") {
     const detail = await store.getCaseDetail(caseId);
     if (!detail) throw new Error("Case not found");
     if (detail.status !== "closed") return detail;
@@ -1122,13 +1128,15 @@ export const caseService = {
       caseId,
       direction: "INTERNAL",
       channel: "system",
-      originalText: `เปิดเคสอีกครั้งโดย ${reopenedBy}`,
+      originalText: `เปิดเคสอีกครั้ง: ${reopenReason}`,
+      displayText: `เปิดเคสอีกครั้ง: ${reopenReason}`,
       senderType: "SYSTEM",
       contentType: "SYSTEM_EVENT",
       messageType: "CASE_REOPENED",
       isVisibleToCustomer: false,
       deliveryStatus: "PROCESSED",
       processedAt: reopenedAt,
+      metadata: { source: "SYSTEM", eventType: "CASE_REOPENED", reopenReason, reopenedBy },
     });
     return store.getCaseDetail(caseId);
   },

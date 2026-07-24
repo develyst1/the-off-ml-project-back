@@ -10,7 +10,7 @@
     "db:reset-test": "bun src/scripts/reset-test-data.ts",
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
-    "test": "bun test",
+    "test": "bun test --isolate --max-concurrency=1",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

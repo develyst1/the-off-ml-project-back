@@ -25,6 +25,20 @@ export type MessageDirection =
 
 export type MessageChannel = "line" | "ms_teams" | "system";
 
+// These are semantic classifications layered on top of the persisted legacy
+// senderType/messageType fields. They keep UI consumers from treating a system
+// audit event as an actual Tech Support reply.
+export type MessageSource = "CUSTOMER" | "LINE_BOT" | "TECH_SUPPORT" | "SYSTEM";
+
+export type CaseEventType =
+  | "CASE_RECEIVED"
+  | "AI_ANALYZED"
+  | "TEAMS_SENT"
+  | "TECH_REPLIED"
+  | "LINE_REPLY_SENT"
+  | "CASE_CLOSED"
+  | "CASE_REOPENED";
+
 export type Customer = {
   id: string;
   lineUserId: string;

@@ -130,8 +130,8 @@ describe("POST /webhooks/teams/actions", () => {
     });
 
     const detail = await store.getCaseDetail(supportCase.id);
-    const closedMessage = detail?.messages.find((message) => message.messageType === "CASE_CLOSED");
-    const systemEvent = detail?.messages.find((message) => message.messageType === "SYSTEM_EVENT" && message.originalText.includes("เจ้าหน้าที่ทดสอบ"));
+    const closedMessage = detail?.messages.find((message) => message.messageType === "CASE_CLOSED" && message.direction === "OUTBOUND" && message.channel === "line");
+    const systemEvent = detail?.messages.find((message) => message.messageType === "CASE_CLOSED" && message.senderType === "SYSTEM" && message.direction === "INTERNAL");
 
     expect(response.status).toBe(200);
     expect(detail?.status).toBe("closed");
@@ -141,8 +141,9 @@ describe("POST /webhooks/teams/actions", () => {
     expect(closedMessage?.originalText).toContain(`ปิดเคส ${supportCase.caseNumber}`);
     expect(closedMessage?.sentAt).toBeDefined();
     expect(systemEvent?.isVisibleToCustomer).toBe(false);
+    expect(systemEvent?.metadata?.eventType).toBe("CASE_CLOSED");
     expect(detail?.solutions).toHaveLength(0);
-    expect(detail?.analyses.some((analysis) => analysis.analysisType === "tech_solution")).toBe(true);
+    expect(detail?.analyses.some((analysis) => analysis.analysisType === "tech_solution")).toBe(false);
   });
 
   test("composes customer reply and more-info drafts without sending LINE", async () => {
@@ -166,6 +167,15 @@ describe("POST /webhooks/teams/actions", () => {
       messageType: "CUSTOMER_ADDITIONAL_INFO",
       isVisibleToCustomer: true,
       deliveryStatus: "RECEIVED",
+    });
+    await store.createSolution({
+      caseId: supportCase.id,
+      rawReplyText: "ให้ตรวจสอบสถานะการส่งงานอีกครั้ง",
+      rootCause: "สถานะการส่งงานยังไม่อัปเดต",
+      solutionSteps: ["ตรวจสอบสถานะการส่งงานอีกครั้ง"],
+      rewrittenCustomerText: "รบกวนตรวจสอบสถานะการส่งงานอีกครั้งนะคะ",
+      confidence: 85,
+      validatedByTeam: true,
     });
 
     const replyResponse = await postCompose(supportCase.id, { mode: "CUSTOMER_REPLY", supportInstruction: "ให้ตอบสั้นและสุภาพ" });

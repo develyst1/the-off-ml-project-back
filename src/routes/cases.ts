@@ -150,6 +150,16 @@ caseRoutes.post("/:id/close", async (c) => {
     closeCase: true,
     closedBy: typeof body.closedBy === "string" && body.closedBy.trim() ? body.closedBy.trim() : undefined,
     closedWithoutTechConfirmation: body.closedWithoutTechConfirmation === true,
+    closeSummary: body.closeSummary && typeof body.closeSummary === "object"
+      && typeof (body.closeSummary as Record<string, unknown>).cause === "string"
+      && typeof (body.closeSummary as Record<string, unknown>).resolution === "string"
+      && typeof (body.closeSummary as Record<string, unknown>).prevention === "string"
+      ? {
+        cause: (body.closeSummary as Record<string, string>).cause,
+        resolution: (body.closeSummary as Record<string, string>).resolution,
+        prevention: (body.closeSummary as Record<string, string>).prevention,
+      }
+      : undefined,
   }) });
 });
 
@@ -164,6 +174,7 @@ caseRoutes.post("/:id/reopen", async (c) => {
   return c.json({ data: await caseService.reopenCaseFromConsole(
     c.req.param("id"),
     typeof body.reopenedBy === "string" && body.reopenedBy.trim() ? body.reopenedBy.trim() : undefined,
+    typeof body.reopenReason === "string" && body.reopenReason.trim() ? body.reopenReason.trim() : undefined,
   ) });
 });
 
