@@ -737,6 +737,14 @@ export const caseService = {
       };
     }
 
+    const confirmedSolution = [...detail.solutions]
+      .filter((solution) => solution.validatedByTeam && actionableSolutionSteps(solution.solutionSteps).length > 0)
+      .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+      .at(0);
+    if (!confirmedSolution) {
+      throw new Error("ยังไม่มีวิธีแก้จากทีม Tech ที่พร้อมใช้สร้างร่างตอบลูกค้า");
+    }
+
     const customerMessages = detail.messages
       .filter((message) => message.senderType === "CUSTOMER" && (message.direction === "INBOUND" || message.direction === "inbound_customer"))
       .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
@@ -745,9 +753,7 @@ export const caseService = {
     const previouslyRequestedInformation = detail.messages
       .filter((message) => message.messageType === "REQUEST_MORE_INFO")
       .map((message) => message.originalText);
-    const previousReplies = detail.messages
-      .filter((message) => message.senderType === "TECH" && message.direction !== "INTERNAL")
-      .map((message) => message.originalText);
+    const previousReplies = [confirmedSolution.rawReplyText, confirmedSolution.rewrittenCustomerText].filter(Boolean);
     const caseSummary = detail.analyses
       .filter((analysis) => analysis.analysisType === "customer_message")
       .at(-1)?.summary ?? detail.title ?? "";
@@ -888,7 +894,7 @@ export const caseService = {
     });
   },
 
-  async sendConsoleReply(input: { caseId: string; text: string; closeCase?: boolean; closedBy?: string; externalActionId?: string }) {
+  async sendConsoleReply(input: { caseId: string; text: string; closeCase?: boolean; closedBy?: string; externalActionId?: string; closedWithoutTechConfirmation?: boolean }) {
     const detail = await store.getCaseDetail(input.caseId);
     if (!detail) throw new Error("Case not found");
     if (!detail.customer.lineUserId?.trim()) throw new Error("Customer LINE user ID is missing");
@@ -982,13 +988,14 @@ export const caseService = {
         caseId: input.caseId,
         direction: "INTERNAL",
         channel: "system",
-        originalText: `ปิดเคสโดย ${responder}`,
-        displayText: `ปิดเคสโดย ${responder}`,
+        originalText: input.closedWithoutTechConfirmation ? "ปิดเคสโดยไม่รอการยืนยันจากทีม Tech" : `ปิดเคสโดย ${responder}`,
+        displayText: input.closedWithoutTechConfirmation ? "ปิดเคสโดยไม่รอการยืนยันจากทีม Tech" : `ปิดเคสโดย ${responder}`,
         senderType: "SYSTEM",
         contentType: "SYSTEM_EVENT",
         messageType: "SYSTEM_EVENT",
         isVisibleToCustomer: false,
         deliveryStatus: "PROCESSED",
+        metadata: input.closedWithoutTechConfirmation ? { closedWithoutTechConfirmation: true } : undefined,
       });
       if (detail.customer.activeCaseId === input.caseId) {
         await store.setActiveCase(detail.customer.id);

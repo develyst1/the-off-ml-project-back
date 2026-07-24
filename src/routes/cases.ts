@@ -80,7 +80,11 @@ caseRoutes.post("/:id/ai-compose", async (c) => {
   if (!mode) return c.json({ error: "mode_must_be_CUSTOMER_REPLY_or_REQUEST_MORE_INFO" }, 400);
   const supportInstruction = typeof body.supportInstruction === "string" ? body.supportInstruction : undefined;
   const requestedInformation = typeof body.requestedInformation === "string" ? body.requestedInformation : undefined;
-  return c.json({ data: await caseService.composeAiMessage({ caseId: c.req.param("id"), mode, supportInstruction, requestedInformation }) });
+  try {
+    return c.json({ data: await caseService.composeAiMessage({ caseId: c.req.param("id"), mode, supportInstruction, requestedInformation }) });
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "AI ไม่สามารถสร้างร่างข้อความได้ในขณะนี้" }, 422);
+  }
 });
 
 caseRoutes.post("/:id/close", async (c) => {
@@ -90,6 +94,7 @@ caseRoutes.post("/:id/close", async (c) => {
     text: requiredString(body, "text"),
     closeCase: true,
     closedBy: typeof body.closedBy === "string" && body.closedBy.trim() ? body.closedBy.trim() : undefined,
+    closedWithoutTechConfirmation: body.closedWithoutTechConfirmation === true,
   }) });
 });
 
