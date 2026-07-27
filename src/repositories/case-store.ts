@@ -1,10 +1,15 @@
-import type { Analysis, AutomationSettings, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { Analysis, AutomationSettings, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 
 export type CaseStore = {
   upsertCustomer(input: { lineUserId: string; displayName?: string }): Promise<Customer>;
   setActiveCase(customerId: string, caseId?: string): Promise<Customer>;
   setPendingCaseSelection(customerId: string, selection?: PendingCaseSelection): Promise<Customer>;
   setConversationState(customerId: string, state: ConversationState): Promise<Customer>;
+  createInboxMessage(input: Omit<InboxMessage, "id" | "createdAt">): Promise<InboxMessage>;
+  getInboxMessageByExternalMessageId(externalMessageId: string): Promise<InboxMessage | undefined>;
+  getInboxMessageByWebhookEventId(webhookEventId: string): Promise<InboxMessage | undefined>;
+  listInboxUsers(): Promise<InboxUser[]>;
+  getInboxUser(customerId: string): Promise<InboxUser | undefined>;
   createCase(input: { customerId: string; status?: CaseStatus; title?: string; category?: string; confidenceScore?: number }): Promise<SupportCase>;
   updateCase(id: string, patch: Partial<Omit<SupportCase, "id" | "customerId" | "createdAt">>): Promise<SupportCase>;
   createMessage(input: Omit<Message, "id" | "createdAt">): Promise<Message>;

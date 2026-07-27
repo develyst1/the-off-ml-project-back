@@ -158,6 +158,93 @@ async function extractAndStoreTechSolution(input: {
 }
 
 export const caseService = {
+  async openCaseFromInbox(customerId: string, title?: string) {
+    const inboxUser = await store.getInboxUser(customerId);
+    if (!inboxUser || inboxUser.messages.length === 0) {
+      throw new Error("ยังไม่มีข้อความสำหรับเปิดเคส");
+    }
+
+    const latestInbound = [...inboxUser.messages].reverse().find((message) => message.senderType === "CUSTOMER");
+    const supportCase = await store.createCase({
+      customerId,
+      status: "analyzing",
+      title: title?.trim() || latestInbound?.text || "การติดต่อจาก LINE",
+    });
+
+    const copiedMessages = [] as Message[];
+    for (const inboxMessage of inboxUser.messages) {
+      copiedMessages.push(await store.createMessage({
+        caseId: supportCase.id,
+        direction: inboxMessage.senderType === "CUSTOMER" ? "inbound_customer" : "outbound_tech",
+        channel: "line",
+        originalText: inboxMessage.text,
+        senderType: inboxMessage.senderType === "CUSTOMER" ? "CUSTOMER" : "TECH",
+        messageType: inboxMessage.senderType === "CUSTOMER" ? "CUSTOMER_MESSAGE" : "TECH_GENERAL_MESSAGE",
+        deliveryStatus: "SENT",
+        externalMessageId: inboxMessage.externalMessageId,
+        webhookEventId: inboxMessage.webhookEventId,
+        receivedAt: inboxMessage.createdAt,
+      }));
+    }
+
+    if (latestInbound) {
+      const sourceMessage = copiedMessages.find((message) => message.externalMessageId === latestInbound.externalMessageId);
+      const analysis = await aiCenterClient.analyzeCustomerMessage({
+        text: latestInbound.text,
+        customerDisplayName: inboxUser.customer.displayName,
+      });
+      if (sourceMessage) {
+        await store.createAnalysis({
+          caseId: supportCase.id,
+          messageId: sourceMessage.id,
+          analysisType: "customer_message",
+          summary: analysis.summary,
+          category: analysis.category,
+          confidence: analysis.confidence,
+          rawJson: analysis,
+        });
+      }
+      await store.updateCase(supportCase.id, {
+        status: "awaiting_tech",
+        title: analysis.caseTitle,
+        category: analysis.category,
+        priority: analysis.urgency,
+        confidenceScore: analysis.confidence,
+        customerSentAt: latestInbound.createdAt,
+        systemReceivedAt: new Date().toISOString(),
+        aiAnalyzedAt: new Date().toISOString(),
+        initialCustomerMessageId: copiedMessages.find((message) => message.senderType === "CUSTOMER")?.id,
+        latestCustomerMessageId: sourceMessage?.id,
+      });
+    }
+
+    const detail = await store.getCaseDetail(supportCase.id);
+    if (!detail) throw new Error("Case detail missing after opening inbox conversation");
+    try {
+      await teamsClient.notifyCase(detail);
+      await store.createMessage({
+        caseId: supportCase.id,
+        direction: "INTERNAL",
+        channel: "system",
+        originalText: `ส่งรายละเอียดเคส ${supportCase.caseNumber} ให้ทีม Tech Support ผ่าน Microsoft Teams แล้ว`,
+        senderType: "SYSTEM",
+        messageType: "CASE_FORWARDED",
+        deliveryStatus: "PROCESSED",
+      });
+      await store.updateCase(supportCase.id, {
+        teamsDeliveryStatus: "accepted",
+        teamsDeliveryAt: new Date().toISOString(),
+        teamsSentAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      await store.updateCase(supportCase.id, {
+        teamsDeliveryStatus: "failed",
+        teamsDeliveryAt: new Date().toISOString(),
+        teamsDeliveryError: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return store.getCaseDetail(supportCase.id);
+  },
   formatCaseTitle(detail: { title?: string; category?: string; messages: { direction: string; originalText: string; senderType?: string }[] }) {
     if (detail.title?.trim()) return detail.title.trim();
     const original = detail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? detail.category ?? "Tech Support";

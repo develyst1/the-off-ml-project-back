@@ -276,6 +276,49 @@ function getCustomerCaseStatusLabel(status: string) {
     sent_to_customer: "ส่งคำตอบให้ลูกค้าแล้ว",
     closed: "ปิดเคสแล้ว",
   };
+
+  return labels[status] ?? "ดำเนินการต่อ";
+}
+
+export async function receiveLineInboxMessage(input: LineTextMessageInput): Promise<LineTextMessageResult> {
+  const existingMessage = input.messageId
+    ? await store.getInboxMessageByExternalMessageId(input.messageId)
+    : undefined;
+  const existingWebhook = input.webhookEventId
+    ? await store.getInboxMessageByWebhookEventId(input.webhookEventId)
+    : undefined;
+  if (existingMessage || existingWebhook) {
+    return { processed: false, duplicate: true };
+  }
+
+  let displayName = input.displayName;
+  if (!displayName) {
+    try {
+      displayName = (await lineClient.getProfile(input.lineUserId))?.displayName;
+    } catch (error) {
+      console.warn({ event: "line_profile_lookup_failed", lineUserId: input.lineUserId, error: String(error) });
+    }
+  }
+
+  const customer = await store.upsertCustomer({ lineUserId: input.lineUserId, displayName });
+  await store.createInboxMessage({
+    customerId: customer.id,
+    direction: "INBOUND",
+    senderType: "CUSTOMER",
+    text: input.text,
+    externalMessageId: input.messageId,
+    webhookEventId: input.webhookEventId,
+  });
+
+  await lineClient.replyToToken({
+    replyToken: input.replyToken,
+    text: "รับข้อความแล้วค่ะ ทีม Tech Support จะตรวจสอบและติดต่อกลับนะคะ",
+  });
+
+  return { processed: true, duplicate: false, caseDetail: undefined };
+}
+function legacyStatusLabel(status: string) {
+  const labels: Record<string, string> = {};
   return labels[status] ?? "กำลังดำเนินการ";
 }
 

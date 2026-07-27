@@ -10,6 +10,20 @@ create table if not exists customers (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists inbox_messages (
+  id text primary key,
+  customer_id text not null references customers(id) on delete cascade,
+  direction text not null,
+  sender_type text not null,
+  text text not null,
+  external_message_id text,
+  webhook_event_id text,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists inbox_messages_external_message_id_unique on inbox_messages(external_message_id) where external_message_id is not null;
+create unique index if not exists inbox_messages_webhook_event_id_unique on inbox_messages(webhook_event_id) where webhook_event_id is not null;
+create index if not exists inbox_messages_customer_created_at_idx on inbox_messages(customer_id, created_at);
+
 create table if not exists support_cases (
   id text primary key,
   case_number text,

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { env } from "../config/env";
 import { verifyLineSignature } from "../lib/line-signature";
-import { receiveLineTextMessage, type LineTextMessageInput } from "../services/line-webhook-service";
+import { receiveLineInboxMessage, type LineTextMessageInput } from "../services/line-webhook-service";
 
 type LineWebhookPayload = {
   destination?: string;
@@ -71,7 +71,7 @@ export function createLineWebhookRoutes(dependencies: LineWebhookDependencies = 
     let processed = 0;
     let skipped = 0;
     let duplicates = 0;
-    const handleTextMessage = dependencies.handleTextMessage ?? receiveLineTextMessage;
+    const handleTextMessage = dependencies.handleTextMessage ?? receiveLineInboxMessage;
 
     for (const event of events) {
       if (event.type !== "message" || event.message?.type !== "text") {
@@ -120,7 +120,7 @@ export function createLineWebhookRoutes(dependencies: LineWebhookDependencies = 
         replyToken: event.replyToken,
         timestamp: event.timestamp,
       };
-      if (handleTextMessage === receiveLineTextMessage) {
+      if (handleTextMessage === receiveLineInboxMessage) {
         messageInput.webhookEventId = event.webhookEventId;
         messageInput.systemReceivedAt = systemReceivedAt;
       }

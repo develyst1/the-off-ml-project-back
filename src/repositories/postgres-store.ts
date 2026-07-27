@@ -1,6 +1,6 @@
 import pg from "pg";
 import { env } from "../config/env";
-import type { Analysis, AutomationSettings, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { Analysis, AutomationSettings, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore } from "./case-store";
 import { normalizeCaseMessage } from "./case-message-normalizer";
@@ -87,6 +87,17 @@ type DbMessage = {
   failed_at: Date | null;
   external_message_id: string | null;
   metadata: Record<string, unknown> | null;
+  created_at: Date;
+};
+
+type DbInboxMessage = {
+  id: string;
+  customer_id: string;
+  direction: InboxMessage["direction"];
+  sender_type: InboxMessage["senderType"];
+  text: string;
+  external_message_id: string | null;
+  webhook_event_id: string | null;
   created_at: Date;
 };
 
@@ -247,6 +258,19 @@ function mapMessage(row: DbMessage): Message {
   };
 }
 
+function mapInboxMessage(row: DbInboxMessage): InboxMessage {
+  return {
+    id: row.id,
+    customerId: row.customer_id,
+    direction: row.direction,
+    senderType: row.sender_type,
+    text: row.text,
+    externalMessageId: row.external_message_id ?? undefined,
+    webhookEventId: row.webhook_event_id ?? undefined,
+    createdAt: dateIso(row.created_at),
+  };
+}
+
 function mapAnalysis(row: DbAnalysis): Analysis {
   return {
     id: row.id,
@@ -362,6 +386,48 @@ export class PostgresStore implements CaseStore {
     );
     if (!result.rows[0]) throw new Error("Customer not found");
     return mapCustomer(result.rows[0]);
+  }
+
+  async createInboxMessage(input: Omit<InboxMessage, "id" | "createdAt">): Promise<InboxMessage> {
+    const result = await this.query<DbInboxMessage>(
+      `insert into inbox_messages (id, customer_id, direction, sender_type, text, external_message_id, webhook_event_id)
+       values ($1, $2, $3, $4, $5, $6, $7) returning *`,
+      [createId("inbox"), input.customerId, input.direction, input.senderType, input.text, input.externalMessageId ?? null, input.webhookEventId ?? null],
+    );
+    return mapInboxMessage(result.rows[0]);
+  }
+
+  async getInboxMessageByExternalMessageId(externalMessageId: string): Promise<InboxMessage | undefined> {
+    const result = await this.query<DbInboxMessage>("select * from inbox_messages where external_message_id = $1 limit 1", [externalMessageId]);
+    return result.rows[0] ? mapInboxMessage(result.rows[0]) : undefined;
+  }
+
+  async getInboxMessageByWebhookEventId(webhookEventId: string): Promise<InboxMessage | undefined> {
+    const result = await this.query<DbInboxMessage>("select * from inbox_messages where webhook_event_id = $1 limit 1", [webhookEventId]);
+    return result.rows[0] ? mapInboxMessage(result.rows[0]) : undefined;
+  }
+
+  async getInboxUser(customerId: string): Promise<InboxUser | undefined> {
+    const customerResult = await this.query<DbCustomer>("select * from customers where id = $1", [customerId]);
+    if (!customerResult.rows[0]) return undefined;
+    const messagesResult = await this.query<DbInboxMessage>("select * from inbox_messages where customer_id = $1 order by created_at asc", [customerId]);
+    const casesResult = await this.query<DbCase>("select * from support_cases where customer_id = $1 order by created_at desc", [customerId]);
+    const cases = await Promise.all(casesResult.rows.map((row) => this.buildCaseDetail(mapCase(row))));
+    const messages = messagesResult.rows.map(mapInboxMessage);
+    return {
+      customer: mapCustomer(customerResult.rows[0]),
+      latestMessage: messages.at(-1),
+      messages,
+      cases: cases.filter((item): item is CaseDetail => Boolean(item)),
+    };
+  }
+
+  async listInboxUsers(): Promise<InboxUser[]> {
+    const result = await this.query<{ customer_id: string }>("select distinct customer_id from inbox_messages");
+    const users = await Promise.all(result.rows.map((row) => this.getInboxUser(row.customer_id)));
+    return users
+      .filter((item): item is InboxUser => Boolean(item))
+      .sort((left, right) => new Date(right.latestMessage?.createdAt ?? 0).getTime() - new Date(left.latestMessage?.createdAt ?? 0).getTime());
   }
 
   async createCase(input: {

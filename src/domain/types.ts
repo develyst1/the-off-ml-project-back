@@ -50,6 +50,24 @@ export type Customer = {
   updatedAt: string;
 };
 
+export type InboxMessage = {
+  id: string;
+  customerId: string;
+  direction: "INBOUND" | "OUTBOUND";
+  text: string;
+  senderType: "CUSTOMER" | "TECH";
+  externalMessageId?: string;
+  webhookEventId?: string;
+  createdAt: string;
+};
+
+export type InboxUser = {
+  customer: Customer;
+  latestMessage?: InboxMessage;
+  messages: InboxMessage[];
+  cases: CaseDetail[];
+};
+
 export type PendingCaseSelection = {
   mode: "choose" | "confirm" | "case_split_confirmation" | "case_history_match" | "request_more_info" | "close_case_request" | "context_only";
   candidateCaseIds: string[];

@@ -1,4 +1,4 @@
-import type { Analysis, AutomationSettings, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { Analysis, AutomationSettings, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore } from "./case-store";
 import { normalizeCaseMessage } from "./case-message-normalizer";
@@ -9,6 +9,7 @@ export class InMemoryStore implements CaseStore {
   private cases = new Map<string, SupportCase>();
   private nextCaseNumbers = new Map<number, number>();
   private messages = new Map<string, Message>();
+  private inboxMessages = new Map<string, InboxMessage>();
   private analyses = new Map<string, Analysis>();
   private solutions = new Map<string, Solution>();
   private caseMatchLogs = new Map<string, CaseMatchLog>();
@@ -75,6 +76,45 @@ export class InMemoryStore implements CaseStore {
     const updated = { ...customer, conversationState: state, updatedAt: nowIso() };
     this.customers.set(customerId, updated);
     return updated;
+  }
+
+  async createInboxMessage(input: Omit<InboxMessage, "id" | "createdAt">): Promise<InboxMessage> {
+    const message: InboxMessage = { ...input, id: createId("inbox"), createdAt: nowIso() };
+    this.inboxMessages.set(message.id, message);
+    return message;
+  }
+
+  async getInboxMessageByExternalMessageId(externalMessageId: string): Promise<InboxMessage | undefined> {
+    return [...this.inboxMessages.values()].find((message) => message.externalMessageId === externalMessageId);
+  }
+
+  async getInboxMessageByWebhookEventId(webhookEventId: string): Promise<InboxMessage | undefined> {
+    return [...this.inboxMessages.values()].find((message) => message.webhookEventId === webhookEventId);
+  }
+
+  async getInboxUser(customerId: string): Promise<InboxUser | undefined> {
+    const customer = this.customers.get(customerId);
+    if (!customer) return undefined;
+    const messages = [...this.inboxMessages.values()]
+      .filter((message) => message.customerId === customerId)
+      .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+    const cases = await Promise.all([...this.cases.values()]
+      .filter((supportCase) => supportCase.customerId === customerId)
+      .map((supportCase) => this.getCaseDetail(supportCase.id)));
+    return {
+      customer,
+      latestMessage: messages.at(-1),
+      messages,
+      cases: cases.filter((item): item is CaseDetail => Boolean(item)),
+    };
+  }
+
+  async listInboxUsers(): Promise<InboxUser[]> {
+    const customerIds = new Set([...this.inboxMessages.values()].map((message) => message.customerId));
+    const users = await Promise.all([...customerIds].map((customerId) => this.getInboxUser(customerId)));
+    return users
+      .filter((item): item is InboxUser => Boolean(item))
+      .sort((left, right) => new Date(right.latestMessage?.createdAt ?? 0).getTime() - new Date(left.latestMessage?.createdAt ?? 0).getTime());
   }
 
   async createCase(input: { customerId: string; status?: CaseStatus; title?: string; category?: string; confidenceScore?: number }): Promise<SupportCase> {
