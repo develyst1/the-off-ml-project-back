@@ -204,21 +204,49 @@ export const caseService = {
     return { message: result.suggestedMessage };
   },
 
-  async openCaseFromInbox(customerId: string, title?: string) {
+  async openCaseFromInbox(customerId: string, input: {
+    title?: string;
+    description?: string;
+    from?: string;
+    to?: string;
+    selectedMessageIds?: string[];
+  } = {}) {
     const inboxUser = await store.getInboxUser(customerId);
     if (!inboxUser || inboxUser.messages.length === 0) {
       throw new Error("ยังไม่มีข้อความสำหรับเปิดเคส");
     }
 
-    const latestInbound = [...inboxUser.messages].reverse().find((message) => message.senderType === "CUSTOMER");
+    const latestMessageAt = Math.max(...inboxUser.messages.map((message) => new Date(message.createdAt).getTime()));
+    const from = input.from ? new Date(input.from) : new Date(latestMessageAt - 24 * 60 * 60 * 1000);
+    const to = input.to ? new Date(input.to) : new Date();
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
+      throw new Error("ช่วงเวลาที่เลือกไม่ถูกต้อง");
+    }
+    if (to.getTime() - from.getTime() > 14 * 24 * 60 * 60 * 1000) {
+      throw new Error("เลือกช่วงประวัติสนทนาได้ครั้งละไม่เกิน 14 วัน");
+    }
+
+    const messagesInRange = inboxUser.messages.filter((message) => {
+      const timestamp = new Date(message.createdAt).getTime();
+      return timestamp >= from.getTime() && timestamp <= to.getTime();
+    });
+    const selectedIds = input.selectedMessageIds ? new Set(input.selectedMessageIds) : undefined;
+    const sourceMessages = selectedIds
+      ? messagesInRange.filter((message) => selectedIds.has(message.id))
+      : messagesInRange;
+    if (sourceMessages.length === 0) {
+      throw new Error(selectedIds ? "กรุณาเลือกข้อความอย่างน้อย 1 รายการ" : "ไม่พบข้อความในช่วงเวลาที่เลือก");
+    }
+
+    const latestInbound = [...sourceMessages].reverse().find((message) => message.senderType === "CUSTOMER");
     const supportCase = await store.createCase({
       customerId,
       status: "analyzing",
-      title: title?.trim() || latestInbound?.text || "การติดต่อจาก LINE",
+      title: input.title?.trim() || latestInbound?.text || "การติดต่อจาก LINE",
     });
 
     const copiedMessages = [] as Message[];
-    for (const inboxMessage of inboxUser.messages) {
+    for (const inboxMessage of sourceMessages) {
       copiedMessages.push(await store.createMessage({
         caseId: supportCase.id,
         direction: inboxMessage.senderType === "CUSTOMER" ? "inbound_customer" : "outbound_tech",
@@ -231,6 +259,18 @@ export const caseService = {
         webhookEventId: inboxMessage.webhookEventId,
         receivedAt: inboxMessage.createdAt,
       }));
+    }
+
+    if (input.description?.trim()) {
+      await store.createMessage({
+        caseId: supportCase.id,
+        direction: "INTERNAL",
+        channel: "system",
+        originalText: input.description.trim(),
+        senderType: "SYSTEM",
+        messageType: "SYSTEM_EVENT",
+        deliveryStatus: "PROCESSED",
+      });
     }
 
     if (latestInbound) {

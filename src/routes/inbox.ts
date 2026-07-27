@@ -4,7 +4,13 @@ import { caseService } from "../services/case-service";
 import { lineClient } from "../services/line-client";
 
 type InboxReplyBody = { text?: string };
-type OpenCaseBody = { title?: string };
+type OpenCaseBody = {
+  title?: string;
+  description?: string;
+  from?: string;
+  to?: string;
+  selectedMessageIds?: string[];
+};
 type InboxAiComposeBody = { mode?: "DRAFT" | "REWRITE"; rawSupportMessage?: string };
 
 export const inboxRoutes = new Hono();
@@ -37,8 +43,8 @@ inboxRoutes.post("/:customerId/reply", async (c) => {
 });
 
 inboxRoutes.post("/:customerId/open-case", async (c) => {
-  const body: OpenCaseBody = await c.req.json<OpenCaseBody>().catch(() => ({ title: undefined }));
-  const detail = await caseService.openCaseFromInbox(c.req.param("customerId"), body.title);
+  const body: OpenCaseBody = await c.req.json<OpenCaseBody>().catch(() => ({}));
+  const detail = await caseService.openCaseFromInbox(c.req.param("customerId"), body);
   return c.json({ data: detail }, 201);
 });
 
