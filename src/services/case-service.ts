@@ -158,6 +158,52 @@ async function extractAndStoreTechSolution(input: {
 }
 
 export const caseService = {
+  async composeInboxReply(input: {
+    customerId: string;
+    mode: "DRAFT" | "REWRITE";
+    rawSupportMessage?: string;
+  }) {
+    const inboxUser = await store.getInboxUser(input.customerId);
+    if (!inboxUser) throw new Error("ไม่พบผู้ใช้ใน Inbox");
+
+    const messages = [...inboxUser.messages].sort(
+      (left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime(),
+    );
+    const conversationHistory = messages.map((message) => `${message.senderType}: ${message.text}`);
+    const customerMessages = messages.filter((message) => message.senderType === "CUSTOMER");
+    const techMessages = messages.filter((message) => message.senderType === "TECH").map((message) => message.text);
+    const latestCustomerMessage = customerMessages.at(-1)?.text ?? "";
+
+    if (input.mode === "REWRITE") {
+      const result = await aiCenterClient.rewriteCustomerReply({
+        caseNumber: "",
+        caseTitle: "การสนทนาทาง LINE",
+        originalCustomerMessage: customerMessages[0]?.text ?? "",
+        conversationHistory,
+        rawSupportMessage: input.rawSupportMessage?.trim() ?? "",
+        mode: "NORMAL_REPLY",
+      });
+      if (result.usedFallback) throw new Error("AI ช่วยเรียบเรียงข้อความไม่สำเร็จ");
+      return { message: result.rewrittenMessage };
+    }
+
+    const result = await aiCenterClient.composeCustomerReply({
+      mode: "CUSTOMER_REPLY",
+      caseNumber: "",
+      caseTitle: "การสนทนาทาง LINE",
+      originalCustomerMessage: customerMessages[0]?.text ?? "",
+      latestCustomerMessage,
+      conversationHistory,
+      customerProvidedInformation: customerMessages.slice(1).map((message) => message.text),
+      previouslyRequestedInformation: [],
+      previousReplies: techMessages,
+      caseSummary: latestCustomerMessage,
+      currentCaseStatus: "INBOX_PENDING_REVIEW",
+    });
+    if (result.usedFallback) throw new Error("AI สร้างร่างคำตอบไม่สำเร็จ");
+    return { message: result.suggestedMessage };
+  },
+
   async openCaseFromInbox(customerId: string, title?: string) {
     const inboxUser = await store.getInboxUser(customerId);
     if (!inboxUser || inboxUser.messages.length === 0) {

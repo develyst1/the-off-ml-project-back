@@ -5,6 +5,7 @@ import { lineClient } from "../services/line-client";
 
 type InboxReplyBody = { text?: string };
 type OpenCaseBody = { title?: string };
+type InboxAiComposeBody = { mode?: "DRAFT" | "REWRITE"; rawSupportMessage?: string };
 
 export const inboxRoutes = new Hono();
 
@@ -39,4 +40,24 @@ inboxRoutes.post("/:customerId/open-case", async (c) => {
   const body: OpenCaseBody = await c.req.json<OpenCaseBody>().catch(() => ({ title: undefined }));
   const detail = await caseService.openCaseFromInbox(c.req.param("customerId"), body.title);
   return c.json({ data: detail }, 201);
+});
+
+inboxRoutes.post("/:customerId/ai-compose", async (c) => {
+  const body: InboxAiComposeBody = await c.req.json<InboxAiComposeBody>().catch(() => ({} as InboxAiComposeBody));
+  const mode = body.mode === "REWRITE" ? "REWRITE" : "DRAFT";
+  if (mode === "REWRITE" && !body.rawSupportMessage?.trim()) {
+    return c.json({ error: "raw_support_message_required" }, 400);
+  }
+
+  try {
+    return c.json({
+      data: await caseService.composeInboxReply({
+        customerId: c.req.param("customerId"),
+        mode,
+        rawSupportMessage: body.rawSupportMessage,
+      }),
+    });
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "ai_compose_failed" }, 502);
+  }
 });

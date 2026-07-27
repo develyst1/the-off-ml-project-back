@@ -164,6 +164,7 @@ export type CustomerReplyComposeSuggestion = {
   suggestedMode: "CUSTOMER_REPLY" | "REQUEST_MORE_INFO";
   missingInformation: string[];
   reason: string;
+  usedFallback?: boolean;
 };
 
 export type PendingInformationExtraction = {
@@ -1195,6 +1196,7 @@ export const aiCenterClient = {
       suggestedMode: "CUSTOMER_REPLY",
       missingInformation: [],
       reason: "AI ไม่สามารถสร้างร่างคำตอบได้ จึงใช้ข้อความสำรองที่สุภาพ",
+      usedFallback: true,
     };
 
     try {
@@ -1245,6 +1247,7 @@ export const aiCenterClient = {
         suggestedMode,
         missingInformation,
         reason: typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : "AI สร้างร่างคำตอบจากบริบทของเคสแล้ว",
+        usedFallback: false,
       };
     } catch (error) {
       console.error({ event: "ai_center_customer_reply_compose_failed", message: String(error) });
@@ -1259,7 +1262,7 @@ export const aiCenterClient = {
     conversationHistory: string[];
     rawSupportMessage: string;
     mode: "NORMAL_REPLY" | "CLOSING_REPLY";
-  }): Promise<{ rewrittenMessage: string }> {
+  }): Promise<{ rewrittenMessage: string; usedFallback?: boolean }> {
     const safeRawMessage = sanitizeCustomerFacingMessage(input.rawSupportMessage);
     const fallback = input.mode === "CLOSING_REPLY"
       ? `${safeRawMessage}\n\nระบบกำลังปิดเคสนี้ให้ก่อนนะคะ หากยังพบปัญหาสามารถติดต่อกลับมาได้ค่ะ`
@@ -1291,14 +1294,14 @@ export const aiCenterClient = {
           }),
         },
       ]);
-      if (!content) return { rewrittenMessage: fallback };
+      if (!content) return { rewrittenMessage: fallback, usedFallback: true };
       const parsed = parseJsonObject<{ rewrittenMessage?: string }>(content, {});
       const rewrittenMessage = parsed.rewrittenMessage?.trim();
       const safeMessage = sanitizeCustomerFacingMessage(rewrittenMessage ?? "");
-      return { rewrittenMessage: safeMessage && safeMessage.length <= 1000 ? safeMessage : fallback };
+      return { rewrittenMessage: safeMessage && safeMessage.length <= 1000 ? safeMessage : fallback, usedFallback: !safeMessage || safeMessage.length > 1000 };
     } catch (error) {
       console.error({ event: "ai_center_customer_reply_rewrite_failed", message: String(error) });
-      return { rewrittenMessage: fallback };
+      return { rewrittenMessage: fallback, usedFallback: true };
     }
   },
 
