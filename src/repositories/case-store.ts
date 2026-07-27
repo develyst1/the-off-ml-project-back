@@ -1,5 +1,16 @@
 import type { Analysis, AutomationSettings, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 
+export type ChatRetentionCleanupResult = {
+  cutoffAt: string;
+  dryRun: boolean;
+  batchSize: number;
+  deletedInboxMessages: number;
+  deletedCaseMessages: number;
+  deletedLegacyMessages: number;
+  totalDeleted: number;
+  durationMs: number;
+};
+
 export type CaseStore = {
   upsertCustomer(input: { lineUserId: string; displayName?: string }): Promise<Customer>;
   setActiveCase(customerId: string, caseId?: string): Promise<Customer>;
@@ -10,6 +21,7 @@ export type CaseStore = {
   getInboxMessageByWebhookEventId(webhookEventId: string): Promise<InboxMessage | undefined>;
   listInboxUsers(): Promise<InboxUser[]>;
   getInboxUser(customerId: string): Promise<InboxUser | undefined>;
+  deleteExpiredRawMessages(input: { cutoffAt: Date; batchSize: number; dryRun: boolean }): Promise<ChatRetentionCleanupResult>;
   createCase(input: { customerId: string; status?: CaseStatus; title?: string; category?: string; confidenceScore?: number }): Promise<SupportCase>;
   updateCase(id: string, patch: Partial<Omit<SupportCase, "id" | "customerId" | "createdAt">>): Promise<SupportCase>;
   createMessage(input: Omit<Message, "id" | "createdAt">): Promise<Message>;

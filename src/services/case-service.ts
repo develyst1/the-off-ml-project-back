@@ -1118,6 +1118,7 @@ export const caseService = {
         status: "closed",
         closedAt: sentAt,
         closedBy: responder,
+        closeSummary: input.closeSummary,
         lineSentAt: sentAt,
         lineDeliveredAt: sentAt,
         category: detail.category,

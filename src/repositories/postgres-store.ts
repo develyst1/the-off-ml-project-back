@@ -2,7 +2,7 @@ import pg from "pg";
 import { env } from "../config/env";
 import type { Analysis, AutomationSettings, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
-import type { CaseStore } from "./case-store";
+import type { CaseStore, ChatRetentionCleanupResult } from "./case-store";
 import { normalizeCaseMessage } from "./case-message-normalizer";
 import { schemaSql } from "./schema";
 
@@ -37,6 +37,9 @@ type DbCase = {
   line_delivered_at: Date | null;
   closed_at: Date | null;
   closed_by: string | null;
+  close_cause: string | null;
+  close_resolution: string | null;
+  close_prevention: string | null;
   status: CaseStatus;
   category: string | null;
   priority: SupportCase["priority"] | null;
@@ -104,7 +107,7 @@ type DbInboxMessage = {
 type DbAnalysis = {
   id: string;
   case_id: string;
-  message_id: string;
+  message_id: string | null;
   analysis_type: Analysis["analysisType"];
   summary: string | null;
   category: string | null;
@@ -202,6 +205,9 @@ function mapCase(row: DbCase): SupportCase {
     lineDeliveredAt: row.line_delivered_at ? dateIso(row.line_delivered_at) : undefined,
     closedAt: row.closed_at ? dateIso(row.closed_at) : undefined,
     closedBy: row.closed_by ?? undefined,
+    closeSummary: row.close_cause && row.close_resolution && row.close_prevention
+      ? { cause: row.close_cause, resolution: row.close_resolution, prevention: row.close_prevention }
+      : undefined,
     status: row.status,
     category: row.category ?? undefined,
     priority: row.priority ?? undefined,
@@ -275,7 +281,7 @@ function mapAnalysis(row: DbAnalysis): Analysis {
   return {
     id: row.id,
     caseId: row.case_id,
-    messageId: row.message_id,
+    messageId: row.message_id ?? undefined,
     analysisType: row.analysis_type,
     summary: row.summary ?? undefined,
     category: row.category ?? undefined,
@@ -410,7 +416,10 @@ export class PostgresStore implements CaseStore {
   async getInboxUser(customerId: string): Promise<InboxUser | undefined> {
     const customerResult = await this.query<DbCustomer>("select * from customers where id = $1", [customerId]);
     if (!customerResult.rows[0]) return undefined;
-    const messagesResult = await this.query<DbInboxMessage>("select * from inbox_messages where customer_id = $1 order by created_at asc", [customerId]);
+    const messagesResult = await this.query<DbInboxMessage>(
+      "select * from inbox_messages where customer_id = $1 and created_at >= now() - interval '14 days' order by created_at asc",
+      [customerId],
+    );
     const casesResult = await this.query<DbCase>("select * from support_cases where customer_id = $1 order by created_at desc", [customerId]);
     const cases = await Promise.all(casesResult.rows.map((row) => this.buildCaseDetail(mapCase(row))));
     const messages = messagesResult.rows.map(mapInboxMessage);
@@ -423,11 +432,33 @@ export class PostgresStore implements CaseStore {
   }
 
   async listInboxUsers(): Promise<InboxUser[]> {
-    const result = await this.query<{ customer_id: string }>("select distinct customer_id from inbox_messages");
+    const result = await this.query<{ customer_id: string }>("select distinct customer_id from inbox_messages where created_at >= now() - interval '14 days'");
     const users = await Promise.all(result.rows.map((row) => this.getInboxUser(row.customer_id)));
     return users
       .filter((item): item is InboxUser => Boolean(item))
       .sort((left, right) => new Date(right.latestMessage?.createdAt ?? 0).getTime() - new Date(left.latestMessage?.createdAt ?? 0).getTime());
+  }
+
+  async deleteExpiredRawMessages(input: { cutoffAt: Date; batchSize: number; dryRun: boolean }): Promise<ChatRetentionCleanupResult> {
+    const startedAt = Date.now();
+    const cutoffAt = input.cutoffAt.toISOString();
+    const inboxPredicate = "created_at < $1";
+    const casePredicate = "created_at < $1 and (sender_type <> 'SYSTEM' or content_type <> 'SYSTEM_EVENT')";
+    const legacyPredicate = "created_at < $1";
+    const deletedInboxMessages = await this.deleteExpiredRows("inbox_messages", inboxPredicate, cutoffAt, input.batchSize, input.dryRun);
+    const deletedCaseMessages = await this.deleteExpiredRows("case_messages", casePredicate, cutoffAt, input.batchSize, input.dryRun);
+    const deletedLegacyMessages = await this.deleteExpiredRows("messages", legacyPredicate, cutoffAt, input.batchSize, input.dryRun);
+
+    return {
+      cutoffAt,
+      dryRun: input.dryRun,
+      batchSize: input.batchSize,
+      deletedInboxMessages,
+      deletedCaseMessages,
+      deletedLegacyMessages,
+      totalDeleted: deletedInboxMessages + deletedCaseMessages + deletedLegacyMessages,
+      durationMs: Date.now() - startedAt,
+    };
   }
 
   async createCase(input: {
@@ -490,25 +521,28 @@ export class PostgresStore implements CaseStore {
          line_delivered_at = $12,
          closed_at = $13,
          closed_by = $14,
-         category = $15,
-         priority = $16,
-         confidence_score = $17,
-         teams_thread_id = $18,
-         teams_delivery_status = $19,
-         teams_delivery_at = $20,
-         teams_delivery_error = $21,
-         initial_customer_message_id = $22,
-         latest_customer_message_id = $23,
-         problem_summary = $24,
-         problem_summary_generated_at = $25,
-         problem_summary_source_message_id = $26,
-         problem_summary_version = $27,
-         problem_summary_status = $28,
-         assignee_name = $29,
-         confidence_review_status = $30,
-         confidence_reviewed_at = $31,
-         confidence_reviewed_by = $32,
-         updated_at = $33
+         close_cause = $15,
+         close_resolution = $16,
+         close_prevention = $17,
+         category = $18,
+         priority = $19,
+         confidence_score = $20,
+         teams_thread_id = $21,
+         teams_delivery_status = $22,
+         teams_delivery_at = $23,
+         teams_delivery_error = $24,
+         initial_customer_message_id = $25,
+         latest_customer_message_id = $26,
+         problem_summary = $27,
+         problem_summary_generated_at = $28,
+         problem_summary_source_message_id = $29,
+         problem_summary_version = $30,
+         problem_summary_status = $31,
+         assignee_name = $32,
+         confidence_review_status = $33,
+         confidence_reviewed_at = $34,
+         confidence_reviewed_by = $35,
+         updated_at = $36
        where id = $1
        returning *`,
       [
@@ -526,6 +560,9 @@ export class PostgresStore implements CaseStore {
         patch.lineDeliveredAt ?? current.line_delivered_at,
         "closedAt" in patch ? patch.closedAt ?? null : current.closed_at,
         "closedBy" in patch ? patch.closedBy ?? null : current.closed_by,
+        "closeSummary" in patch ? patch.closeSummary?.cause ?? null : current.close_cause,
+        "closeSummary" in patch ? patch.closeSummary?.resolution ?? null : current.close_resolution,
+        "closeSummary" in patch ? patch.closeSummary?.prevention ?? null : current.close_prevention,
         patch.category ?? current.category,
         patch.priority ?? current.priority,
         patch.confidenceScore ?? current.confidence_score,
@@ -785,6 +822,31 @@ export class PostgresStore implements CaseStore {
     return result.rows[0];
   }
 
+  private async deleteExpiredRows(table: "inbox_messages" | "case_messages" | "messages", predicate: string, cutoffAt: string, batchSize: number, dryRun: boolean) {
+    const countResult = await this.query<{ count: string }>(`select count(*)::text as count from ${table} where ${predicate}`, [cutoffAt]);
+    const total = Number(countResult.rows[0]?.count ?? 0);
+    if (dryRun || total === 0) return total;
+
+    let deleted = 0;
+    while (true) {
+      const result = await this.query<{ id: string }>(
+        `with expired as (
+           select id from ${table}
+           where ${predicate}
+           order by created_at asc
+           limit $2
+         )
+         delete from ${table} target
+         using expired
+         where target.id = expired.id
+         returning target.id`,
+        [cutoffAt, batchSize],
+      );
+      deleted += result.rows.length;
+      if (result.rows.length < batchSize) return deleted;
+    }
+  }
+
   private async buildCaseDetail(supportCase: SupportCase): Promise<CaseDetail | undefined> {
     const [customerResult, messageResult, analysisResult, solutionResult] = await Promise.all([
       this.query<DbCustomer>("select * from customers where id = $1", [supportCase.customerId]),
@@ -812,6 +874,8 @@ export class PostgresStore implements CaseStore {
       initialCustomerMessageId: supportCase.initialCustomerMessageId ?? customerMessages[0]?.id,
       latestCustomerMessageId: supportCase.latestCustomerMessageId ?? latestCustomerMessage?.id,
       hasUnreadCustomerMessage: Boolean(latestCustomerMessage && (!latestOutboundMessage || new Date(latestCustomerMessage.receivedAt ?? latestCustomerMessage.createdAt).getTime() > new Date(latestOutboundMessage.createdAt).getTime())),
+      rawMessageTimelineExpired: messages.filter((message) => message.senderType !== "SYSTEM" || message.contentType !== "SYSTEM_EVENT").length === 0
+        && new Date(supportCase.createdAt).getTime() < Date.now() - 14 * 24 * 60 * 60 * 1000,
       messages,
       analyses: analysisResult.rows.map(mapAnalysis),
       solutions: solutionResult.rows.map(mapSolution),

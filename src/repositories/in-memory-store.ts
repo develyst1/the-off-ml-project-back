@@ -1,6 +1,6 @@
 import type { Analysis, AutomationSettings, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
-import type { CaseStore } from "./case-store";
+import type { CaseStore, ChatRetentionCleanupResult } from "./case-store";
 import { normalizeCaseMessage } from "./case-message-normalizer";
 
 export class InMemoryStore implements CaseStore {
@@ -19,6 +19,13 @@ export class InMemoryStore implements CaseStore {
     caseDiscriminationThreshold: 98,
     updatedAt: nowIso(),
   };
+
+  private retainedInboxMessages(customerId: string) {
+    const cutoffAt = Date.now() - 14 * 24 * 60 * 60 * 1000;
+    return [...this.inboxMessages.values()]
+      .filter((message) => message.customerId === customerId && new Date(message.createdAt).getTime() >= cutoffAt)
+      .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+  }
 
   async upsertCustomer(input: { lineUserId: string; displayName?: string }): Promise<Customer> {
     const existingId = this.customersByLineUserId.get(input.lineUserId);
@@ -95,9 +102,7 @@ export class InMemoryStore implements CaseStore {
   async getInboxUser(customerId: string): Promise<InboxUser | undefined> {
     const customer = this.customers.get(customerId);
     if (!customer) return undefined;
-    const messages = [...this.inboxMessages.values()]
-      .filter((message) => message.customerId === customerId)
-      .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+    const messages = this.retainedInboxMessages(customerId);
     const cases = await Promise.all([...this.cases.values()]
       .filter((supportCase) => supportCase.customerId === customerId)
       .map((supportCase) => this.getCaseDetail(supportCase.id)));
@@ -110,11 +115,47 @@ export class InMemoryStore implements CaseStore {
   }
 
   async listInboxUsers(): Promise<InboxUser[]> {
-    const customerIds = new Set([...this.inboxMessages.values()].map((message) => message.customerId));
+    const customerIds = new Set([...this.inboxMessages.values()]
+      .filter((message) => new Date(message.createdAt).getTime() >= Date.now() - 14 * 24 * 60 * 60 * 1000)
+      .map((message) => message.customerId));
     const users = await Promise.all([...customerIds].map((customerId) => this.getInboxUser(customerId)));
     return users
       .filter((item): item is InboxUser => Boolean(item))
       .sort((left, right) => new Date(right.latestMessage?.createdAt ?? 0).getTime() - new Date(left.latestMessage?.createdAt ?? 0).getTime());
+  }
+
+  async deleteExpiredRawMessages(input: { cutoffAt: Date; batchSize: number; dryRun: boolean }): Promise<ChatRetentionCleanupResult> {
+    const startedAt = Date.now();
+    const isExpired = (createdAt: string) => new Date(createdAt).getTime() < input.cutoffAt.getTime();
+    const isRawCaseMessage = (message: Message) => message.senderType !== "SYSTEM" || message.contentType !== "SYSTEM_EVENT";
+    const inboxIds = [...this.inboxMessages.values()].filter((message) => isExpired(message.createdAt)).map((message) => message.id);
+    const caseMessageIds = [...this.messages.values()]
+      .filter((message) => isExpired(message.createdAt) && isRawCaseMessage(message))
+      .map((message) => message.id);
+
+    if (!input.dryRun) {
+      for (const ids of [inboxIds, caseMessageIds]) {
+        for (let offset = 0; offset < ids.length; offset += input.batchSize) {
+          for (const id of ids.slice(offset, offset + input.batchSize)) {
+            this.inboxMessages.delete(id);
+            this.messages.delete(id);
+          }
+        }
+      }
+    }
+
+    const deletedInboxMessages = inboxIds.length;
+    const deletedCaseMessages = caseMessageIds.length;
+    return {
+      cutoffAt: input.cutoffAt.toISOString(),
+      dryRun: input.dryRun,
+      batchSize: input.batchSize,
+      deletedInboxMessages,
+      deletedCaseMessages,
+      deletedLegacyMessages: 0,
+      totalDeleted: deletedInboxMessages + deletedCaseMessages,
+      durationMs: Date.now() - startedAt,
+    };
   }
 
   async createCase(input: { customerId: string; status?: CaseStatus; title?: string; category?: string; confidenceScore?: number }): Promise<SupportCase> {
@@ -268,6 +309,8 @@ export class InMemoryStore implements CaseStore {
       initialCustomerMessageId: supportCase.initialCustomerMessageId ?? customerMessages[0]?.id,
       latestCustomerMessageId: supportCase.latestCustomerMessageId ?? latestCustomerMessage?.id,
       hasUnreadCustomerMessage: Boolean(latestCustomerMessage && (!latestOutboundMessage || new Date(latestCustomerMessage.receivedAt ?? latestCustomerMessage.createdAt).getTime() > new Date(latestOutboundMessage.createdAt).getTime())),
+      rawMessageTimelineExpired: messages.filter((message) => message.senderType !== "SYSTEM" || message.contentType !== "SYSTEM_EVENT").length === 0
+        && new Date(supportCase.createdAt).getTime() < Date.now() - 14 * 24 * 60 * 60 * 1000,
       messages,
       analyses: [...this.analyses.values()].filter((analysis) => analysis.caseId === id),
       solutions: [...this.solutions.values()].filter((solution) => solution.caseId === id),

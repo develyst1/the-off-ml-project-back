@@ -23,6 +23,7 @@ create table if not exists inbox_messages (
 create unique index if not exists inbox_messages_external_message_id_unique on inbox_messages(external_message_id) where external_message_id is not null;
 create unique index if not exists inbox_messages_webhook_event_id_unique on inbox_messages(webhook_event_id) where webhook_event_id is not null;
 create index if not exists inbox_messages_customer_created_at_idx on inbox_messages(customer_id, created_at);
+create index if not exists inbox_messages_created_at_idx on inbox_messages(created_at);
 
 create table if not exists support_cases (
   id text primary key,
@@ -42,6 +43,9 @@ create table if not exists support_cases (
   line_delivered_at timestamptz,
   closed_at timestamptz,
   closed_by text,
+  close_cause text,
+  close_resolution text,
+  close_prevention text,
   status text not null,
   category text,
   priority text,
@@ -130,6 +134,9 @@ alter table support_cases add column if not exists assignee_name text;
 alter table support_cases add column if not exists confidence_review_status text not null default 'PENDING';
 alter table support_cases add column if not exists confidence_reviewed_at timestamptz;
 alter table support_cases add column if not exists confidence_reviewed_by text;
+alter table support_cases add column if not exists close_cause text;
+alter table support_cases add column if not exists close_resolution text;
+alter table support_cases add column if not exists close_prevention text;
 
 create table if not exists messages (
   id text primary key,
@@ -157,7 +164,7 @@ alter table messages add column if not exists received_at timestamptz;
 create table if not exists analyses (
   id text primary key,
   case_id text not null references support_cases(id) on delete cascade,
-  message_id text not null references messages(id) on delete cascade,
+  message_id text references messages(id) on delete set null,
   analysis_type text not null,
   summary text,
   category text,
@@ -347,6 +354,7 @@ create unique index if not exists case_messages_webhook_event_id_unique
 create unique index if not exists case_messages_teams_message_id_unique
   on case_messages (teams_message_id) where teams_message_id is not null;
 create index if not exists case_messages_case_created_at_idx on case_messages(case_id, created_at);
+create index if not exists case_messages_created_at_idx on case_messages(created_at);
 create index if not exists case_messages_case_message_type_idx on case_messages(case_id, message_type);
 create index if not exists case_messages_delivery_status_idx on case_messages(delivery_status);
 create index if not exists case_messages_parent_message_id_idx on case_messages(parent_message_id);
@@ -373,12 +381,14 @@ create index if not exists case_match_logs_customer_created_at_idx on case_match
 -- case_messages is available so existing databases migrate without losing history.
 do $$
 begin
+  alter table analyses alter column message_id drop not null;
+
   if exists (
     select 1
     from pg_constraint
     where conname = 'analyses_message_id_fkey'
       and conrelid = 'analyses'::regclass
-      and confrelid <> 'case_messages'::regclass
+      and (confrelid <> 'case_messages'::regclass or confdeltype <> 'n')
   ) then
     alter table analyses drop constraint analyses_message_id_fkey;
   end if;
@@ -391,7 +401,7 @@ begin
   ) then
     alter table analyses
       add constraint analyses_message_id_fkey
-      foreign key (message_id) references case_messages(id) on delete cascade;
+      foreign key (message_id) references case_messages(id) on delete set null;
   end if;
 
   if exists (

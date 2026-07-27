@@ -17,6 +17,8 @@ type Env = {
   LINE_CHANNEL_ACCESS_TOKEN?: string;
   TEAMS_WEBHOOK_URL?: string;
   TEAMS_ACTIONS_SECRET?: string;
+  CHAT_RETENTION_SECRET?: string;
+  CHAT_RETENTION_SCHEDULER_ENABLED: boolean;
   FRONTEND_BASE_URL: string;
 };
 
@@ -28,6 +30,8 @@ const caseMatchConfidenceThreshold = Number(Bun.env.CASE_MATCH_CONFIDENCE_THRESH
 const caseMatchCandidateLimit = Number(Bun.env.CASE_MATCH_CANDIDATE_LIMIT ?? 15);
 const caseMatchPendingTtlMinutes = Number(Bun.env.CASE_MATCH_PENDING_TTL_MINUTES ?? 20);
 const databaseSsl = Bun.env.DATABASE_SSL === "true";
+const chatRetentionSchedulerEnabled = Bun.env.CHAT_RETENTION_SCHEDULER_ENABLED === "true"
+  || (Bun.env.CHAT_RETENTION_SCHEDULER_ENABLED === undefined && (Bun.env.NODE_ENV ?? "development") === "production");
 
 if (!Number.isInteger(port) || port <= 0) {
   throw new Error("PORT must be a positive integer");
@@ -76,5 +80,7 @@ export const env: Env = {
   LINE_CHANNEL_ACCESS_TOKEN: Bun.env.LINE_CHANNEL_ACCESS_TOKEN,
   TEAMS_WEBHOOK_URL: Bun.env.TEAMS_WEBHOOK_URL,
   TEAMS_ACTIONS_SECRET: Bun.env.TEAMS_ACTIONS_SECRET,
+  CHAT_RETENTION_SECRET: Bun.env.CHAT_RETENTION_SECRET,
+  CHAT_RETENTION_SCHEDULER_ENABLED: chatRetentionSchedulerEnabled,
   FRONTEND_BASE_URL: Bun.env.FRONTEND_BASE_URL ?? "https://offml.develyst.online",
 };

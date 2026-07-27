@@ -132,6 +132,7 @@ export type SupportCase = {
   lineDeliveredAt?: string;
   closedAt?: string;
   closedBy?: string;
+  closeSummary?: { cause: string; resolution: string; prevention: string };
   teamsDeliveryStatus?: "not_sent" | "accepted" | "failed";
   teamsDeliveryAt?: string;
   teamsDeliveryError?: string;
@@ -149,6 +150,7 @@ export type SupportCase = {
   problemSummaryStatus?: "PENDING" | "SUCCESS" | "FAILED";
   assigneeName?: string;
   hasUnreadCustomerMessage?: boolean;
+  rawMessageTimelineExpired?: boolean;
   confidenceReviewStatus?: "PENDING" | "QUALITY_APPROVED" | "QUALITY_REJECTED" | "AUTO_ANSWER_APPROVED" | "AUTO_ANSWER_REJECTED";
   confidenceReviewedAt?: string;
   confidenceReviewedBy?: string;
@@ -212,7 +214,7 @@ export type Message = {
 export type Analysis = {
   id: string;
   caseId: string;
-  messageId: string;
+  messageId?: string;
   analysisType: "customer_message" | "customer_outcome" | "tech_solution" | "customer_rewrite" | "case_match" | "tech_message_review";
   summary?: string;
   category?: string;

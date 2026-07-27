@@ -8,6 +8,7 @@ import { confidenceRoutes } from "./routes/confidence";
 import { healthRoutes } from "./routes/health";
 import { integrationRoutes } from "./routes/integrations";
 import { inboxRoutes } from "./routes/inbox";
+import { maintenanceRoutes } from "./routes/maintenance";
 import { lineWebhookRoutes } from "./routes/webhooks-line";
 import { teamsWebhookRoutes } from "./routes/webhooks-teams";
 
@@ -25,6 +26,7 @@ app.route("/webhooks/line", lineWebhookRoutes);
 app.route("/webhooks/teams", teamsWebhookRoutes);
 app.route("/integrations", integrationRoutes);
 app.route("/inbox", inboxRoutes);
+app.route("/maintenance", maintenanceRoutes);
 
 app.notFound((c) => c.json({ error: "not_found" }, 404));
 
