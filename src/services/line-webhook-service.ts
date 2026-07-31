@@ -15,6 +15,7 @@ import { aiCenterClient, type LineMessageIntentClassification, type LineMessageI
 import { caseService } from "./case-service";
 import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
+import { realtimeEventHub } from "./realtime-event-hub";
 import { isAutoAnswerAllowedForSolution } from "./automation-settings";
 
 export const LINE_ACKNOWLEDGEMENT_TEXT =
@@ -301,13 +302,25 @@ export async function receiveLineInboxMessage(input: LineTextMessageInput): Prom
   }
 
   const customer = await store.upsertCustomer({ lineUserId: input.lineUserId, displayName });
-  await store.createInboxMessage({
+  const inboxMessage = await store.createInboxMessage({
     customerId: customer.id,
     direction: "INBOUND",
     senderType: "CUSTOMER",
     text: input.text,
     externalMessageId: input.messageId,
     webhookEventId: input.webhookEventId,
+  });
+
+  realtimeEventHub.publish({
+    name: "conversation.message.created",
+    data: {
+      eventId: `line:${input.webhookEventId ?? input.messageId}`,
+      messageId: inboxMessage.id,
+      conversationId: customer.id,
+      userId: customer.id,
+      createdAt: inboxMessage.createdAt,
+      direction: inboxMessage.direction,
+    },
   });
 
   await lineClient.replyToToken({
