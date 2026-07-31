@@ -85,6 +85,14 @@ export class InMemoryStore implements CaseStore {
     return updated;
   }
 
+  async markInboxRead(customerId: string, readAt = nowIso()): Promise<Customer> {
+    const customer = this.customers.get(customerId);
+    if (!customer) throw new Error("Customer not found");
+    const updated = { ...customer, inboxLastReadAt: readAt, updatedAt: nowIso() };
+    this.customers.set(customerId, updated);
+    return updated;
+  }
+
   async createInboxMessage(input: Omit<InboxMessage, "id" | "createdAt">): Promise<InboxMessage> {
     const message: InboxMessage = { ...input, id: createId("inbox"), createdAt: nowIso() };
     this.inboxMessages.set(message.id, message);

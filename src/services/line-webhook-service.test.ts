@@ -78,7 +78,7 @@ mock.module("./ai-center-client", () => ({
 }));
 
 const { caseService } = await import("./case-service");
-const { buildInitialCaseAcknowledgement, receiveLineTextMessage } = await import("./line-webhook-service");
+const { buildInitialCaseAcknowledgement, receiveLineInboxMessage, receiveLineTextMessage } = await import("./line-webhook-service");
 
 let sequence = 0;
 
@@ -114,6 +114,39 @@ async function sendReply(input: { lineUserId: string; messageId: string; text: s
     timestamp: Date.now(),
   });
 }
+
+describe("Inbox LINE handoff", () => {
+  test("replies to a greeting once, then hands the issue to Tech without creating a case", async () => {
+    const lineUserId = "U-inbox-greeting-1";
+    const replyCountBefore = lineReplies.length;
+
+    await receiveLineInboxMessage({ lineUserId, messageId: "inbox-greeting-1", text: "สวัสดีครับ", replyToken: "reply-inbox-greeting-1" });
+    const afterGreeting = (await store.listInboxUsers()).find((item) => item.customer.lineUserId === lineUserId);
+    expect(lineReplies.slice(replyCountBefore)).toEqual(["สวัสดีค่ะ มีปัญหาด้านไหนให้ทีมช่วยตรวจสอบคะ"]);
+    expect(afterGreeting?.customer.conversationState).toBe("AWAITING_ISSUE");
+    expect(afterGreeting?.messages.map((message) => message.senderType)).toEqual(["CUSTOMER", "BOT"]);
+
+    await receiveLineInboxMessage({ lineUserId, messageId: "inbox-greeting-repeat-1", text: "สวัสดีค่ะ", replyToken: "reply-inbox-greeting-repeat-1" });
+    await receiveLineInboxMessage({ lineUserId, messageId: "inbox-issue-1", text: "ข้อมูลในระบบไม่อัปเดต", replyToken: "reply-inbox-issue-1" });
+    const afterIssue = (await store.listInboxUsers()).find((item) => item.customer.lineUserId === lineUserId);
+
+    expect(lineReplies.slice(replyCountBefore)).toEqual(["สวัสดีค่ะ มีปัญหาด้านไหนให้ทีมช่วยตรวจสอบคะ"]);
+    expect(afterIssue?.customer.conversationState).toBe("HANDOFF_TO_TECH");
+    expect(afterIssue?.cases).toHaveLength(0);
+  });
+
+  test("hands a direct issue to Tech without an automated acknowledgement", async () => {
+    const lineUserId = "U-inbox-direct-issue-1";
+    const replyCountBefore = lineReplies.length;
+
+    await receiveLineInboxMessage({ lineUserId, messageId: "inbox-direct-issue-1", text: "เปิดหน้าเว็บแล้วขึ้น 404", replyToken: "reply-inbox-direct-issue-1" });
+    const inboxUser = (await store.listInboxUsers()).find((item) => item.customer.lineUserId === lineUserId);
+
+    expect(lineReplies.slice(replyCountBefore)).toEqual([]);
+    expect(inboxUser?.customer.conversationState).toBe("HANDOFF_TO_TECH");
+    expect(inboxUser?.cases).toHaveLength(0);
+  });
+});
 
 describe("pending LINE information requests", () => {
   test("keeps a combined subject and time answer in the requested case and forwards it to Teams", async () => {

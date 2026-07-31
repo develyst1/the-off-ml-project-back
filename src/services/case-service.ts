@@ -296,12 +296,18 @@ export const caseService = {
         direction: inboxMessage.senderType === "CUSTOMER" ? "inbound_customer" : "outbound_tech",
         channel: "line",
         originalText: inboxMessage.text,
-        senderType: inboxMessage.senderType === "CUSTOMER" ? "CUSTOMER" : "TECH",
-        messageType: inboxMessage.senderType === "CUSTOMER" ? "CUSTOMER_MESSAGE" : "TECH_GENERAL_MESSAGE",
+        senderType: inboxMessage.senderType === "CUSTOMER" ? "CUSTOMER" : inboxMessage.senderType === "BOT" ? "BOT" : "TECH",
+        messageType: inboxMessage.senderType === "CUSTOMER" ? "CUSTOMER_MESSAGE" : inboxMessage.senderType === "BOT" ? "CASE_ACKNOWLEDGEMENT" : "TECH_GENERAL_MESSAGE",
         deliveryStatus: "SENT",
         externalMessageId: inboxMessage.externalMessageId,
         webhookEventId: inboxMessage.webhookEventId,
         receivedAt: inboxMessage.createdAt,
+        sourceMessageId: inboxMessage.id,
+        metadata: {
+          source: inboxMessage.senderType === "TECH" ? "tech_console" : inboxMessage.senderType === "BOT" ? "line_bot" : "line",
+          sourceCreatedAt: inboxMessage.createdAt,
+          linkedAt: new Date().toISOString(),
+        },
       }));
     }
 

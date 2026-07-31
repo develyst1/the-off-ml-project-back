@@ -15,6 +15,7 @@ type DbCustomer = {
   active_case_id: string | null;
   pending_case_selection: PendingCaseSelection | null;
   conversation_state: ConversationState;
+  inbox_last_read_at: Date | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -181,6 +182,7 @@ function mapCustomer(row: DbCustomer): Customer {
     activeCaseId: row.active_case_id ?? undefined,
     pendingCaseSelection: row.pending_case_selection ?? undefined,
     conversationState: row.conversation_state,
+    inboxLastReadAt: row.inbox_last_read_at ? dateIso(row.inbox_last_read_at) : undefined,
     createdAt: dateIso(row.created_at),
     updatedAt: dateIso(row.updated_at),
   };
@@ -389,6 +391,15 @@ export class PostgresStore implements CaseStore {
     const result = await this.query<DbCustomer>(
       `update customers set conversation_state = $2, updated_at = $3 where id = $1 returning *`,
       [customerId, state, nowIso()],
+    );
+    if (!result.rows[0]) throw new Error("Customer not found");
+    return mapCustomer(result.rows[0]);
+  }
+
+  async markInboxRead(customerId: string, readAt = nowIso()): Promise<Customer> {
+    const result = await this.query<DbCustomer>(
+      `update customers set inbox_last_read_at = $2, updated_at = $2 where id = $1 returning *`,
+      [customerId, readAt],
     );
     if (!result.rows[0]) throw new Error("Customer not found");
     return mapCustomer(result.rows[0]);

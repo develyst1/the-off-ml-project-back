@@ -24,6 +24,7 @@ export const LINE_ACKNOWLEDGEMENT_TEXT =
 export const LINE_CONTINUATION_ACKNOWLEDGEMENT_TEXT = "ได้รับข้อมูลเพิ่มเติมแล้วค่ะ ทีมงานจะนำข้อมูลนี้ไปตรวจสอบต่อในเคสเดิม";
 export const LINE_CASE_CONFIRMATION_TEXT = "ข้อความนี้ดูเหมือนเป็นปัญหาใหม่ ต้องการเปิดเคสใหม่ หรือเพิ่มข้อมูลในเคสเดิมคะ?";
 export const LINE_FIRST_CASE_ACKNOWLEDGEMENT_TEXT = "รับเรื่องเรียบร้อยแล้วค่ะ";
+export const LINE_GREETING_TEXT = "สวัสดีค่ะ มีปัญหาด้านไหนให้ทีมช่วยตรวจสอบคะ";
 
 export type BuildInitialCaseAcknowledgementInput = {
   caseNumber: string;
@@ -281,6 +282,10 @@ function getCustomerCaseStatusLabel(status: string) {
   return labels[status] ?? "ดำเนินการต่อ";
 }
 
+function isGreetingMessage(text: string) {
+  return /^(สวัสดี(?:ครับ|ค่ะ|คะ)?|hello|hi)$/i.test(text.trim().replace(/\s+/g, " "));
+}
+
 export async function receiveLineInboxMessage(input: LineTextMessageInput): Promise<LineTextMessageResult> {
   const existingMessage = input.messageId
     ? await store.getInboxMessageByExternalMessageId(input.messageId)
@@ -311,6 +316,25 @@ export async function receiveLineInboxMessage(input: LineTextMessageInput): Prom
     webhookEventId: input.webhookEventId,
   });
 
+  if (customer.conversationState === "IDLE" && isGreetingMessage(input.text)) {
+    try {
+      await lineClient.replyToToken({ replyToken: input.replyToken, text: LINE_GREETING_TEXT });
+      await store.createInboxMessage({
+        customerId: customer.id,
+        direction: "OUTBOUND",
+        senderType: "BOT",
+        text: LINE_GREETING_TEXT,
+      });
+      await store.setConversationState(customer.id, "AWAITING_ISSUE");
+    } catch (error) {
+      console.warn({ event: "line_greeting_reply_failed", lineUserId: input.lineUserId, error: String(error) });
+    }
+  } else if (customer.conversationState === "AWAITING_ISSUE" && !isGreetingMessage(input.text)) {
+    await store.setConversationState(customer.id, "HANDOFF_TO_TECH");
+  } else if (customer.conversationState === "IDLE") {
+    await store.setConversationState(customer.id, "HANDOFF_TO_TECH");
+  }
+
   realtimeEventHub.publish({
     name: "conversation.message.created",
     data: {
@@ -321,11 +345,6 @@ export async function receiveLineInboxMessage(input: LineTextMessageInput): Prom
       createdAt: inboxMessage.createdAt,
       direction: inboxMessage.direction,
     },
-  });
-
-  await lineClient.replyToToken({
-    replyToken: input.replyToken,
-    text: "รับข้อความแล้วค่ะ ทีม Tech Support จะตรวจสอบและติดต่อกลับนะคะ",
   });
 
   return { processed: true, duplicate: false, caseDetail: undefined };

@@ -46,6 +46,7 @@ export type Customer = {
   activeCaseId?: string;
   pendingCaseSelection?: PendingCaseSelection;
   conversationState?: ConversationState;
+  inboxLastReadAt?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -55,7 +56,7 @@ export type InboxMessage = {
   customerId: string;
   direction: "INBOUND" | "OUTBOUND";
   text: string;
-  senderType: "CUSTOMER" | "TECH";
+  senderType: "CUSTOMER" | "TECH" | "BOT";
   externalMessageId?: string;
   webhookEventId?: string;
   createdAt: string;
@@ -108,6 +109,8 @@ export type CaseMatchLog = {
 
 export type ConversationState =
   | "IDLE"
+  | "AWAITING_ISSUE"
+  | "HANDOFF_TO_TECH"
   | "WAITING_NEW_CASE_CONFIRMATION"
   | "WAITING_NEW_CASE_DETAIL"
   | "WAITING_CASE_SELECTION"

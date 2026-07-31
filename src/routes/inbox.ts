@@ -29,6 +29,14 @@ inboxRoutes.get("/:customerId", async (c) => {
   return c.json({ data: user });
 });
 
+inboxRoutes.post("/:customerId/read", async (c) => {
+  const customerId = c.req.param("customerId");
+  const user = await store.getInboxUser(customerId);
+  if (!user) return c.json({ error: "inbox_user_not_found" }, 404);
+  await store.markInboxRead(customerId);
+  return c.json({ data: await store.getInboxUser(customerId) });
+});
+
 inboxRoutes.post("/:customerId/reply", async (c) => {
   const customerId = c.req.param("customerId");
   const user = await store.getInboxUser(customerId);
@@ -45,6 +53,7 @@ inboxRoutes.post("/:customerId/reply", async (c) => {
     senderType: "TECH",
     text,
   });
+  await store.setConversationState(customerId, "HANDOFF_TO_TECH");
   return c.json({ data: await store.getInboxUser(customerId) });
 });
 

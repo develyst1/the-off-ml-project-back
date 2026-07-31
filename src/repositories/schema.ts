@@ -6,6 +6,7 @@ create table if not exists customers (
   active_case_id text,
   pending_case_selection jsonb,
   conversation_state text not null default 'IDLE',
+  inbox_last_read_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -72,6 +73,7 @@ create table if not exists support_cases (
 alter table customers add column if not exists active_case_id text;
 alter table customers add column if not exists pending_case_selection jsonb;
 alter table customers add column if not exists conversation_state text not null default 'IDLE';
+alter table customers add column if not exists inbox_last_read_at timestamptz;
 
 alter table support_cases add column if not exists sequence_number bigint;
 alter table support_cases add column if not exists sequence_year integer;
