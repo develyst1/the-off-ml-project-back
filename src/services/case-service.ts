@@ -240,6 +240,9 @@ export const caseService = {
     to?: string;
     selectedMessageIds?: string[];
   } = {}) {
+    if (!input.title?.trim() || !input.description?.trim()) {
+      throw new Error("กรุณาระบุหัวข้อปัญหาและรายละเอียดเคสให้ครบ");
+    }
     const inboxUser = await store.getInboxUser(customerId);
     if (!inboxUser || inboxUser.messages.length === 0) {
       throw new Error("ยังไม่มีข้อความสำหรับเปิดเคส");
