@@ -6,9 +6,16 @@ if (env.CHAT_RETENTION_SCHEDULER_ENABLED) {
   startChatRetentionScheduler();
 }
 
-Bun.serve({
+const server = Bun.serve({
   port: env.PORT,
-  fetch: app.fetch,
+  fetch(request, server) {
+    // Bun closes quiet requests after roughly 10 seconds by default. SSE must stay open
+    // between messages, so disable that timeout only for this streaming endpoint.
+    if (new URL(request.url).pathname === "/realtime/events") {
+      server.timeout(request, 0);
+    }
+    return app.fetch(request);
+  },
 });
 
 console.log(`Off ML Project backend listening on http://localhost:${env.PORT}`);

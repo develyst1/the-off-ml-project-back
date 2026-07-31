@@ -7,6 +7,8 @@ function toSseMessage(event: string, data: unknown, id?: string) {
   return `${id ? `id: ${id}\n` : ""}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
+const heartbeatComment = ": ping\n\n";
+
 export const realtimeRoutes = new Hono();
 
 realtimeRoutes.get("/events", (c) => {
@@ -25,7 +27,7 @@ realtimeRoutes.get("/events", (c) => {
 
       const listener = (event: RealtimeEvent) => write(event.name, event.data, event.data.eventId);
       unsubscribe = realtimeEventHub.subscribe(listener);
-      heartbeat = setInterval(() => write("ping", { at: new Date().toISOString() }), 25_000);
+      heartbeat = setInterval(() => controller.enqueue(encoder.encode(heartbeatComment)), 20_000);
       write("connected", { connectedAt: new Date().toISOString() });
     },
     cancel() {
