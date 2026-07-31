@@ -204,6 +204,35 @@ export const caseService = {
     return { message: result.suggestedMessage };
   },
 
+  async composeInboxCaseDraft(input: {
+    customerId: string;
+    mode: "DRAFT" | "REWRITE";
+    selectedMessageIds: string[];
+    title?: string;
+    description?: string;
+  }) {
+    const inboxUser = await store.getInboxUser(input.customerId);
+    if (!inboxUser) throw new Error("ไม่พบผู้ใช้ใน Inbox");
+    const selectedIds = new Set(input.selectedMessageIds);
+    const selectedMessages = inboxUser.messages.filter((message) => selectedIds.has(message.id));
+    const conversationContext = selectedMessages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : "ทีม Tech"}: ${message.text}`);
+    const sourceText = input.mode === "REWRITE"
+      ? [input.title?.trim(), input.description?.trim(), ...conversationContext].filter(Boolean).join("\n")
+      : conversationContext.join("\n");
+    if (!sourceText.trim()) throw new Error("กรุณากรอกข้อมูลเคสหรือเลือกข้อความจากแชทก่อนใช้ AI");
+
+    const latestCustomerMessage = [...selectedMessages].reverse().find((message) => message.senderType === "CUSTOMER")?.text ?? sourceText;
+    const analysis = await aiCenterClient.analyzeCustomerMessage({
+      text: latestCustomerMessage,
+      customerDisplayName: inboxUser.customer.displayName,
+      conversationContext,
+    });
+    return {
+      title: analysis.caseTitle?.trim() || input.title?.trim() || latestCustomerMessage.slice(0, 120),
+      description: analysis.summary?.trim() || input.description?.trim() || sourceText,
+    };
+  },
+
   async openCaseFromInbox(customerId: string, input: {
     title?: string;
     description?: string;
@@ -274,7 +303,7 @@ export const caseService = {
     }
 
     if (latestInbound) {
-      const sourceMessage = copiedMessages.find((message) => message.externalMessageId === latestInbound.externalMessageId);
+      const sourceMessage = copiedMessages.filter((message) => message.senderType === "CUSTOMER").at(-1);
       const analysis = await aiCenterClient.analyzeCustomerMessage({
         text: latestInbound.text,
         customerDisplayName: inboxUser.customer.displayName,
@@ -292,7 +321,7 @@ export const caseService = {
       }
       await store.updateCase(supportCase.id, {
         status: "awaiting_tech",
-        title: analysis.caseTitle,
+        title: input.title?.trim() || analysis.caseTitle,
         category: analysis.category,
         priority: analysis.urgency,
         confidenceScore: analysis.confidence,

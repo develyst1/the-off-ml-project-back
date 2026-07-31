@@ -12,6 +12,12 @@ type OpenCaseBody = {
   selectedMessageIds?: string[];
 };
 type InboxAiComposeBody = { mode?: "DRAFT" | "REWRITE"; rawSupportMessage?: string };
+type InboxCaseComposeBody = {
+  mode?: "DRAFT" | "REWRITE";
+  selectedMessageIds?: string[];
+  title?: string;
+  description?: string;
+};
 
 export const inboxRoutes = new Hono();
 
@@ -65,5 +71,26 @@ inboxRoutes.post("/:customerId/ai-compose", async (c) => {
     });
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : "ai_compose_failed" }, 502);
+  }
+});
+
+inboxRoutes.post("/:customerId/ai-compose-case", async (c) => {
+  const body: InboxCaseComposeBody = await c.req.json<InboxCaseComposeBody>().catch(() => ({}));
+  if (!body.selectedMessageIds?.length && !body.title?.trim() && !body.description?.trim()) {
+    return c.json({ error: "case_content_or_selected_messages_required" }, 400);
+  }
+
+  try {
+    return c.json({
+      data: await caseService.composeInboxCaseDraft({
+        customerId: c.req.param("customerId"),
+        mode: body.mode === "REWRITE" ? "REWRITE" : "DRAFT",
+        selectedMessageIds: body.selectedMessageIds ?? [],
+        title: body.title,
+        description: body.description,
+      }),
+    });
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "ai_case_compose_failed" }, 502);
   }
 });
