@@ -224,7 +224,6 @@ export const caseService = {
     const latestCustomerMessage = [...selectedMessages].reverse().find((message) => message.senderType === "CUSTOMER")?.text ?? sourceText;
     const analysis = await aiCenterClient.analyzeCustomerMessage({
       text: latestCustomerMessage,
-      customerDisplayName: inboxUser.customer.displayName,
       conversationContext,
     });
     return {
@@ -240,9 +239,6 @@ export const caseService = {
     to?: string;
     selectedMessageIds?: string[];
   } = {}) {
-    if (!input.title?.trim() || !input.description?.trim()) {
-      throw new Error("กรุณาระบุหัวข้อปัญหาและรายละเอียดเคสให้ครบ");
-    }
     const inboxUser = await store.getInboxUser(customerId);
     if (!inboxUser || inboxUser.messages.length === 0) {
       throw new Error("ยังไม่มีข้อความสำหรับเปิดเคส");
@@ -262,19 +258,35 @@ export const caseService = {
       const timestamp = new Date(message.createdAt).getTime();
       return timestamp >= from.getTime() && timestamp <= to.getTime();
     });
-    const selectedIds = input.selectedMessageIds ? new Set(input.selectedMessageIds) : undefined;
+    const hasManualCaseDetails = Boolean(input.title?.trim() && input.description?.trim());
+    const selectedIds = input.selectedMessageIds?.length ? new Set(input.selectedMessageIds) : undefined;
+    if (!hasManualCaseDetails && !selectedIds) {
+      throw new Error("กรุณากรอกหัวข้อปัญหาและรายละเอียด หรือเลือกข้อความจากแชทอย่างน้อย 1 รายการเพื่อเปิดเคส");
+    }
     const sourceMessages = selectedIds
       ? messagesInRange.filter((message) => selectedIds.has(message.id))
       : messagesInRange;
-    if (sourceMessages.length === 0) {
+    if (selectedIds && sourceMessages.length === 0) {
       throw new Error(selectedIds ? "กรุณาเลือกข้อความอย่างน้อย 1 รายการ" : "ไม่พบข้อความในช่วงเวลาที่เลือก");
     }
 
     const latestInbound = [...sourceMessages].reverse().find((message) => message.senderType === "CUSTOMER");
+    const generatedDraft = hasManualCaseDetails
+      ? undefined
+      : await caseService.composeInboxCaseDraft({
+        customerId,
+        mode: "DRAFT",
+        selectedMessageIds: selectedIds ? [...selectedIds] : [],
+      });
+    const resolvedTitle = input.title?.trim() || generatedDraft?.title;
+    const resolvedDescription = input.description?.trim() || generatedDraft?.description;
+    if (!resolvedTitle || !resolvedDescription) {
+      throw new Error("ไม่สามารถสร้างข้อมูลเคสจากข้อความที่เลือกได้");
+    }
     const supportCase = await store.createCase({
       customerId,
       status: "analyzing",
-      title: input.title?.trim() || latestInbound?.text || "การติดต่อจาก LINE",
+      title: resolvedTitle,
     });
 
     const copiedMessages = [] as Message[];
@@ -293,12 +305,29 @@ export const caseService = {
       }));
     }
 
-    if (input.description?.trim()) {
+    if (selectedIds) {
       await store.createMessage({
         caseId: supportCase.id,
         direction: "INTERNAL",
         channel: "system",
-        originalText: input.description.trim(),
+        originalText: "บันทึกข้อความที่เลือกไว้เป็นข้อมูลอ้างอิงของเคส",
+        senderType: "SYSTEM",
+        contentType: "SYSTEM_EVENT",
+        messageType: "SYSTEM_EVENT",
+        deliveryStatus: "PROCESSED",
+        metadata: {
+          source: "SYSTEM",
+          selectedInboxMessageIds: [...selectedIds],
+        },
+      });
+    }
+
+    if (resolvedDescription) {
+      await store.createMessage({
+        caseId: supportCase.id,
+        direction: "INTERNAL",
+        channel: "system",
+        originalText: resolvedDescription,
         senderType: "SYSTEM",
         messageType: "SYSTEM_EVENT",
         deliveryStatus: "PROCESSED",
@@ -309,7 +338,7 @@ export const caseService = {
       const sourceMessage = copiedMessages.filter((message) => message.senderType === "CUSTOMER").at(-1);
       const analysis = await aiCenterClient.analyzeCustomerMessage({
         text: latestInbound.text,
-        customerDisplayName: inboxUser.customer.displayName,
+        conversationContext: sourceMessages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : "ทีม Tech"}: ${message.text}`),
       });
       if (sourceMessage) {
         await store.createAnalysis({
@@ -324,7 +353,7 @@ export const caseService = {
       }
       await store.updateCase(supportCase.id, {
         status: "awaiting_tech",
-        title: input.title?.trim() || analysis.caseTitle,
+        title: resolvedTitle,
         category: analysis.category,
         priority: analysis.urgency,
         confidenceScore: analysis.confidence,
