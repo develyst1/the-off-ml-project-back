@@ -76,6 +76,14 @@ function patchAiFeedback(caseId: string, body: Record<string, unknown>) {
   }));
 }
 
+function openInboxCase(customerId: string, body: Record<string, unknown>) {
+  return app.fetch(new Request(`http://localhost/inbox/${customerId}/open-case`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }));
+}
+
 function postConfidenceReview(body: Record<string, unknown>, suggestionId: string) {
   return app.fetch(new Request(`http://localhost/confidence/suggestions/${suggestionId}/review`, {
     method: "POST",
@@ -216,6 +224,57 @@ describe("POST /webhooks/teams/actions", () => {
     expect((await solutionResponse.json() as { data?: { messages?: unknown[] } }).data?.messages).toBeDefined();
     expect(detail?.caseUnderstandingFeedback).toBe("CORRECT");
     expect(detail?.solutionSelectionFeedback).toBe("INCORRECT");
+  });
+
+  test("keeps only explicitly selected Inbox messages as case references", async () => {
+    const customer = await store.upsertCustomer({ lineUserId: `U-inbox-context-${++sequence}`, displayName: "Inbox context" });
+    const first = await store.createInboxMessage({ customerId: customer.id, direction: "INBOUND", senderType: "CUSTOMER", text: "ข้อความที่ไม่เลือก" });
+    const second = await store.createInboxMessage({
+      customerId: customer.id,
+      direction: "OUTBOUND",
+      senderType: "TECH",
+      text: "ข้อความที่เลือก",
+      externalMessageId: `line-reference-${sequence}`,
+      webhookEventId: `webhook-reference-${sequence}`,
+    });
+    const response = await openInboxCase(customer.id, {
+      title: "หัวข้อจากทีม Tech",
+      description: "รายละเอียดจากทีม Tech",
+      from: new Date(new Date(first.createdAt).getTime() - 60_000).toISOString(),
+      to: new Date(new Date(second.createdAt).getTime() + 60_000).toISOString(),
+      selectedMessageIds: [second.id],
+    });
+    const body = await response.json() as { data: { id: string; messages: Array<{ originalText: string; sourceMessageId?: string; externalMessageId?: string; webhookEventId?: string; metadata?: Record<string, unknown> }> } };
+    const referenceMessages = body.data.messages.filter((message) => message.metadata?.isCaseReference === true);
+    const definition = body.data.messages.find((message) => message.metadata?.eventType === "CASE_CREATED_FROM_INBOX");
+
+    expect(response.status).toBe(201);
+    expect(referenceMessages).toHaveLength(1);
+    expect(referenceMessages[0]?.originalText).toBe("ข้อความที่เลือก");
+    expect(referenceMessages[0]?.sourceMessageId).toBeUndefined();
+    expect(referenceMessages[0]?.metadata?.sourceInboxMessageId).toBe(second.id);
+    expect(referenceMessages[0]?.externalMessageId).toBeUndefined();
+    expect(referenceMessages[0]?.webhookEventId).toBeUndefined();
+    expect(definition?.metadata?.caseSubject).toBe("หัวข้อจากทีม Tech");
+    expect(definition?.metadata?.caseDetail).toBe("รายละเอียดจากทีม Tech");
+  });
+
+  test("does not add Inbox messages as references when a case is opened manually", async () => {
+    const customer = await store.upsertCustomer({ lineUserId: `U-inbox-manual-${++sequence}`, displayName: "Manual case" });
+    await store.createInboxMessage({ customerId: customer.id, direction: "INBOUND", senderType: "CUSTOMER", text: "ข้อความเดิมใน Inbox" });
+    const response = await openInboxCase(customer.id, {
+      title: "หัวข้อที่กรอกเอง",
+      description: "รายละเอียดที่กรอกเอง",
+      from: new Date(Date.now() - 60_000).toISOString(),
+      to: new Date().toISOString(),
+    });
+    const body = await response.json() as { data: { messages: Array<{ metadata?: Record<string, unknown> }> } };
+    const referenceMessages = body.data.messages.filter((message) => message.metadata?.isCaseReference === true);
+    const definition = body.data.messages.find((message) => message.metadata?.eventType === "CASE_CREATED_FROM_INBOX");
+
+    expect(response.status).toBe(201);
+    expect(referenceMessages).toHaveLength(0);
+    expect(definition?.metadata?.selectedInboxMessageIds).toEqual([]);
   });
 
   test("records a failed delivery and does not close the case", async () => {

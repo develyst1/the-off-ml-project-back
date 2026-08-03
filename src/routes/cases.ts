@@ -194,9 +194,9 @@ caseRoutes.patch("/:id/ai-feedback", async (c) => {
   const field = body.field === "caseUnderstandingFeedback" || body.field === "solutionSelectionFeedback"
     ? body.field
     : undefined;
-  const value = body.value === "CORRECT" || body.value === "INCORRECT" ? body.value : undefined;
+  const value = body.value === null || body.value === "CORRECT" || body.value === "INCORRECT" ? body.value : undefined;
 
-  if (!field || !value) {
+  if (!field || value === undefined) {
     return c.json({ error: "invalid_ai_feedback", message: "ต้องระบุ field และ value ของ feedback ให้ถูกต้อง" }, 400);
   }
 

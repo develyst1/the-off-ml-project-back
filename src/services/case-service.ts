@@ -265,8 +265,8 @@ export const caseService = {
     }
     const sourceMessages = selectedIds
       ? messagesInRange.filter((message) => selectedIds.has(message.id))
-      : messagesInRange;
-    if (selectedIds && sourceMessages.length === 0) {
+      : [];
+    if (selectedIds && sourceMessages.length !== selectedIds.size) {
       throw new Error(selectedIds ? "กรุณาเลือกข้อความอย่างน้อย 1 รายการ" : "ไม่พบข้อความในช่วงเวลาที่เลือก");
     }
 
@@ -299,11 +299,10 @@ export const caseService = {
         senderType: inboxMessage.senderType === "CUSTOMER" ? "CUSTOMER" : inboxMessage.senderType === "BOT" ? "BOT" : "TECH",
         messageType: inboxMessage.senderType === "CUSTOMER" ? "CUSTOMER_MESSAGE" : inboxMessage.senderType === "BOT" ? "CASE_ACKNOWLEDGEMENT" : "TECH_GENERAL_MESSAGE",
         deliveryStatus: "SENT",
-        externalMessageId: inboxMessage.externalMessageId,
-        webhookEventId: inboxMessage.webhookEventId,
         receivedAt: inboxMessage.createdAt,
-        sourceMessageId: inboxMessage.id,
         metadata: {
+          isCaseReference: true,
+          sourceInboxMessageId: inboxMessage.id,
           source: inboxMessage.senderType === "TECH" ? "tech_console" : inboxMessage.senderType === "BOT" ? "line_bot" : "line",
           sourceCreatedAt: inboxMessage.createdAt,
           linkedAt: new Date().toISOString(),
@@ -340,30 +339,45 @@ export const caseService = {
       });
     }
 
-    if (latestInbound) {
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INTERNAL",
+      channel: "system",
+      originalText: "Case created from Inbox modal",
+      senderType: "SYSTEM",
+      contentType: "SYSTEM_EVENT",
+      messageType: "SYSTEM_EVENT",
+      deliveryStatus: "PROCESSED",
+      metadata: {
+        eventType: "CASE_CREATED_FROM_INBOX",
+        caseSubject: resolvedTitle,
+        caseDetail: resolvedDescription,
+        selectedInboxMessageIds: selectedIds ? [...selectedIds] : [],
+      },
+    });
+
+    {
       const sourceMessage = copiedMessages.filter((message) => message.senderType === "CUSTOMER").at(-1);
       const analysis = await aiCenterClient.analyzeCustomerMessage({
-        text: latestInbound.text,
+        text: latestInbound?.text ?? resolvedDescription,
         conversationContext: sourceMessages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : "ทีม Tech"}: ${message.text}`),
       });
-      if (sourceMessage) {
-        await store.createAnalysis({
-          caseId: supportCase.id,
-          messageId: sourceMessage.id,
-          analysisType: "customer_message",
-          summary: analysis.summary,
-          category: analysis.category,
-          confidence: analysis.confidence,
-          rawJson: analysis,
-        });
-      }
+      await store.createAnalysis({
+        caseId: supportCase.id,
+        messageId: sourceMessage?.id,
+        analysisType: "customer_message",
+        summary: analysis.summary,
+        category: analysis.category,
+        confidence: analysis.confidence,
+        rawJson: analysis,
+      });
       await store.updateCase(supportCase.id, {
         status: "awaiting_tech",
         title: resolvedTitle,
         category: analysis.category,
         priority: analysis.urgency,
         confidenceScore: analysis.confidence,
-        customerSentAt: latestInbound.createdAt,
+        customerSentAt: latestInbound?.createdAt,
         systemReceivedAt: new Date().toISOString(),
         aiAnalyzedAt: new Date().toISOString(),
         initialCustomerMessageId: copiedMessages.find((message) => message.senderType === "CUSTOMER")?.id,
@@ -1702,8 +1716,8 @@ export const caseService = {
     return store.updateCase(caseId, { status });
   },
 
-  async updateAiFeedback(caseId: string, field: "caseUnderstandingFeedback" | "solutionSelectionFeedback", value: "CORRECT" | "INCORRECT") {
-    await store.updateCase(caseId, { [field]: value });
+  async updateAiFeedback(caseId: string, field: "caseUnderstandingFeedback" | "solutionSelectionFeedback", value: "CORRECT" | "INCORRECT" | null) {
+    await store.updateCase(caseId, { [field]: value ?? undefined });
     return store.getCaseDetail(caseId);
   },
 };
