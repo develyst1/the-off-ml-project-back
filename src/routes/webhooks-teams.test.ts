@@ -68,6 +68,14 @@ function postCompose(caseId: string, body: Record<string, unknown>) {
   }));
 }
 
+function patchAiFeedback(caseId: string, body: Record<string, unknown>) {
+  return app.fetch(new Request(`http://localhost/cases/${caseId}/ai-feedback`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }));
+}
+
 function postConfidenceReview(body: Record<string, unknown>, suggestionId: string) {
   return app.fetch(new Request(`http://localhost/confidence/suggestions/${suggestionId}/review`, {
     method: "POST",
@@ -188,6 +196,26 @@ describe("POST /webhooks/teams/actions", () => {
     expect(aiDrafts?.some((message) => message.metadata?.aiPurpose === "GENERATE_CUSTOMER_REPLY")).toBe(true);
     expect(aiDrafts?.some((message) => message.metadata?.aiPurpose === "GENERATE_MORE_INFO_REQUEST")).toBe(true);
     expect(detail?.status).toBe("assigned");
+  });
+
+  test("persists both AI feedback values and returns the full case detail", async () => {
+    const supportCase = await createCase();
+    const understandingResponse = await patchAiFeedback(supportCase.id, {
+      field: "caseUnderstandingFeedback",
+      value: "CORRECT",
+    });
+    const solutionResponse = await patchAiFeedback(supportCase.id, {
+      field: "solutionSelectionFeedback",
+      value: "INCORRECT",
+    });
+    const detail = await store.getCaseDetail(supportCase.id);
+
+    expect(understandingResponse.status).toBe(200);
+    expect(solutionResponse.status).toBe(200);
+    expect((await understandingResponse.json() as { data?: { messages?: unknown[] } }).data?.messages).toBeDefined();
+    expect((await solutionResponse.json() as { data?: { messages?: unknown[] } }).data?.messages).toBeDefined();
+    expect(detail?.caseUnderstandingFeedback).toBe("CORRECT");
+    expect(detail?.solutionSelectionFeedback).toBe("INCORRECT");
   });
 
   test("records a failed delivery and does not close the case", async () => {

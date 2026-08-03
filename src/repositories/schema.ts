@@ -66,6 +66,8 @@ create table if not exists support_cases (
   confidence_review_status text not null default 'PENDING',
   confidence_reviewed_at timestamptz,
   confidence_reviewed_by text,
+  case_understanding_feedback text,
+  solution_selection_feedback text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -136,6 +138,8 @@ alter table support_cases add column if not exists assignee_name text;
 alter table support_cases add column if not exists confidence_review_status text not null default 'PENDING';
 alter table support_cases add column if not exists confidence_reviewed_at timestamptz;
 alter table support_cases add column if not exists confidence_reviewed_by text;
+alter table support_cases add column if not exists case_understanding_feedback text;
+alter table support_cases add column if not exists solution_selection_feedback text;
 alter table support_cases add column if not exists close_cause text;
 alter table support_cases add column if not exists close_resolution text;
 alter table support_cases add column if not exists close_prevention text;

@@ -60,6 +60,8 @@ type DbCase = {
   confidence_review_status: SupportCase["confidenceReviewStatus"];
   confidence_reviewed_at: Date | null;
   confidence_reviewed_by: string | null;
+  case_understanding_feedback: SupportCase["caseUnderstandingFeedback"];
+  solution_selection_feedback: SupportCase["solutionSelectionFeedback"];
   created_at: Date;
   updated_at: Date;
 };
@@ -229,6 +231,8 @@ function mapCase(row: DbCase): SupportCase {
     confidenceReviewStatus: row.confidence_review_status ?? "PENDING",
     confidenceReviewedAt: row.confidence_reviewed_at ? dateIso(row.confidence_reviewed_at) : undefined,
     confidenceReviewedBy: row.confidence_reviewed_by ?? undefined,
+    caseUnderstandingFeedback: row.case_understanding_feedback ?? undefined,
+    solutionSelectionFeedback: row.solution_selection_feedback ?? undefined,
     createdAt: dateIso(row.created_at),
     updatedAt: dateIso(row.updated_at),
   };
@@ -553,7 +557,9 @@ export class PostgresStore implements CaseStore {
          confidence_review_status = $33,
          confidence_reviewed_at = $34,
          confidence_reviewed_by = $35,
-         updated_at = $36
+         case_understanding_feedback = $36,
+         solution_selection_feedback = $37,
+         updated_at = $38
        where id = $1
        returning *`,
       [
@@ -589,10 +595,12 @@ export class PostgresStore implements CaseStore {
         patch.problemSummaryVersion ?? current.problem_summary_version ?? 1,
         patch.problemSummaryStatus ?? current.problem_summary_status ?? "PENDING",
         "assigneeName" in patch ? patch.assigneeName ?? null : current.assignee_name,
-        patch.confidenceReviewStatus ?? current.confidence_review_status ?? "PENDING",
-        "confidenceReviewedAt" in patch ? patch.confidenceReviewedAt ?? null : current.confidence_reviewed_at,
-        "confidenceReviewedBy" in patch ? patch.confidenceReviewedBy ?? null : current.confidence_reviewed_by,
-        nowIso(),
+         patch.confidenceReviewStatus ?? current.confidence_review_status ?? "PENDING",
+         "confidenceReviewedAt" in patch ? patch.confidenceReviewedAt ?? null : current.confidence_reviewed_at,
+         "confidenceReviewedBy" in patch ? patch.confidenceReviewedBy ?? null : current.confidence_reviewed_by,
+         "caseUnderstandingFeedback" in patch ? patch.caseUnderstandingFeedback ?? null : current.case_understanding_feedback,
+         "solutionSelectionFeedback" in patch ? patch.solutionSelectionFeedback ?? null : current.solution_selection_feedback,
+         nowIso(),
       ],
     );
 

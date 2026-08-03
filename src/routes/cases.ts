@@ -188,3 +188,17 @@ caseRoutes.patch("/:id/status", async (c) => {
 
   return c.json({ data: await caseService.updateStatus(c.req.param("id"), status as CaseStatus) });
 });
+
+caseRoutes.patch("/:id/ai-feedback", async (c) => {
+  const body = await readJsonObject(c);
+  const field = body.field === "caseUnderstandingFeedback" || body.field === "solutionSelectionFeedback"
+    ? body.field
+    : undefined;
+  const value = body.value === "CORRECT" || body.value === "INCORRECT" ? body.value : undefined;
+
+  if (!field || !value) {
+    return c.json({ error: "invalid_ai_feedback", message: "ต้องระบุ field และ value ของ feedback ให้ถูกต้อง" }, 400);
+  }
+
+  return c.json({ data: await caseService.updateAiFeedback(c.req.param("id"), field, value) });
+});

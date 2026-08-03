@@ -1701,4 +1701,9 @@ export const caseService = {
   updateStatus(caseId: string, status: CaseStatus) {
     return store.updateCase(caseId, { status });
   },
+
+  async updateAiFeedback(caseId: string, field: "caseUnderstandingFeedback" | "solutionSelectionFeedback", value: "CORRECT" | "INCORRECT") {
+    await store.updateCase(caseId, { [field]: value });
+    return store.getCaseDetail(caseId);
+  },
 };

@@ -157,6 +157,8 @@ export type SupportCase = {
   confidenceReviewStatus?: "PENDING" | "QUALITY_APPROVED" | "QUALITY_REJECTED" | "AUTO_ANSWER_APPROVED" | "AUTO_ANSWER_REJECTED";
   confidenceReviewedAt?: string;
   confidenceReviewedBy?: string;
+  caseUnderstandingFeedback?: "CORRECT" | "INCORRECT";
+  solutionSelectionFeedback?: "CORRECT" | "INCORRECT";
   createdAt: string;
   updatedAt: string;
 };
