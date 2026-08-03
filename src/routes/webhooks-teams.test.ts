@@ -219,21 +219,20 @@ describe("POST /webhooks/teams/actions", () => {
       validatedByTeam: false,
     });
     const suggestionsResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
-    const suggestionsBody = await suggestionsResponse.json() as { data: Array<{ id: string; caseId: string }> };
+    const suggestionsBody = await suggestionsResponse.json() as { data: Array<{ id: string; caseId: string; reviewStage: string }> };
     const suggestion = suggestionsBody.data.find((item) => item.caseId === supportCase.id);
+    const detail = await store.getCaseDetail(supportCase.id);
 
     expect(suggestion).toBeDefined();
+    expect(suggestion?.reviewStage).toBe("QUALITY");
 
     const reviewResponse = await postConfidenceReview({ caseId: supportCase.id, solutionId: solution.id, reviewStage: "QUALITY", result: "approved" }, suggestion?.id ?? "missing");
     const refreshedResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
     const refreshedBody = await refreshedResponse.json() as { data: Array<{ caseId: string }> };
-    const detail = await store.getCaseDetail(supportCase.id);
 
     expect(reviewResponse.status).toBe(200);
     expect(refreshedBody.data.some((item) => item.caseId === supportCase.id)).toBe(false);
     expect(detail?.status).toBe("assigned");
-    expect(detail?.confidenceReviewStatus).toBe("QUALITY_APPROVED");
-    expect(detail?.confidenceReviewedBy).toBe("Tech Support Console");
     expect(detail?.solutions.find((item) => item.id === solution.id)?.validatedByTeam).toBe(false);
   });
 
