@@ -34,20 +34,48 @@ analyticsRoutes.get("/summary", async (c) => {
   ).length;
   const solvedFromExistingSolutionPct = total ? Math.round((solved / total) * 100) : 0;
 
-  const categoryCounts = new Map<string, number>();
+  const categoryCounts = new Map<string, {
+    count: number;
+    caseUnderstandingCorrect: number;
+    caseUnderstandingReviewed: number;
+    solutionSelectionCorrect: number;
+    solutionSelectionReviewed: number;
+  }>();
   const confidenceCounts = new Map<string, number>();
 
   for (const item of cases) {
     const category = categoryKeyOf(categoryForCase(item));
-    categoryCounts.set(category, (categoryCounts.get(category) ?? 0) + 1);
+    const current = categoryCounts.get(category) ?? {
+      count: 0,
+      caseUnderstandingCorrect: 0,
+      caseUnderstandingReviewed: 0,
+      solutionSelectionCorrect: 0,
+      solutionSelectionReviewed: 0,
+    };
+    current.count += 1;
+    if (item.caseUnderstandingFeedback) {
+      current.caseUnderstandingReviewed += 1;
+      if (item.caseUnderstandingFeedback === "CORRECT") current.caseUnderstandingCorrect += 1;
+    }
+    if (item.solutionSelectionFeedback) {
+      current.solutionSelectionReviewed += 1;
+      if (item.solutionSelectionFeedback === "CORRECT") current.solutionSelectionCorrect += 1;
+    }
+    categoryCounts.set(category, current);
     confidenceCounts.set(bucketConfidence(item.confidenceScore ?? 0), (confidenceCounts.get(bucketConfidence(item.confidenceScore ?? 0)) ?? 0) + 1);
   }
 
-  const categories = [...categoryCounts.entries()].map(([key, count]) => ({
+  const categories = [...categoryCounts.entries()].map(([key, statistics]) => ({
     key,
     label: categoryLabelOf(key),
-    count,
-    value: total ? Math.round((count / total) * 100) : 0,
+    count: statistics.count,
+    value: total ? Math.round((statistics.count / total) * 100) : 0,
+    caseUnderstandingAccuracy: statistics.caseUnderstandingReviewed
+      ? Math.round((statistics.caseUnderstandingCorrect / statistics.caseUnderstandingReviewed) * 100)
+      : undefined,
+    solutionSelectionAccuracy: statistics.solutionSelectionReviewed
+      ? Math.round((statistics.solutionSelectionCorrect / statistics.solutionSelectionReviewed) * 100)
+      : undefined,
   }));
 
   const confidenceDistribution = ["0-59%", "60-89%", "90-97%", "98-100%"].map((label) => ({
