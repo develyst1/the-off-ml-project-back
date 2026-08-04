@@ -1,4 +1,4 @@
-import type { Analysis, AutomationSettings, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore, ChatRetentionCleanupResult } from "./case-store";
 import { normalizeCaseMessage } from "./case-message-normalizer";
@@ -11,6 +11,7 @@ export class InMemoryStore implements CaseStore {
   private messages = new Map<string, Message>();
   private inboxMessages = new Map<string, InboxMessage>();
   private analyses = new Map<string, Analysis>();
+  private caseAiFeedback = new Map<string, CaseAiFeedback>();
   private solutions = new Map<string, Solution>();
   private caseMatchLogs = new Map<string, CaseMatchLog>();
   private automationSettings: AutomationSettings = {
@@ -242,6 +243,25 @@ export class InMemoryStore implements CaseStore {
 
     this.analyses.set(analysis.id, analysis);
     return analysis;
+  }
+
+  async upsertCaseAiFeedback(input: Omit<CaseAiFeedback, "id" | "createdAt" | "updatedAt">): Promise<CaseAiFeedback> {
+    const existing = [...this.caseAiFeedback.values()].find((item) => item.caseId === input.caseId && item.feedbackType === input.feedbackType);
+    const timestamp = nowIso();
+    const feedback: CaseAiFeedback = existing
+      ? { ...existing, ...input, updatedAt: timestamp }
+      : { ...input, id: createId("feedback"), createdAt: timestamp, updatedAt: timestamp };
+    this.caseAiFeedback.set(feedback.id, feedback);
+    return feedback;
+  }
+
+  async deleteCaseAiFeedback(caseId: string, feedbackType: CaseAiFeedback["feedbackType"]): Promise<void> {
+    const existing = [...this.caseAiFeedback.values()].find((item) => item.caseId === caseId && item.feedbackType === feedbackType);
+    if (existing) this.caseAiFeedback.delete(existing.id);
+  }
+
+  async listCaseAiFeedback(): Promise<CaseAiFeedback[]> {
+    return [...this.caseAiFeedback.values()].sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
   }
 
   async createSolution(input: Omit<Solution, "id" | "createdAt">): Promise<Solution> {

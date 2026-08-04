@@ -1,4 +1,4 @@
-import type { CaseDetail, CaseStatus, Message, MessageChannel, PendingCaseSelection } from "../domain/types";
+import type { CaseAiFeedback, CaseAnalysisContext, CaseDetail, CaseStatus, Message, MessageChannel, PendingCaseSelection } from "../domain/types";
 import { env } from "../config/env";
 import { store } from "../repositories/store";
 import { aiCenterClient, type CaseHistoryCandidate, type CaseHistoryMatchDecision } from "./ai-center-client";
@@ -21,6 +21,115 @@ type CaseHistoryMatchResult = {
 
 function latestByCreatedAt<T extends { createdAt: string }>(items: T[]) {
   return [...items].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+}
+
+function contextTime(message: Pick<Message, "createdAt" | "receivedAt" | "metadata">) {
+  const sourceCreatedAt = typeof message.metadata?.sourceCreatedAt === "string" ? message.metadata.sourceCreatedAt : undefined;
+  return sourceCreatedAt ?? message.receivedAt ?? message.createdAt;
+}
+
+function buildCaseAnalysisContext(input: {
+  subject: string;
+  detail: string;
+  messages: Array<Pick<Message, "id" | "senderType" | "originalText" | "createdAt" | "receivedAt" | "metadata">>;
+}): CaseAnalysisContext {
+  const referenceMessages = input.messages
+    .filter((message) => message.metadata?.isCaseReference === true)
+    .sort((left, right) => new Date(contextTime(left)).getTime() - new Date(contextTime(right)).getTime() || left.id.localeCompare(right.id))
+    .map((message, index) => ({
+      messageId: typeof message.metadata?.sourceInboxMessageId === "string" ? message.metadata.sourceInboxMessageId : message.id,
+      sender: message.senderType ?? "SYSTEM",
+      content: message.originalText,
+      createdAt: contextTime(message),
+      lineReceivedAt: message.receivedAt,
+      sequence: index + 1,
+    }));
+
+  return { subject: input.subject, detail: input.detail, referenceMessages };
+}
+
+function buildInboxCaseAnalysisContext(input: {
+  subject: string;
+  detail: string;
+  messages: Array<{ id: string; senderType: "CUSTOMER" | "TECH" | "BOT"; text: string; createdAt: string }>;
+}): CaseAnalysisContext {
+  const referenceMessages = [...input.messages]
+    .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() || left.id.localeCompare(right.id))
+    .map((message, index) => ({
+      messageId: message.id,
+      sender: message.senderType,
+      content: message.text,
+      createdAt: message.createdAt,
+      lineReceivedAt: message.createdAt,
+      sequence: index + 1,
+    }));
+  return { subject: input.subject, detail: input.detail, referenceMessages };
+}
+
+function similarityScore(left: string, right: string) {
+  const leftText = Array.from(left.toLocaleLowerCase().replace(/\s+/g, "")).slice(0, 1200);
+  const rightText = Array.from(right.toLocaleLowerCase().replace(/\s+/g, "")).slice(0, 1200);
+  if (!leftText.length || !rightText.length) return 0;
+  const grams = (characters: string[]) => new Set(
+    characters.length < 3 ? [characters.join("")] : characters.slice(0, -2).map((_, index) => characters.slice(index, index + 3).join("")),
+  );
+  const leftGrams = grams(leftText);
+  const rightGrams = grams(rightText);
+  let intersection = 0;
+  leftGrams.forEach((gram) => { if (rightGrams.has(gram)) intersection += 1; });
+  return intersection / Math.max(1, new Set([...leftGrams, ...rightGrams]).size);
+}
+
+async function feedbackExamplesForContext(context: CaseAnalysisContext, excludeCaseId?: string) {
+  const currentText = [context.subject, context.detail, ...context.referenceMessages.map((message) => message.content)].join("\n");
+  const feedback = await store.listCaseAiFeedback();
+  return feedback
+    .filter((item) => item.caseId !== excludeCaseId)
+    .map((item) => ({ item, score: similarityScore(currentText, [item.caseAnalysisContextSnapshot.subject, item.caseAnalysisContextSnapshot.detail, ...item.caseAnalysisContextSnapshot.referenceMessages.map((message) => message.content)].join("\n")) }))
+    .filter(({ score }) => score >= 0.08)
+    .sort((left, right) => right.score - left.score || new Date(right.item.updatedAt).getTime() - new Date(left.item.updatedAt).getTime())
+    .slice(0, 5)
+    .map(({ item }) => ({
+      feedbackType: item.feedbackType,
+      value: item.value,
+      aiCategory: item.aiCategory,
+      aiSummary: item.aiSummary,
+      aiSolution: item.aiSolution,
+      context: item.caseAnalysisContextSnapshot,
+    }));
+}
+
+function caseDetailText(detail: CaseDetail) {
+  const definition = detail.messages.find((message) => message.metadata?.eventType === "CASE_CREATED_FROM_INBOX");
+  return typeof definition?.metadata?.caseDetail === "string" ? definition.metadata.caseDetail : "";
+}
+
+function analysisContextFromDetail(detail: CaseDetail): CaseAnalysisContext {
+  const latestCustomerAnalysis = latestByCreatedAt(detail.analyses.filter((analysis) => analysis.analysisType === "customer_message"));
+  const rawContext = latestCustomerAnalysis?.rawJson as { caseAnalysisContext?: CaseAnalysisContext } | undefined;
+  if (rawContext?.caseAnalysisContext?.subject && Array.isArray(rawContext.caseAnalysisContext.referenceMessages)) {
+    return rawContext.caseAnalysisContext;
+  }
+  return buildCaseAnalysisContext({
+    subject: detail.title ?? "",
+    detail: caseDetailText(detail),
+    messages: detail.messages,
+  });
+}
+
+function aiSnapshotFromDetail(detail: CaseDetail) {
+  const latestCustomerAnalysis = latestByCreatedAt(detail.analyses.filter((analysis) => analysis.analysisType === "customer_message"));
+  const rawAnalysis = latestCustomerAnalysis?.rawJson as { extractedSolution?: unknown } | undefined;
+  const latestSolution = latestByCreatedAt(detail.solutions);
+  const latestTechAnalysis = latestByCreatedAt(detail.analyses.filter((analysis) => analysis.analysisType === "tech_solution"));
+  const extractedSolution = typeof rawAnalysis?.extractedSolution === "string" && rawAnalysis.extractedSolution.trim()
+    ? rawAnalysis.extractedSolution.trim()
+    : latestSolution?.solutionSteps.join("\n") || latestTechAnalysis?.summary;
+  return {
+    category: latestCustomerAnalysis?.category ?? detail.category,
+    summary: latestCustomerAnalysis?.summary,
+    solution: extractedSolution === "NO_ACTIONABLE_SOLUTION" ? undefined : extractedSolution,
+  };
 }
 
 function buildCandidateKeywords(detail: CaseDetail) {
@@ -283,6 +392,12 @@ export const caseService = {
     if (!resolvedTitle || !resolvedDescription) {
       throw new Error("ไม่สามารถสร้างข้อมูลเคสจากข้อความที่เลือกได้");
     }
+    const caseAnalysisContext = buildInboxCaseAnalysisContext({
+      subject: resolvedTitle,
+      detail: resolvedDescription,
+      messages: sourceMessages,
+    });
+    const feedbackExamples = await feedbackExamplesForContext(caseAnalysisContext);
     const supportCase = await store.createCase({
       customerId,
       status: "analyzing",
@@ -359,7 +474,9 @@ export const caseService = {
     {
       const sourceMessage = copiedMessages.filter((message) => message.senderType === "CUSTOMER").at(-1);
       const analysis = await aiCenterClient.analyzeCustomerMessage({
-        text: latestInbound?.text ?? resolvedDescription,
+        text: `${resolvedTitle}\n${resolvedDescription}`,
+        caseAnalysisContext,
+        feedbackExamples,
         conversationContext: sourceMessages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : "ทีม Tech"}: ${message.text}`),
       });
       await store.createAnalysis({
@@ -369,7 +486,7 @@ export const caseService = {
         summary: analysis.summary,
         category: analysis.category,
         confidence: analysis.confidence,
-        rawJson: analysis,
+        rawJson: { ...analysis, caseAnalysisContext, feedbackExamples },
       });
       await store.updateCase(supportCase.id, {
         status: "awaiting_tech",
@@ -1717,6 +1834,26 @@ export const caseService = {
   },
 
   async updateAiFeedback(caseId: string, field: "caseUnderstandingFeedback" | "solutionSelectionFeedback", value: "CORRECT" | "INCORRECT" | null) {
+    const detail = await store.getCaseDetail(caseId);
+    if (!detail) throw new Error("Case not found");
+    const feedbackType: CaseAiFeedback["feedbackType"] = field === "caseUnderstandingFeedback"
+      ? "ISSUE_UNDERSTANDING"
+      : "SOLUTION_SELECTION";
+
+    if (value === null) {
+      await store.deleteCaseAiFeedback(caseId, feedbackType);
+    } else {
+      const aiSnapshot = aiSnapshotFromDetail(detail);
+      await store.upsertCaseAiFeedback({
+        caseId,
+        feedbackType,
+        value,
+        caseAnalysisContextSnapshot: analysisContextFromDetail(detail),
+        aiCategory: aiSnapshot.category,
+        aiSummary: aiSnapshot.summary,
+        aiSolution: aiSnapshot.solution,
+      });
+    }
     await store.updateCase(caseId, { [field]: value ?? undefined });
     return store.getCaseDetail(caseId);
   },

@@ -179,6 +179,20 @@ create table if not exists analyses (
   created_at timestamptz not null default now()
 );
 
+create table if not exists case_ai_feedback (
+  id text primary key,
+  case_id text not null references support_cases(id) on delete cascade,
+  feedback_type text not null,
+  value text not null,
+  case_analysis_context_snapshot jsonb not null,
+  ai_category text,
+  ai_summary text,
+  ai_solution text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (case_id, feedback_type)
+);
+
 create table if not exists solutions (
   id text primary key,
   case_id text not null references support_cases(id) on delete cascade,
@@ -268,6 +282,7 @@ create index if not exists messages_case_id_idx on messages(case_id);
 create unique index if not exists messages_external_message_id_uidx on messages(external_message_id) where external_message_id is not null;
 create unique index if not exists messages_webhook_event_id_uidx on messages(webhook_event_id) where webhook_event_id is not null;
 create index if not exists analyses_case_id_idx on analyses(case_id);
+create index if not exists case_ai_feedback_case_id_idx on case_ai_feedback(case_id);
 create index if not exists solutions_case_id_idx on solutions(case_id);
 create index if not exists confidence_matches_case_id_idx on confidence_matches(case_id);
 create index if not exists auto_answer_logs_case_id_idx on auto_answer_logs(case_id);

@@ -228,6 +228,32 @@ export type Analysis = {
   createdAt: string;
 };
 
+export type CaseAnalysisContext = {
+  subject: string;
+  detail: string;
+  referenceMessages: Array<{
+    messageId: string;
+    sender: NonNullable<Message["senderType"]>;
+    content: string;
+    createdAt: string;
+    lineReceivedAt?: string;
+    sequence: number;
+  }>;
+};
+
+export type CaseAiFeedback = {
+  id: string;
+  caseId: string;
+  feedbackType: "ISSUE_UNDERSTANDING" | "SOLUTION_SELECTION";
+  value: "CORRECT" | "INCORRECT";
+  caseAnalysisContextSnapshot: CaseAnalysisContext;
+  aiCategory?: string;
+  aiSummary?: string;
+  aiSolution?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type Solution = {
   id: string;
   caseId: string;

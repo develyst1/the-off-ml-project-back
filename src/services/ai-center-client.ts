@@ -51,6 +51,7 @@ export type CustomerMessageAnalysis = {
   sentiment: string;
   missingInformation: string[];
   suggestedTeamNote: string;
+  extractedSolution?: string;
   confidence: number;
   status?: "AI_SUCCESS" | "AI_LOW_CONFIDENCE" | "AI_FAILED";
 };
@@ -869,7 +870,20 @@ export const aiCenterClient = {
     }
   },
 
-  async analyzeCustomerMessage(input: { text: string; customerDisplayName?: string; conversationContext?: string[] }) {
+  async analyzeCustomerMessage(input: {
+    text: string;
+    customerDisplayName?: string;
+    conversationContext?: string[];
+    caseAnalysisContext?: unknown;
+    feedbackExamples?: Array<{
+      feedbackType: "ISSUE_UNDERSTANDING" | "SOLUTION_SELECTION";
+      value: "CORRECT" | "INCORRECT";
+      aiCategory?: string;
+      aiSummary?: string;
+      aiSolution?: string;
+      context: unknown;
+    }>;
+  }) {
     const fallback = fallbackCustomerAnalysis(input.text);
     try {
       const content = await chatWithAiCenter([
@@ -890,10 +904,18 @@ export const aiCenterClient = {
             sentiment: "string",
             missingInformation: ["string"],
             suggestedTeamNote: "string",
+            extractedSolution: "string; use an empty string when the current case has no confirmed troubleshooting steps",
             confidence: "number 0-100",
           },
           customerDisplayName: input.customerDisplayName,
           conversationContext: input.conversationContext,
+          caseAnalysisContext: input.caseAnalysisContext,
+          feedbackExamples: input.feedbackExamples,
+          instructions: [
+            "Analyze the current case context as the primary source of truth. Do not analyze only the title or only the latest message.",
+            "Use positive feedback examples only as guidance and negative feedback examples as mistakes to avoid.",
+            "Never copy an old case answer. Do not invent troubleshooting steps; return an empty extractedSolution when the current context has no confirmed solution.",
+          ],
           text: input.text,
         }),
       },

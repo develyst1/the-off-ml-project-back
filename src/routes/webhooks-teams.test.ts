@@ -224,6 +224,16 @@ describe("POST /webhooks/teams/actions", () => {
     expect((await solutionResponse.json() as { data?: { messages?: unknown[] } }).data?.messages).toBeDefined();
     expect(detail?.caseUnderstandingFeedback).toBe("CORRECT");
     expect(detail?.solutionSelectionFeedback).toBe("INCORRECT");
+
+    const savedFeedback = await store.listCaseAiFeedback();
+    expect(savedFeedback.filter((item) => item.caseId === supportCase.id)).toHaveLength(2);
+    expect(savedFeedback.find((item) => item.caseId === supportCase.id && item.feedbackType === "ISSUE_UNDERSTANDING")?.value).toBe("CORRECT");
+
+    await patchAiFeedback(supportCase.id, { field: "caseUnderstandingFeedback", value: "INCORRECT" });
+    expect((await store.listCaseAiFeedback()).find((item) => item.caseId === supportCase.id && item.feedbackType === "ISSUE_UNDERSTANDING")?.value).toBe("INCORRECT");
+
+    await patchAiFeedback(supportCase.id, { field: "caseUnderstandingFeedback", value: null });
+    expect((await store.listCaseAiFeedback()).filter((item) => item.caseId === supportCase.id && item.feedbackType === "ISSUE_UNDERSTANDING")).toHaveLength(0);
   });
 
   test("keeps only explicitly selected Inbox messages as case references", async () => {
@@ -247,6 +257,10 @@ describe("POST /webhooks/teams/actions", () => {
     const body = await response.json() as { data: { id: string; messages: Array<{ originalText: string; sourceMessageId?: string; externalMessageId?: string; webhookEventId?: string; metadata?: Record<string, unknown> }> } };
     const referenceMessages = body.data.messages.filter((message) => message.metadata?.isCaseReference === true);
     const definition = body.data.messages.find((message) => message.metadata?.eventType === "CASE_CREATED_FROM_INBOX");
+    const detail = await store.getCaseDetail(body.data.id);
+    const analysisContext = detail?.analyses.find((analysis) => analysis.analysisType === "customer_message")?.rawJson as {
+      caseAnalysisContext?: { subject?: string; detail?: string; referenceMessages?: Array<{ messageId?: string }> };
+    } | undefined;
 
     expect(response.status).toBe(201);
     expect(referenceMessages).toHaveLength(1);
@@ -257,6 +271,9 @@ describe("POST /webhooks/teams/actions", () => {
     expect(referenceMessages[0]?.webhookEventId).toBeUndefined();
     expect(definition?.metadata?.caseSubject).toBe("หัวข้อจากทีม Tech");
     expect(definition?.metadata?.caseDetail).toBe("รายละเอียดจากทีม Tech");
+    expect(analysisContext?.caseAnalysisContext?.subject).toBe("หัวข้อจากทีม Tech");
+    expect(analysisContext?.caseAnalysisContext?.detail).toBe("รายละเอียดจากทีม Tech");
+    expect(analysisContext?.caseAnalysisContext?.referenceMessages?.map((message) => message.messageId)).toEqual([second.id]);
   });
 
   test("does not add Inbox messages as references when a case is opened manually", async () => {

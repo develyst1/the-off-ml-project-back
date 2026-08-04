@@ -1,4 +1,4 @@
-import type { Analysis, AutomationSettings, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 
 export type ChatRetentionCleanupResult = {
   cutoffAt: string;
@@ -30,6 +30,9 @@ export type CaseStore = {
   getMessageByExternalMessageId(externalMessageId: string): Promise<Message | undefined>;
   getMessageByWebhookEventId(webhookEventId: string): Promise<Message | undefined>;
   createAnalysis(input: Omit<Analysis, "id" | "createdAt">): Promise<Analysis>;
+  upsertCaseAiFeedback(input: Omit<CaseAiFeedback, "id" | "createdAt" | "updatedAt">): Promise<CaseAiFeedback>;
+  deleteCaseAiFeedback(caseId: string, feedbackType: CaseAiFeedback["feedbackType"]): Promise<void>;
+  listCaseAiFeedback(): Promise<CaseAiFeedback[]>;
   createSolution(input: Omit<Solution, "id" | "createdAt">): Promise<Solution>;
   updateSolution(id: string, patch: Partial<Pick<Solution, "confidence" | "validatedByTeam" | "validatedAt" | "validatedBy" | "autoAnswerReviewResult" | "autoAnswerReviewedAt" | "autoAnswerReviewedBy">>): Promise<Solution>;
   getAutomationSettings(): Promise<AutomationSettings>;

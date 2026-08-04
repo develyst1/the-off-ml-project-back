@@ -1,6 +1,6 @@
 import pg from "pg";
 import { env } from "../config/env";
-import type { Analysis, AutomationSettings, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore, ChatRetentionCleanupResult } from "./case-store";
 import { normalizeCaseMessage } from "./case-message-normalizer";
@@ -117,6 +117,19 @@ type DbAnalysis = {
   confidence: string | number;
   raw_json: unknown;
   created_at: Date;
+};
+
+type DbCaseAiFeedback = {
+  id: string;
+  case_id: string;
+  feedback_type: CaseAiFeedback["feedbackType"];
+  value: CaseAiFeedback["value"];
+  case_analysis_context_snapshot: CaseAiFeedback["caseAnalysisContextSnapshot"];
+  ai_category: string | null;
+  ai_summary: string | null;
+  ai_solution: string | null;
+  created_at: Date;
+  updated_at: Date;
 };
 
 type DbSolution = {
@@ -294,6 +307,21 @@ function mapAnalysis(row: DbAnalysis): Analysis {
     confidence: Number(row.confidence),
     rawJson: row.raw_json,
     createdAt: dateIso(row.created_at),
+  };
+}
+
+function mapCaseAiFeedback(row: DbCaseAiFeedback): CaseAiFeedback {
+  return {
+    id: row.id,
+    caseId: row.case_id,
+    feedbackType: row.feedback_type,
+    value: row.value,
+    caseAnalysisContextSnapshot: row.case_analysis_context_snapshot,
+    aiCategory: row.ai_category ?? undefined,
+    aiSummary: row.ai_summary ?? undefined,
+    aiSolution: row.ai_solution ?? undefined,
+    createdAt: dateIso(row.created_at),
+    updatedAt: dateIso(row.updated_at),
   };
 }
 
@@ -701,6 +729,46 @@ export class PostgresStore implements CaseStore {
     );
 
     return mapAnalysis(result.rows[0]);
+  }
+
+  async upsertCaseAiFeedback(input: Omit<CaseAiFeedback, "id" | "createdAt" | "updatedAt">): Promise<CaseAiFeedback> {
+    const timestamp = nowIso();
+    const result = await this.query<DbCaseAiFeedback>(
+      `insert into case_ai_feedback (
+        id, case_id, feedback_type, value, case_analysis_context_snapshot,
+        ai_category, ai_summary, ai_solution, created_at, updated_at
+      ) values ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+      on conflict (case_id, feedback_type) do update set
+        value = excluded.value,
+        case_analysis_context_snapshot = excluded.case_analysis_context_snapshot,
+        ai_category = excluded.ai_category,
+        ai_summary = excluded.ai_summary,
+        ai_solution = excluded.ai_solution,
+        updated_at = excluded.updated_at
+      returning *`,
+      [
+        createId("feedback"),
+        input.caseId,
+        input.feedbackType,
+        input.value,
+        JSON.stringify(input.caseAnalysisContextSnapshot),
+        input.aiCategory ?? null,
+        input.aiSummary ?? null,
+        input.aiSolution ?? null,
+        timestamp,
+        timestamp,
+      ],
+    );
+    return mapCaseAiFeedback(result.rows[0]);
+  }
+
+  async deleteCaseAiFeedback(caseId: string, feedbackType: CaseAiFeedback["feedbackType"]): Promise<void> {
+    await this.query("delete from case_ai_feedback where case_id = $1 and feedback_type = $2", [caseId, feedbackType]);
+  }
+
+  async listCaseAiFeedback(): Promise<CaseAiFeedback[]> {
+    const result = await this.query<DbCaseAiFeedback>("select * from case_ai_feedback order by updated_at desc");
+    return result.rows.map(mapCaseAiFeedback);
   }
 
   async createSolution(input: Omit<Solution, "id" | "createdAt">): Promise<Solution> {
