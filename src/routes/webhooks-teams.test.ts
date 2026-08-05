@@ -339,8 +339,14 @@ describe("POST /webhooks/teams/actions", () => {
       feedbackType: "ISSUE_UNDERSTANDING",
       result: "INCORRECT",
     });
+    await patchAiFeedback(supportCases[0].id, {
+      analysisId: reanalyzed.analysisId,
+      analysisVersion: reanalyzed.analysisVersion,
+      feedbackType: "SOLUTION_SELECTION",
+      result: "CORRECT",
+    });
 
-    for (const supportCase of supportCases.slice(1)) {
+    for (const [index, supportCase] of supportCases.slice(1).entries()) {
       const analysis = await store.createAnalysis({
         caseId: supportCase.id,
         analysisType: "customer_message",
@@ -354,15 +360,76 @@ describe("POST /webhooks/teams/actions", () => {
         feedbackType: "ISSUE_UNDERSTANDING",
         result: "CORRECT",
       });
+      if (index === 0) {
+        await patchAiFeedback(supportCase.id, {
+          analysisId: analysis.analysisId,
+          analysisVersion: analysis.analysisVersion,
+          feedbackType: "SOLUTION_SELECTION",
+          result: "INCORRECT",
+        });
+      }
     }
 
+    const loginCase = await createCase(90);
+    await store.createAnalysis({
+      caseId: loginCase.id,
+      analysisType: "customer_message",
+      category: "LOGIN_ISSUE",
+      confidence: 90,
+      rawJson: {},
+    });
+    const unknownCategoryCase = await createCase(90);
+    const unknownAnalysis = await store.createAnalysis({
+      caseId: unknownCategoryCase.id,
+      analysisType: "customer_message",
+      category: "UNMAPPED_FUTURE_CATEGORY",
+      confidence: 90,
+      rawJson: {},
+    });
+    await patchAiFeedback(unknownCategoryCase.id, {
+      analysisId: unknownAnalysis.analysisId,
+      analysisVersion: unknownAnalysis.analysisVersion,
+      feedbackType: "ISSUE_UNDERSTANDING",
+      result: "INCORRECT",
+    });
+    const zeroAccuracyCase = await createCase(90);
+    const zeroAccuracyAnalysis = await store.createAnalysis({
+      caseId: zeroAccuracyCase.id,
+      analysisType: "customer_message",
+      category: "DATA_DISPLAY",
+      confidence: 90,
+      rawJson: {},
+    });
+    await patchAiFeedback(zeroAccuracyCase.id, {
+      analysisId: zeroAccuracyAnalysis.analysisId,
+      analysisVersion: zeroAccuracyAnalysis.analysisVersion,
+      feedbackType: "ISSUE_UNDERSTANDING",
+      result: "INCORRECT",
+    });
+
     const response = await app.fetch(new Request("http://localhost/analytics/summary"));
-    const body = await response.json() as { data: { categories: Array<{ key: string; caseUnderstandingAccuracy: number; caseUnderstandingReviewedCount: number }> } };
+    const body = await response.json() as { data: { categories: Array<{
+      key: string;
+      caseUnderstandingAccuracy: number;
+      caseUnderstandingReviewedCount: number;
+      solutionSelectionAccuracy: number;
+      solutionSelectionReviewedCount: number;
+    }> } };
     const network = body.data.categories.find((item) => item.key === "NETWORK_CONNECTION");
+    const login = body.data.categories.find((item) => item.key === "LOGIN_ACCESS");
+    const other = body.data.categories.find((item) => item.key === "OTHER");
+    const dataDisplay = body.data.categories.find((item) => item.key === "DATA_DISPLAY");
 
     expect(response.status).toBe(200);
     expect(network?.caseUnderstandingReviewedCount).toBe(4);
     expect(network?.caseUnderstandingAccuracy).toBe(75);
+    expect(network?.solutionSelectionReviewedCount).toBe(2);
+    expect(network?.solutionSelectionAccuracy).toBe(50);
+    expect(login?.caseUnderstandingReviewedCount).toBe(0);
+    expect(login?.caseUnderstandingAccuracy).toBe(0);
+    expect(other?.caseUnderstandingReviewedCount).toBeGreaterThanOrEqual(1);
+    expect(dataDisplay?.caseUnderstandingReviewedCount).toBe(1);
+    expect(dataDisplay?.caseUnderstandingAccuracy).toBe(0);
   });
 
   test("keeps only explicitly selected Inbox messages as case references", async () => {

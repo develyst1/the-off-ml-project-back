@@ -13,16 +13,24 @@ function bucketConfidence(value: number) {
   return "98-100%";
 }
 
-function categoryForCase(item: Awaited<ReturnType<typeof caseService.listCases>>[number]) {
-  const latestCustomerAnalysis = [...item.analyses]
-    .filter((analysis) => analysis.analysisType === "customer_message")
-    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+function analyticsCategoryKey(category?: string) {
+  const key = categoryKeyOf(category);
+  // AI may return a new category before the product mapping knows its label.
+  // Keep that feedback visible under Other instead of dropping it silently.
+  return key.startsWith("AI_") ? "OTHER" : key;
+}
 
-  return latestCustomerAnalysis?.category ?? item.category;
+function analyticsStartAt(range?: string) {
+  const days = range === "today" ? 1 : range === "7d" ? 7 : 30;
+  return Date.now() - days * 24 * 60 * 60 * 1000;
 }
 
 analyticsRoutes.get("/summary", async (c) => {
-  const cases = await caseService.listCases();
+  const allCases = await caseService.listCases();
+  const cases = allCases.filter((item) => {
+    const createdAt = new Date(item.createdAt).getTime();
+    return Number.isFinite(createdAt) && createdAt >= analyticsStartAt(c.req.query("range"));
+  });
   const feedback = await store.listAiReviewFeedback();
   const total = cases.length;
   const solved = cases.filter((item) => item.status === "resolved" || item.status === "sent_to_customer" || item.status === "closed").length;
@@ -44,13 +52,16 @@ analyticsRoutes.get("/summary", async (c) => {
     solutionSelectionReviewed: number;
   }>();
   const confidenceCounts = new Map<string, number>();
-  const latestAnalysisVersionByCase = new Map(cases.map((item) => [
-    item.id,
-    item.analyses.reduce((latest, analysis) => Math.max(latest, analysis.analysisVersion), 0),
-  ]));
+  const latestAnalysisByCase = new Map(cases.map((item) => {
+    const latest = [...item.analyses].sort((left, right) => (
+      right.analysisVersion - left.analysisVersion
+      || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+    ))[0];
+    return [item.id, latest] as const;
+  }));
   const currentFeedback = new Map<string, typeof feedback[number]>();
   for (const item of feedback) {
-    if (latestAnalysisVersionByCase.get(item.caseId) !== item.analysisVersion) continue;
+    if (latestAnalysisByCase.get(item.caseId)?.analysisVersion !== item.analysisVersion) continue;
     const key = `${item.caseId}:${item.analysisVersion}:${item.feedbackType}`;
     const existing = currentFeedback.get(key);
     if (!existing || new Date(item.updatedAt).getTime() > new Date(existing.updatedAt).getTime()) {
@@ -59,7 +70,9 @@ analyticsRoutes.get("/summary", async (c) => {
   }
 
   for (const item of cases) {
-    const category = categoryKeyOf(categoryForCase(item));
+    const analysis = latestAnalysisByCase.get(item.id);
+    // Category and feedback must be from the same analysis version.
+    const category = analyticsCategoryKey(analysis?.category ?? item.category);
     const current = categoryCounts.get(category) ?? {
       count: 0,
       caseUnderstandingCorrect: 0,
@@ -68,7 +81,7 @@ analyticsRoutes.get("/summary", async (c) => {
       solutionSelectionReviewed: 0,
     };
     current.count += 1;
-    const analysisVersion = latestAnalysisVersionByCase.get(item.id);
+    const analysisVersion = analysis?.analysisVersion;
     const understanding = analysisVersion
       ? currentFeedback.get(`${item.id}:${analysisVersion}:ISSUE_UNDERSTANDING`)
       : undefined;
