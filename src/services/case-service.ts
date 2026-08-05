@@ -24,6 +24,10 @@ function latestByCreatedAt<T extends { createdAt: string }>(items: T[]) {
   return [...items].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
 }
 
+function isGenericResolutionOutcome(value: string) {
+  return /(ข้อมูล.*อัปเดต.*เรียบร้อย|ใช้งาน.*ได้.*แล้ว|แก้ไข.*เรียบร้อย|ดำเนินการ.*เรียบร้อย|เรียบร้อยแล้ว)/u.test(value.trim());
+}
+
 function contextTime(message: Pick<Message, "createdAt" | "receivedAt" | "metadata">) {
   const sourceCreatedAt = typeof message.metadata?.sourceCreatedAt === "string" ? message.metadata.sourceCreatedAt : undefined;
   return sourceCreatedAt ?? message.receivedAt ?? message.createdAt;
@@ -250,7 +254,10 @@ async function extractAndStoreTechSolution(input: {
   // A completed internal action, such as restarting a stuck file-processing
   // service, is the actual resolution even when there is no end-user action
   // to put in `solutionSteps`.
-  const extractedSolutionSteps = solutionSteps.length > 0 ? solutionSteps : teamActions;
+  // Prefer the concrete action completed by Tech Support. A generic outcome
+  // such as "ข้อมูลอัปเดตเรียบร้อยแล้ว" explains the result, not the fix.
+  const specificSolutionSteps = solutionSteps.filter((step) => !isGenericResolutionOutcome(step));
+  const extractedSolutionSteps = [...new Set([...teamActions, ...specificSolutionSteps])];
   const normalizedSolutionAnalysis = {
     ...solutionAnalysis,
     hasTroubleshootingSteps: extractedSolutionSteps.length > 0,
