@@ -73,7 +73,7 @@ async function handleTeamsAction(c: Context) {
       return c.json({ success: true, message: "Message sent to LINE" });
     } catch (error) {
       console.error({ event: "teams_action_line_result", action, caseId, lineApiStatus: "FAILED", message: String(error) });
-      return c.json({ success: false, error: "line_delivery_failed", message: "ไม่สามารถส่งข้อความให้ลูกค้าได้" }, 502);
+      return c.json({ success: false, error: "line_delivery_failed", message: "ไม่สามารถส่งข้อความให้ผู้ใช้งานได้" }, 502);
     }
   }
 

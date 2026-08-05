@@ -202,3 +202,7 @@ caseRoutes.patch("/:id/ai-feedback", async (c) => {
 
   return c.json({ data: await caseService.updateAiFeedback(c.req.param("id"), field, value) });
 });
+
+caseRoutes.post("/:id/refresh-solution", async (c) => {
+  return c.json({ data: await caseService.refreshExtractedSolution(c.req.param("id")) });
+});

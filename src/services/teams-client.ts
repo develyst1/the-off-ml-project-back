@@ -84,14 +84,14 @@ export const teamsClient = {
           type: "Input.Text",
           id: "replyText",
           label: "คำตอบจากทีม Tech Support",
-          placeholder: "พิมพ์วิธีแก้ปัญหาหรือคำตอบให้ลูกค้า",
+          placeholder: "พิมพ์วิธีแก้ปัญหาหรือคำตอบให้ผู้ใช้งาน",
           isMultiline: true,
           maxLength: 4000,
         },
         {
           type: "Input.Text",
           id: "additionalInfoRequest",
-          label: "ข้อความขอข้อมูลเพิ่มเติมจากลูกค้า",
+          label: "ข้อความขอข้อมูลเพิ่มเติมจากผู้ใช้งาน",
           placeholder: "เช่น รบกวนส่งภาพหน้าจอหรือข้อความแจ้งเตือนเพิ่มเติม",
           isMultiline: true,
           maxLength: 2000,
@@ -100,7 +100,7 @@ export const teamsClient = {
       actions: [
         {
           type: "Action.Submit",
-          title: "วิเคราะห์และส่งให้ลูกค้า",
+          title: "วิเคราะห์และส่งให้ผู้ใช้งาน",
           data: { action: "REPLY_CUSTOMER", caseId: data.caseId, caseNumber: data.caseNumber },
         },
         {

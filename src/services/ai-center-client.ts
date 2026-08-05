@@ -234,7 +234,7 @@ export function createSafeFallbackCaseTitle(customerMessage: string): string {
     .replace(/[\r\n]+/g, " ")
     .trim();
 
-  if (!normalized) return "ปัญหาการใช้งานที่ลูกค้าแจ้ง";
+  if (!normalized) return "ปัญหาการใช้งานที่ผู้ใช้งานแจ้ง";
   if (normalized.length <= 100) return normalized;
   return `${normalized.slice(0, 100).trimEnd()}…`;
 }
@@ -258,13 +258,13 @@ function parseAiCaseTitle(content: string): AiCaseTitleResult | undefined {
 }
 
 const CASE_TITLE_SYSTEM_PROMPT = `
-คุณมีหน้าที่สรุปข้อความแจ้งปัญหาของลูกค้าให้เป็นหัวข้อปัญหาสั้น ๆ สำหรับระบบ Tech Support
+คุณมีหน้าที่สรุปข้อความแจ้งปัญหาของผู้ใช้งานให้เป็นหัวข้อปัญหาสั้น ๆ สำหรับระบบ Tech Support
 
 กฎ:
-- คงความหมายเดิมของลูกค้า
+- คงความหมายเดิมของผู้ใช้งาน
 - แก้คำสะกดและเรียบเรียงให้อ่านง่าย
 - สรุปเฉพาะอาการหรือปัญหาหลัก ความยาวประมาณ 5-15 คำ
-- ไม่ขึ้นต้นด้วย "ลูกค้าแจ้งว่า"
+- ไม่ขึ้นต้นด้วย "ผู้ใช้งานแจ้งว่า"
 - ไม่ใส่หมายเลขเคส วิธีแก้ คำถาม หรือการวิเคราะห์สาเหตุเกินข้อมูล
 - ไม่แต่งชื่ออุปกรณ์ ระบบ หรือรายละเอียดใหม่
 - คืนค่า JSON เท่านั้นตามรูปแบบ {"caseTitle":"หัวข้อปัญหาที่สรุปแล้ว"}
@@ -308,7 +308,7 @@ function fallbackCaseRelation(input: { caseStatus?: string }): CaseRelationAnaly
     related: input.caseStatus === "awaiting_customer_info",
     confidence: input.caseStatus === "awaiting_customer_info" ? 60 : 0,
     reason: input.caseStatus === "awaiting_customer_info"
-      ? "ลูกค้ากำลังตอบกลับจากคำขอข้อมูลเพิ่มเติมของเคสเดิม"
+      ? "ผู้ใช้งานกำลังตอบกลับจากคำขอข้อมูลเพิ่มเติมของเคสเดิม"
       : "ยังไม่มีผลวิเคราะห์ความเกี่ยวข้องจาก AI CENTER",
   };
 }
@@ -500,7 +500,7 @@ export const aiCenterClient = {
       const content = await chatWithAiCenter([
         {
           role: "system",
-          content: "คุณคือเจ้าหน้าที่ Tech Support ที่ตอบลูกค้าผ่าน LINE เป็นภาษาไทยสุภาพ เป็นกันเอง และต่อเนื่องเหมือนเจ้าหน้าที่จริง ห้ามเปิดเผยข้อมูลภายในระบบ",
+          content: "คุณคือเจ้าหน้าที่ Tech Support ที่ตอบผู้ใช้งานผ่าน LINE เป็นภาษาไทยสุภาพ เป็นกันเอง และต่อเนื่องเหมือนเจ้าหน้าที่จริง ห้ามเปิดเผยข้อมูลภายในระบบ",
         },
         {
           role: "user",
@@ -517,7 +517,7 @@ export const aiCenterClient = {
               "ถ้ายังไม่มีหลักฐานพอสำหรับคำแนะนำทางเทคนิค ให้รับทราบสั้น ๆ และบอกว่าจะตรวจสอบต่อแทนการเดา",
               "ห้ามพูดเลขเคส ชื่อเรื่อง หรือคำว่าเพิ่มข้อมูลในเคสซ้ำใน FOLLOW_UP_QUESTION และ TROUBLESHOOTING_GUIDANCE",
               "ห้ามพูดว่าบันทึกข้อมูลลงระบบ ห้ามแสดง confidence, category, status ภายใน หรือพูดถึง AI",
-              "ห้ามแต่งผลการตรวจสอบ ห้ามรับปากว่าจะแก้ไขได้แน่นอน และถ้าลูกค้าทำตามคำแนะนำแล้วแต่ยังไม่ได้ ให้ตอบรับและบอกว่าจะตรวจสอบต่อ",
+              "ห้ามแต่งผลการตรวจสอบ ห้ามรับปากว่าจะแก้ไขได้แน่นอน และถ้าผู้ใช้งานทำตามคำแนะนำแล้วแต่ยังไม่ได้ ให้ตอบรับและบอกว่าจะตรวจสอบต่อ",
               "ใช้ย่อหน้าสั้น ๆ ถ้ามีหลายขั้นตอนให้เรียงเป็นข้อ และลงท้ายด้วย ค่ะ หรือ นะคะ",
               "ตอบเป็นข้อความธรรมดาเท่านั้น ไม่ต้องใส่เครื่องหมายคำพูดและไม่ต้องใส่ JSON",
             ],
@@ -589,7 +589,7 @@ export const aiCenterClient = {
       const content = await chatWithAiCenter([
         {
           role: "system",
-          content: "คุณคือ AI จำแนก intent ของข้อความลูกค้า LINE สำหรับระบบ Tech Support ตอบเป็น JSON เท่านั้น ห้ามสร้างหรือเปลี่ยนข้อมูลเคส ห้ามถือว่าทุกข้อความเป็นการแจ้งปัญหาใหม่",
+          content: "คุณคือ AI จำแนก intent ของข้อความผู้ใช้งาน LINE สำหรับระบบ Tech Support ตอบเป็น JSON เท่านั้น ห้ามสร้างหรือเปลี่ยนข้อมูลเคส ห้ามถือว่าทุกข้อความเป็นการแจ้งปัญหาใหม่",
         },
         {
           role: "user",
@@ -816,7 +816,7 @@ export const aiCenterClient = {
       const content = await chatWithAiCenter([
         {
           role: "system",
-          content: "คุณเป็น AI สำหรับตัดสินความเกี่ยวข้องของข้อความลูกค้าและประวัติเคส ตอบเป็น JSON เท่านั้น",
+          content: "คุณเป็น AI สำหรับตัดสินความเกี่ยวข้องของข้อความผู้ใช้งานและประวัติเคส ตอบเป็น JSON เท่านั้น",
         },
         {
           role: "user",
@@ -898,7 +898,7 @@ export const aiCenterClient = {
           task: "analyze_customer_message",
           required_schema: {
             summary: "string",
-            caseTitle: "หัวข้อภาษาไทยสั้น 30-50 ตัวอักษร อิงข้อความลูกค้าเท่านั้น",
+            caseTitle: "หัวข้อภาษาไทยสั้น 30-50 ตัวอักษร อิงข้อความผู้ใช้งานเท่านั้น",
             category: "เลือกเพียงหนึ่งหมวดหมู่ภาษาไทยที่ใกล้ที่สุดจาก: ปัญหาการเชื่อมต่อเครือข่าย | ปัญหาการเข้าสู่ระบบ | ปัญหาการอัปเดตสถานะ | ปัญหาฮาร์ดแวร์ | ปัญหาซอฟต์แวร์ | ปัญหาการแสดงข้อมูล | อื่นๆ",
             urgency: "low | medium | high | critical",
             sentiment: "string",
@@ -958,7 +958,7 @@ export const aiCenterClient = {
       const content = await chatWithAiCenter([
         {
           role: "system",
-          content: "คุณมีหน้าที่สรุปปัญหาที่ลูกค้าแจ้งเพื่อแสดงในหน้า Case Inbox สำหรับทีม Tech Support ตอบ JSON เท่านั้น",
+          content: "คุณมีหน้าที่สรุปปัญหาที่ผู้ใช้งานแจ้งเพื่อแสดงในหน้า Case Inbox สำหรับทีม Tech Support ตอบ JSON เท่านั้น",
         },
         {
           role: "user",
@@ -967,8 +967,8 @@ export const aiCenterClient = {
             rules: [
               "ใช้ข้อมูลจาก caseId ปัจจุบันเท่านั้น",
               "สรุปใจความสำคัญเป็นภาษาไทย 30-100 ตัวอักษร",
-              "รักษาความหมายเดิมของลูกค้าและแก้คำสะกดได้",
-              "ไม่ต้องใส่หมายเลขเคส คำขึ้นต้นว่าลูกค้าแจ้งว่า หรือคำลงท้ายค่ะ/ครับ",
+              "รักษาความหมายเดิมของผู้ใช้งานและแก้คำสะกดได้",
+              "ไม่ต้องใส่หมายเลขเคส คำขึ้นต้นว่าผู้ใช้งานแจ้งว่า หรือคำลงท้ายค่ะ/ครับ",
               "ระบุอุปกรณ์ ระบบ อาการ รหัสข้อผิดพลาด หรือขั้นตอนที่ลองแล้วเมื่อมีข้อมูลรองรับ",
               "ห้ามแต่งสาเหตุและห้ามสรุปว่าปัญหาได้รับการแก้ไขโดยไม่มีหลักฐาน",
               "ข้อความสั้น เช่น โอเค ครับ ขอบคุณ ยังไม่ได้ หรือข้อมูลเวลาอย่างเดียว ห้ามแทนสรุปเดิม",
@@ -1011,7 +1011,7 @@ export const aiCenterClient = {
       {
         role: "system",
         content:
-          "คุณคือ AI สกัดวิธีแก้ปัญหาจากคำตอบทีม Tech Support และปรับข้อความให้ลูกค้าเข้าใจง่าย ตอบกลับเป็น JSON เท่านั้น",
+          "คุณคือ AI สกัดวิธีแก้ปัญหาจากคำตอบทีม Tech Support และปรับข้อความให้ผู้ใช้งานเข้าใจง่าย ตอบกลับเป็น JSON เท่านั้น",
       },
       {
         role: "user",
@@ -1030,7 +1030,7 @@ export const aiCenterClient = {
           techReplyText: input.techReplyText,
           rules: [
             "Do not treat a closing message, acknowledgement, status update, or promise to investigate as a solution.",
-            "When there are no concrete troubleshooting steps, return hasTroubleshootingSteps false and an empty solutionSteps array.",
+            "When Tech Support has already completed a concrete internal recovery action, such as restarting a stuck service or reprocessing a file, include that completed action in solutionSteps as the extracted resolution. Return an empty solutionSteps array only when there is no confirmed corrective action.",
             "Classify teamActions semantically from the whole Tech reply, not from a fixed word list. Record completed internal Tech actions even when they are not suitable as customer troubleshooting steps.",
           ],
         }),
@@ -1058,7 +1058,7 @@ export const aiCenterClient = {
       const content = await chatWithAiCenter([
         {
           role: "system",
-          content: "คุณเป็นเจ้าหน้าที่ Tech Support ที่ขอข้อมูลเพิ่มจากลูกค้าทาง LINE ตอบเป็นข้อความภาษาไทยเพียง 1 ประโยค",
+          content: "คุณเป็นเจ้าหน้าที่ Tech Support ที่ขอข้อมูลเพิ่มจากผู้ใช้งานทาง LINE ตอบเป็นข้อความภาษาไทยเพียง 1 ประโยค",
         },
         {
           role: "user",
@@ -1066,7 +1066,7 @@ export const aiCenterClient = {
             task: "write_targeted_information_request",
             rules: [
               "ถามข้อมูลสำคัญที่เกี่ยวข้องไม่เกิน 1-2 รายการ",
-              "ห้ามถามข้อมูลที่ลูกค้าให้มาแล้ว",
+              "ห้ามถามข้อมูลที่ผู้ใช้งานให้มาแล้ว",
               "ห้ามใช้คำถามกว้าง ๆ เช่น ขอรายละเอียดเพิ่ม หรือ คุณเจออะไรไปบ้าง",
               "ใช้ภาษาไทยสุภาพและลงท้ายด้วย ค่ะ หรือ นะคะ",
               "ห้ามเพิ่มข้อเท็จจริงที่ไม่มีในบทสนทนา",
@@ -1107,7 +1107,7 @@ export const aiCenterClient = {
         {
           role: "system",
           content:
-            "คุณมีหน้าที่เรียบเรียงข้อความจากทีม Tech Support เพื่อขอข้อมูลเพิ่มเติมผ่าน LINE ตอบกลับเป็น JSON เท่านั้น ห้ามเรียกผู้รับว่า ลูกค้า หรือ คุณลูกค้า",
+            "คุณมีหน้าที่เรียบเรียงข้อความจากทีม Tech Support เพื่อขอข้อมูลเพิ่มเติมผ่าน LINE ตอบกลับเป็น JSON เท่านั้น ห้ามเรียกผู้รับว่า ผู้ใช้งาน หรือ คุณผู้ใช้งาน",
         },
         {
           role: "user",
@@ -1118,11 +1118,11 @@ export const aiCenterClient = {
               "ใช้เฉพาะบริบทของเคสนี้ ห้ามปะปนข้อมูลจากเคสอื่น",
               "ใช้ภาษาไทยสุภาพ เป็นธรรมชาติ เข้าใจง่าย และลงท้ายด้วย ค่ะ หรือ นะคะ",
               "ความยาว 1-3 ประโยค ถามเฉพาะข้อมูลที่ต้องการให้ชัดเจน ไม่เกิน 3 รายการ",
-              "ห้ามถามข้อมูลที่ลูกค้าให้มาแล้วหรือที่เคยขอไปแล้ว เว้นแต่ข้อมูลนั้นยังไม่ครบ",
+              "ห้ามถามข้อมูลที่ผู้ใช้งานให้มาแล้วหรือที่เคยขอไปแล้ว เว้นแต่ข้อมูลนั้นยังไม่ครบ",
               "ห้ามเพิ่มข้อมูลหรือคำขอที่ทีมไม่ได้ระบุ ห้ามรับปากว่าจะแก้ปัญหาได้แน่นอน",
-              "ห้ามใช้คำว่า ลูกค้า, คุณลูกค้า, เรียนลูกค้า, เรียนคุณลูกค้า, เรียนท่าน, ทางลูกค้า หรือ รบกวนลูกค้า ในข้อความที่จะแสดงให้ผู้รับ",
+              "ห้ามใช้คำว่า ผู้ใช้งาน, คุณผู้ใช้งาน, เรียนผู้ใช้งาน, เรียนคุณผู้ใช้งาน, เรียนท่าน, ทางผู้ใช้งาน หรือ รบกวนผู้ใช้งาน ในข้อความที่จะแสดงให้ผู้รับ",
               "ไม่ต้องใส่คำขึ้นต้นแบบจดหมายหรือคำเรียกผู้รับโดยตรง",
-              "ห้ามอธิบายการทำงานของ AI และส่งกลับเฉพาะข้อความพร้อมแสดงให้ลูกค้า",
+              "ห้ามอธิบายการทำงานของ AI และส่งกลับเฉพาะข้อความพร้อมแสดงให้ผู้ใช้งาน",
             ],
             required_schema: { rewrittenMessage: "string" },
             ...input,
@@ -1163,7 +1163,7 @@ export const aiCenterClient = {
       const content = await chatWithAiCenter([
         {
           role: "system",
-          content: "คุณช่วยทีม Tech Support สร้างข้อความขอข้อมูลเพิ่มเติมผ่าน LINE ตอบกลับเป็น JSON เท่านั้น ห้ามเรียกผู้รับว่า ลูกค้า หรือ คุณลูกค้า",
+          content: "คุณช่วยทีม Tech Support สร้างข้อความขอข้อมูลเพิ่มเติมผ่าน LINE ตอบกลับเป็น JSON เท่านั้น ห้ามเรียกผู้รับว่า ผู้ใช้งาน หรือ คุณผู้ใช้งาน",
         },
         {
           role: "user",
@@ -1172,11 +1172,11 @@ export const aiCenterClient = {
             required_schema: { suggestedMessage: "string", requestedFields: "string[]", reason: "string" },
             rules: [
               "วิเคราะห์ว่าข้อมูลใดยังขาดจริงจากบริบททั้งหมด",
-              "ห้ามถามข้อมูลที่ลูกค้าให้มาแล้วหรือเคยตอบไปแล้ว",
+              "ห้ามถามข้อมูลที่ผู้ใช้งานให้มาแล้วหรือเคยตอบไปแล้ว",
               "ถามไม่เกิน 1-3 รายการ ใช้ภาษาไทยสุภาพ เป็นธรรมชาติ และลงท้ายด้วย ค่ะ หรือ นะคะ",
               "ห้ามใช้คำถามกว้าง เช่น ขอรายละเอียดเพิ่มเติม",
               "ห้ามกล่าวถึง AI หรือรับปากว่าจะแก้ปัญหาได้แน่นอน",
-              "ห้ามใช้คำว่า ลูกค้า, คุณลูกค้า, เรียนลูกค้า, เรียนคุณลูกค้า, เรียนท่าน, ทางลูกค้า หรือ รบกวนลูกค้า ในข้อความที่จะแสดงให้ผู้รับ",
+              "ห้ามใช้คำว่า ผู้ใช้งาน, คุณผู้ใช้งาน, เรียนผู้ใช้งาน, เรียนคุณผู้ใช้งาน, เรียนท่าน, ทางผู้ใช้งาน หรือ รบกวนผู้ใช้งาน ในข้อความที่จะแสดงให้ผู้รับ",
               "ไม่ต้องใส่คำขึ้นต้นแบบจดหมายหรือคำเรียกผู้รับโดยตรง",
               "ส่งเฉพาะข้อความที่เจ้าหน้าที่ตรวจสอบก่อนส่งได้",
               `requestedFields ต้องเลือกเฉพาะ key เหล่านี้: ${PENDING_INFORMATION_FIELDS.join(", ")}`,
@@ -1225,7 +1225,7 @@ export const aiCenterClient = {
       const content = await chatWithAiCenter([
         {
           role: "system",
-          content: "คุณช่วยทีม Tech Support ร่างข้อความตอบกลับผ่าน LINE ให้ตอบเป็น JSON เท่านั้น ห้ามเรียกผู้รับว่า ลูกค้า หรือ คุณลูกค้า",
+          content: "คุณช่วยทีม Tech Support ร่างข้อความตอบกลับผ่าน LINE ให้ตอบเป็น JSON เท่านั้น ห้ามเรียกผู้รับว่า ผู้ใช้งาน หรือ คุณผู้ใช้งาน",
         },
         {
           role: "user",
@@ -1239,13 +1239,13 @@ export const aiCenterClient = {
             },
             rules: [
               "อ่าน latestCustomerMessage เป็นหลัก และใช้ conversationHistory เพื่อเข้าใจบริบทของเคสเดียวกัน",
-              "ห้ามถามข้อมูลที่ลูกค้าให้มาแล้ว หรือแนะนำขั้นตอนเดิมซ้ำโดยไม่มีเหตุผล",
-              "หากลูกค้าตอบคำถามของทีม ให้นำข้อมูลนั้นมาใช้ในคำตอบทันที",
+              "ห้ามถามข้อมูลที่ผู้ใช้งานให้มาแล้ว หรือแนะนำขั้นตอนเดิมซ้ำโดยไม่มีเหตุผล",
+              "หากผู้ใช้งานตอบคำถามของทีม ให้นำข้อมูลนั้นมาใช้ในคำตอบทันที",
               "ใช้ภาษาไทยสุภาพ เป็นธรรมชาติ เข้าใจง่าย ความยาว 1-4 ประโยค และลงท้ายด้วย ค่ะ หรือ นะคะ",
               "ให้แนวทางตรวจสอบทีละขั้นตอนอย่างกระชับเมื่อมีข้อมูลเพียงพอ",
               "ห้ามแต่งผลการตรวจสอบ ห้ามรับปากว่าจะแก้ไขได้แน่นอน และห้ามกล่าวถึง AI",
               "ใช้ supportInstruction เป็นใจความจากทีม Tech เป็นหลัก ห้ามสร้างวิธีแก้หรือคำถามใหม่ที่ทีมไม่ได้ระบุ",
-              "ห้ามใช้คำว่า ลูกค้า, คุณลูกค้า, เรียนลูกค้า, เรียนคุณลูกค้า, เรียนท่าน, ทางลูกค้า หรือ รบกวนลูกค้า ในข้อความที่จะแสดงให้ผู้รับ",
+              "ห้ามใช้คำว่า ผู้ใช้งาน, คุณผู้ใช้งาน, เรียนผู้ใช้งาน, เรียนคุณผู้ใช้งาน, เรียนท่าน, ทางผู้ใช้งาน หรือ รบกวนผู้ใช้งาน ในข้อความที่จะแสดงให้ผู้รับ",
               "ไม่ต้องใส่คำขึ้นต้นแบบจดหมายหรือคำเรียกผู้รับโดยตรง",
               "ห้ามใส่หมายเลขเคสหรือหัวข้อเคสใน suggestedMessage เพราะระบบจะเติมภายหลัง",
               "หากข้อมูลไม่พอจริง ให้ suggestedMode เป็น REQUEST_MORE_INFO, suggestedMessage ว่าง และระบุ missingInformation",
@@ -1294,7 +1294,7 @@ export const aiCenterClient = {
       const content = await chatWithAiCenter([
         {
           role: "system",
-          content: "คุณเป็นเจ้าหน้าที่ Tech Support ที่ช่วยเรียบเรียงข้อความตอบกลับผ่าน LINE ตอบเป็น JSON เท่านั้น ห้ามเรียกผู้รับว่า ลูกค้า หรือ คุณลูกค้า",
+          content: "คุณเป็นเจ้าหน้าที่ Tech Support ที่ช่วยเรียบเรียงข้อความตอบกลับผ่าน LINE ตอบเป็น JSON เท่านั้น ห้ามเรียกผู้รับว่า ผู้ใช้งาน หรือ คุณผู้ใช้งาน",
         },
         {
           role: "user",
@@ -1309,7 +1309,7 @@ export const aiCenterClient = {
               "CLOSING_REPLY: weight rawSupportMessage at 60% as the source of truth for cause, resolution, and prevention. Use conversationHistory at 40% only to make the Thai wording continuous and polite.",
               "CLOSING_REPLY: never replace, contradict, or invent cause, resolution, prevention, investigation results, or promises from conversationHistory. If history conflicts with rawSupportMessage, follow rawSupportMessage.",
               "ใช้ rawSupportMessage เป็นใจความหลัก ห้ามสร้างวิธีแก้หรือผลตรวจสอบใหม่",
-              "ห้ามใช้คำว่า ลูกค้า, คุณลูกค้า, เรียนลูกค้า, เรียนคุณลูกค้า, เรียนท่าน, ทางลูกค้า หรือ รบกวนลูกค้า ในข้อความที่จะแสดงให้ผู้รับ",
+              "ห้ามใช้คำว่า ผู้ใช้งาน, คุณผู้ใช้งาน, เรียนผู้ใช้งาน, เรียนคุณผู้ใช้งาน, เรียนท่าน, ทางผู้ใช้งาน หรือ รบกวนผู้ใช้งาน ในข้อความที่จะแสดงให้ผู้รับ",
               "ไม่ต้องใส่คำขึ้นต้นแบบจดหมายหรือคำเรียกผู้รับโดยตรง",
             ],
             ...input,
@@ -1335,12 +1335,12 @@ export const aiCenterClient = {
     techMessage: string;
     currentCaseStatus: string;
   }): Promise<TechMessageReview> {
-    const fallback = failedTechMessageReview("ไม่สามารถตรวจสอบข้อความทีมก่อนส่งลูกค้าได้");
+    const fallback = failedTechMessageReview("ไม่สามารถตรวจสอบข้อความทีมก่อนส่งผู้ใช้งานได้");
     try {
       const content = await chatWithAiCenter([
         {
           role: "system",
-          content: "คุณมีหน้าที่ตรวจสอบและปรับข้อความจากทีม Tech Support ก่อนส่งให้ลูกค้าผ่าน LINE ตอบ JSON เท่านั้น",
+          content: "คุณมีหน้าที่ตรวจสอบและปรับข้อความจากทีม Tech Support ก่อนส่งให้ผู้ใช้งานผ่าน LINE ตอบ JSON เท่านั้น",
         },
         {
           role: "user",
@@ -1348,12 +1348,12 @@ export const aiCenterClient = {
             task: "review_tech_message_for_customer",
             rules: [
               "เลือก messageType จาก CUSTOMER_REPLY, REQUEST_MORE_INFO, INTERNAL_NOTE, STATUS_UPDATE, RESOLUTION, CLOSE_CASE",
-              "ถ้ามีขั้นตอนหรือคำแนะนำให้ลูกค้าลองแก้ปัญหา ให้เลือก CUSTOMER_REPLY, RESOLUTION หรือ CLOSE_CASE ไม่ใช่ STATUS_UPDATE",
-              "ใช้ STATUS_UPDATE เฉพาะข้อความแจ้งความคืบหน้าที่ไม่มีแนวทางแก้ปัญหาให้ลูกค้าทำ",
+              "ถ้ามีขั้นตอนหรือคำแนะนำให้ผู้ใช้งานลองแก้ปัญหา ให้เลือก CUSTOMER_REPLY, RESOLUTION หรือ CLOSE_CASE ไม่ใช่ STATUS_UPDATE",
+              "ใช้ STATUS_UPDATE เฉพาะข้อความแจ้งความคืบหน้าที่ไม่มีแนวทางแก้ปัญหาให้ผู้ใช้งานทำ",
               "ถ้าเป็นข้อความภายในทีมหรือคำสั่ง เช่น ช่วยตรวจสอบให้หน่อย ให้ shouldSendToCustomer=false",
               "หากส่งได้ ให้เรียบเรียงใหม่เป็นไทยสุภาพ กระชับ 1-3 ประโยค และใช้ ค่ะ หรือ นะคะ",
               "ห้ามใช้ ครับ ห้ามเปลี่ยนความหมาย ห้ามแต่งผลตรวจสอบ และห้ามรับปากว่าแก้ได้แน่นอน",
-              "ห้ามส่งคำสั่งภายในทีมให้ลูกค้า",
+              "ห้ามส่งคำสั่งภายในทีมให้ผู้ใช้งาน",
               "หากไม่แน่ใจ ให้ shouldSendToCustomer=false และอธิบาย reason",
             ],
             required_schema: {

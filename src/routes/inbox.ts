@@ -75,7 +75,8 @@ inboxRoutes.post("/:customerId/reply", async (c) => {
     deliveredAt: sentAt,
     createdAt: sentAt,
   });
-  await caseService.linkInboxMessageToActiveCase(customerId, inboxMessage);
+  const linkedCase = await caseService.linkInboxMessageToActiveCase(customerId, inboxMessage);
+  if (linkedCase) await caseService.refreshExtractedSolution(linkedCase.id);
   realtimeEventHub.publish({
     name: "conversation.message.created",
     data: {

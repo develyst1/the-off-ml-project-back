@@ -91,7 +91,7 @@ automationRoutes.get("/logs", async (c) => {
         id: message.id,
         time: message.createdAt,
         caseNumber: item.caseNumber,
-        customer: item.customer.displayName ?? "ลูกค้า LINE",
+        customer: item.customer.displayName ?? "ผู้ใช้งาน LINE",
         answerText: message.originalText,
         eventType: message.messageType ?? "UNKNOWN",
         status: message.deliveryStatus ?? "UNKNOWN",

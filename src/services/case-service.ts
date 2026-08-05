@@ -123,9 +123,11 @@ function aiSnapshotFromDetail(detail: CaseDetail) {
   const rawAnalysis = latestCustomerAnalysis?.rawJson as { extractedSolution?: unknown } | undefined;
   const latestSolution = latestByCreatedAt(detail.solutions);
   const latestTechAnalysis = latestByCreatedAt(detail.analyses.filter((analysis) => analysis.analysisType === "tech_solution"));
-  const extractedSolution = typeof rawAnalysis?.extractedSolution === "string" && rawAnalysis.extractedSolution.trim()
-    ? rawAnalysis.extractedSolution.trim()
-    : latestSolution?.solutionSteps.join("\n") || latestTechAnalysis?.summary;
+  const extractedSolution = latestTechAnalysis?.summary
+    || latestSolution?.solutionSteps.join("\n")
+    || (typeof rawAnalysis?.extractedSolution === "string" && rawAnalysis.extractedSolution.trim()
+      ? rawAnalysis.extractedSolution.trim()
+      : undefined);
   return {
     category: latestCustomerAnalysis?.category ?? detail.category,
     summary: latestCustomerAnalysis?.summary,
@@ -224,9 +226,19 @@ async function extractAndStoreTechSolution(input: {
   techReplyText: string;
   rewrittenCustomerText: string;
 }) {
+  const startedAt = new Date(input.detail.conversationStartedAt ?? input.detail.createdAt).getTime();
+  const endedAt = input.detail.conversationEndedAt ? new Date(input.detail.conversationEndedAt).getTime() : Number.POSITIVE_INFINITY;
+  const conversationTranscript = input.detail.messages
+    .filter((message) => message.channel === "line")
+    .filter((message) => {
+      const occurredAt = new Date(message.receivedAt ?? message.sentAt ?? message.deliveredAt ?? message.createdAt).getTime();
+      return occurredAt >= startedAt && occurredAt <= endedAt;
+    })
+    .map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : message.senderType === "TECH" ? "ทีม Tech" : "ระบบ"}: ${message.originalText}`);
+  conversationTranscript.push(`ทีม Tech: ${input.techReplyText}`);
   const originalCustomerText = input.detail.messages.find((item) => item.senderType === "CUSTOMER")?.originalText;
   const solutionAnalysis = await aiCenterClient.analyzeTechSolution({
-    techReplyText: input.techReplyText,
+    techReplyText: conversationTranscript.join("\n"),
     originalCustomerText,
   });
   const solutionSteps = solutionAnalysis.hasTroubleshootingSteps === false
@@ -235,10 +247,14 @@ async function extractAndStoreTechSolution(input: {
   const teamActions = [...new Set((solutionAnalysis.teamActions ?? [])
     .map((action) => action.trim())
     .filter(Boolean))];
+  // A completed internal action, such as restarting a stuck file-processing
+  // service, is the actual resolution even when there is no end-user action
+  // to put in `solutionSteps`.
+  const extractedSolutionSteps = solutionSteps.length > 0 ? solutionSteps : teamActions;
   const normalizedSolutionAnalysis = {
     ...solutionAnalysis,
-    hasTroubleshootingSteps: solutionSteps.length > 0,
-    solutionSteps,
+    hasTroubleshootingSteps: extractedSolutionSteps.length > 0,
+    solutionSteps: extractedSolutionSteps,
     teamActions,
     rewrittenCustomerText: solutionAnalysis.rewrittenCustomerText.trim() || input.rewrittenCustomerText,
   };
@@ -252,6 +268,9 @@ async function extractAndStoreTechSolution(input: {
     confidence: normalizedSolutionAnalysis.confidence,
     rawJson: normalizedSolutionAnalysis,
   });
+  // A new extraction is a new version of the solution. Keep historical feedback
+  // records, but require the team to review the current version independently.
+  await store.updateCase(input.detail.id, { solutionSelectionFeedback: undefined });
   if (normalizedSolutionAnalysis.hasTroubleshootingSteps) {
     await store.createSolution({
       caseId: input.detail.id,
@@ -442,7 +461,10 @@ export const caseService = {
         direction: "INTERNAL",
         channel: "system",
         originalText: "บันทึกข้อความที่เลือกไว้เป็นข้อมูลอ้างอิงของเคส",
-        senderType: "SYSTEM",
+        // This is the LINE message sent by Tech Support, not the internal
+        // CASE_CLOSED audit event created above. Keep it visible in the
+        // conversation timeline after delivery succeeds.
+        senderType: "TECH",
         contentType: "SYSTEM_EVENT",
         messageType: "SYSTEM_EVENT",
         deliveryStatus: "PROCESSED",
@@ -1164,7 +1186,7 @@ export const caseService = {
       .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
       .at(0);
     if (!confirmedSolution) {
-      throw new Error("ยังไม่มีวิธีแก้จากทีม Tech ที่พร้อมใช้สร้างร่างตอบลูกค้า");
+      throw new Error("ยังไม่มีวิธีแก้จากทีม Tech ที่พร้อมใช้สร้างร่างตอบผู้ใช้งาน");
     }
 
     const customerMessages = detail.messages
@@ -1242,7 +1264,7 @@ export const caseService = {
     const detail = await store.getCaseDetail(caseId);
     if (!detail) throw new Error("Case not found");
     const question = sanitizeCustomerFacingMessage(text);
-    if (!question) throw new Error("กรุณากรอกข้อความที่จะส่งให้ลูกค้า");
+    if (!question) throw new Error("กรุณากรอกข้อความที่จะส่งให้ผู้ใช้งาน");
 
     let sourceId = sourceMessageId;
     if (!sourceId) {
@@ -1303,7 +1325,7 @@ export const caseService = {
     const detail = await store.getCaseDetail(caseId);
     if (!detail) throw new Error("Case not found");
     const rawText = sanitizeCustomerFacingMessage(rawSupportMessage);
-    if (!rawText) throw new Error("กรุณากรอกข้อความตอบกลับลูกค้า");
+    if (!rawText) throw new Error("กรุณากรอกข้อความตอบกลับผู้ใช้งาน");
 
     const customerMessages = detail.messages.filter((message) => message.senderType === "CUSTOMER");
     const isClosingSummary = mode === "CLOSING_REPLY";
@@ -1325,10 +1347,10 @@ export const caseService = {
     const detail = await store.getCaseDetail(input.caseId);
     if (!detail) throw new Error("Case not found");
     if (!detail.customer.lineUserId?.trim()) throw new Error("Customer LINE user ID is missing");
-    if (detail.status === "closed" && !input.closeCase) throw new Error("เคสนี้ปิดแล้ว กรุณาเปิดเคสอีกครั้งก่อนตอบกลับลูกค้า");
+    if (detail.status === "closed" && !input.closeCase) throw new Error("เคสนี้ปิดแล้ว กรุณาเปิดเคสอีกครั้งก่อนตอบกลับผู้ใช้งาน");
 
     const text = sanitizeCustomerFacingMessage(input.text);
-    if (!text) throw new Error("กรุณากรอกข้อความตอบกลับลูกค้า");
+    if (!text) throw new Error("กรุณากรอกข้อความตอบกลับผู้ใช้งาน");
 
     const externalMessageId = input.externalActionId ? `teams-action:${input.externalActionId}` : undefined;
     if (externalMessageId) {
@@ -1376,7 +1398,7 @@ export const caseService = {
         direction: "OUTBOUND",
         channel: "line",
         originalText: outboundText,
-        senderType: "SYSTEM",
+        senderType: "TECH",
         contentType: "TEXT",
         messageType: "CASE_CLOSED",
         sourceMessageId: rawMessage.id,
@@ -1411,6 +1433,9 @@ export const caseService = {
         sentAt,
         deliveredAt: sentAt,
       });
+      // Persist the exact delivered LINE text to the shared inbox stream
+      // before marking the case closed. If this fails, leave the case open
+      // so the existing delivered case message can be synchronized safely.
       const inboxMessage = await store.createInboxMessage({
         customerId: detail.customer.id,
         direction: "OUTBOUND",
@@ -1432,6 +1457,18 @@ export const caseService = {
           direction: inboxMessage.direction,
         },
       });
+      // Capture the final operator summary before the case is closed. A failed
+      // AI refresh never rolls back a LINE delivery that has already succeeded.
+      try {
+        await extractAndStoreTechSolution({
+          detail,
+          messageId: rawMessage.id,
+          techReplyText: supportText,
+          rewrittenCustomerText: outboundText,
+        });
+      } catch (error) {
+        console.warn({ event: "case_close_solution_refresh_failed", caseId: input.caseId, error: String(error) });
+      }
       await store.updateCase(input.caseId, {
         status: "closed",
         closedAt: sentAt,
@@ -1932,6 +1969,34 @@ export const caseService = {
   },
 
   getCase(caseId: string) {
+    return store.getCaseDetail(caseId);
+  },
+
+  async refreshExtractedSolution(caseId: string) {
+    const detail = await store.getCaseDetail(caseId);
+    if (!detail) throw new Error("Case not found");
+    const latestTechMessage = [...detail.messages]
+      .reverse()
+      .find((message) => message.channel === "line" && message.senderType === "TECH" && message.deliveryStatus !== "FAILED");
+
+    if (!latestTechMessage) {
+      await store.createAnalysis({
+        caseId,
+        analysisType: "tech_solution",
+        summary: "NO_ACTIONABLE_SOLUTION",
+        confidence: 0,
+        rawJson: { status: "PENDING_CONFIRMATION", reason: "NO_TECH_LINE_MESSAGE" },
+      });
+      await store.updateCase(caseId, { solutionSelectionFeedback: undefined });
+      return store.getCaseDetail(caseId);
+    }
+
+    await extractAndStoreTechSolution({
+      detail,
+      messageId: latestTechMessage.id,
+      techReplyText: latestTechMessage.originalText,
+      rewrittenCustomerText: latestTechMessage.originalText,
+    });
     return store.getCaseDetail(caseId);
   },
 

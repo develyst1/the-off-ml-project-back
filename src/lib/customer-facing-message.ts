@@ -19,6 +19,9 @@ export function sanitizeCustomerFacingMessage(input: string) {
     .replace(/(^|[\n\s])(?:ทาง)?\s*ลูกค้า\s*(?:สามารถ)?(?=\s|$)/gu, "$1")
     .replace(/(^|[\n\s])คุณ\s*ลูกค้า(?=\s|$)/gu, "$1")
     .replace(/ลูกค้า/gu, "")
+    .replace(/(^|[\n\s])(?:รบกวน|ขอให้)\s*ผู้ใช้งาน(?=\s|$)/gu, "$1รบกวน")
+    .replace(/(^|[\n\s])(?:ทาง)?\s*ผู้ใช้งาน\s*(?:สามารถ)?(?=\s|$)/gu, "$1")
+    .replace(/ผู้ใช้งาน/gu, "")
     .replace(/[ \t]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

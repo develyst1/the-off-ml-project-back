@@ -33,7 +33,7 @@ confidenceRoutes.get("/suggestions", async (c) => {
         id: `match_${item.id}`,
         caseId: item.id,
         caseNumber: item.caseNumber,
-        customerName: item.customer.displayName ?? "ลูกค้า LINE",
+        customerName: item.customer.displayName ?? "ผู้ใช้งาน LINE",
         suggestedSolutionId: latestSolution.id,
         category: item.category ?? "-",
         originalText: customerMessage?.originalText ?? "",
@@ -123,7 +123,7 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
     const reasonLabel = {
       CASE_UNDERSTANDING: "AI เข้าใจปัญหาผิด",
       SOLUTION_SELECTION: "AI เลือกวิธีแก้ผิด",
-      INSUFFICIENT_CUSTOMER_INFO: "ข้อมูลจากลูกค้าไม่เพียงพอ",
+      INSUFFICIENT_CUSTOMER_INFO: "ข้อมูลจากผู้ใช้งานไม่เพียงพอ",
       BETTER_SOLUTION: "มีวิธีแก้อื่นที่ถูกต้องกว่า",
     }[rejectionReason ?? "INSUFFICIENT_CUSTOMER_INFO"];
     await store.createMessage({

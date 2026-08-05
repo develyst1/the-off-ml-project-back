@@ -270,12 +270,12 @@ function getCustomerCaseStatusLabel(status: string) {
     assigned: "ทีม Tech รับเคสแล้ว",
     tech_replied: "กำลังตรวจสอบ",
     analyzing_solution: "กำลังวิเคราะห์วิธีแก้ไข",
-    awaiting_customer_info: "รอลูกค้าให้ข้อมูล",
-    awaiting_confirmation: "รอยืนยันจากลูกค้า",
+    awaiting_customer_info: "รอผู้ใช้งานให้ข้อมูล",
+    awaiting_confirmation: "รอยืนยันจากผู้ใช้งาน",
     reopened: "เปิดเคสอีกครั้งแล้ว",
     in_progress: "กำลังดำเนินการ",
     resolved: "แก้ไขแล้ว",
-    sent_to_customer: "ส่งคำตอบให้ลูกค้าแล้ว",
+    sent_to_customer: "ส่งคำตอบให้ผู้ใช้งานแล้ว",
     closed: "ปิดเคสแล้ว",
   };
 
@@ -380,7 +380,7 @@ async function closeCaseFromLineRequest(input: LineTextMessageInput, customer: C
       notifyTech: true,
     });
 
-    const systemEventText = "ลูกค้าขอปิดเคสผ่าน LINE รอทีม Tech Support ดำเนินการ";
+    const systemEventText = "ผู้ใช้งานขอปิดเคสผ่าน LINE รอทีม Tech Support ดำเนินการ";
     await store.createMessage({
       caseId: detail.id,
       direction: "INTERNAL",
@@ -1363,7 +1363,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       externalMessageId: input.messageId,
       webhookEventId: input.webhookEventId,
       receivedAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
-      relation: { confidence: 0, reason: "AI ตรวจพบว่าอาจเป็นหัวข้อใหม่ จึงรอให้ลูกค้ายืนยัน" },
+      relation: { confidence: 0, reason: "AI ตรวจพบว่าอาจเป็นหัวข้อใหม่ จึงรอให้ผู้ใช้งานยืนยัน" },
     });
     await lineClient.replyToToken({ replyToken: input.replyToken, text: LINE_CASE_CONFIRMATION_TEXT });
     return { processed: true, duplicate: false, caseDetail };
@@ -1431,7 +1431,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       caseId: supportCase.id,
       direction: "INTERNAL",
       channel: "system",
-      originalText: `ลูกค้ายืนยันเปิดเคสใหม่จากข้อความก่อนหน้า: ${pendingNewCaseText}`,
+      originalText: `ผู้ใช้งานยืนยันเปิดเคสใหม่จากข้อความก่อนหน้า: ${pendingNewCaseText}`,
       externalMessageId: input.messageId,
       webhookEventId: input.webhookEventId,
       senderType: "SYSTEM",
