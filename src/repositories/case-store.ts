@@ -17,7 +17,7 @@ export type CaseStore = {
   setPendingCaseSelection(customerId: string, selection?: PendingCaseSelection): Promise<Customer>;
   setConversationState(customerId: string, state: ConversationState): Promise<Customer>;
   markInboxRead(customerId: string, readAt?: string): Promise<Customer>;
-  createInboxMessage(input: Omit<InboxMessage, "id" | "createdAt">): Promise<InboxMessage>;
+  createInboxMessage(input: Omit<InboxMessage, "id" | "createdAt"> & { createdAt?: string }): Promise<InboxMessage>;
   getInboxMessageByExternalMessageId(externalMessageId: string): Promise<InboxMessage | undefined>;
   getInboxMessageByWebhookEventId(webhookEventId: string): Promise<InboxMessage | undefined>;
   listInboxUsers(): Promise<InboxUser[]>;

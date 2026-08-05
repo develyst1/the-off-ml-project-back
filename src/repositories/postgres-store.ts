@@ -104,6 +104,10 @@ type DbInboxMessage = {
   text: string;
   external_message_id: string | null;
   webhook_event_id: string | null;
+  delivery_status: InboxMessage["deliveryStatus"] | null;
+  delivery_error: string | null;
+  sent_at: Date | null;
+  delivered_at: Date | null;
   created_at: Date;
 };
 
@@ -292,6 +296,10 @@ function mapInboxMessage(row: DbInboxMessage): InboxMessage {
     text: row.text,
     externalMessageId: row.external_message_id ?? undefined,
     webhookEventId: row.webhook_event_id ?? undefined,
+    deliveryStatus: row.delivery_status ?? undefined,
+    deliveryError: row.delivery_error ?? undefined,
+    sentAt: row.sent_at ? dateIso(row.sent_at) : undefined,
+    deliveredAt: row.delivered_at ? dateIso(row.delivered_at) : undefined,
     createdAt: dateIso(row.created_at),
   };
 }
@@ -437,11 +445,11 @@ export class PostgresStore implements CaseStore {
     return mapCustomer(result.rows[0]);
   }
 
-  async createInboxMessage(input: Omit<InboxMessage, "id" | "createdAt">): Promise<InboxMessage> {
+  async createInboxMessage(input: Omit<InboxMessage, "id" | "createdAt"> & { createdAt?: string }): Promise<InboxMessage> {
     const result = await this.query<DbInboxMessage>(
-      `insert into inbox_messages (id, customer_id, direction, sender_type, text, external_message_id, webhook_event_id)
-       values ($1, $2, $3, $4, $5, $6, $7) returning *`,
-      [createId("inbox"), input.customerId, input.direction, input.senderType, input.text, input.externalMessageId ?? null, input.webhookEventId ?? null],
+      `insert into inbox_messages (id, customer_id, direction, sender_type, text, external_message_id, webhook_event_id, delivery_status, delivery_error, sent_at, delivered_at, created_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) returning *`,
+      [createId("inbox"), input.customerId, input.direction, input.senderType, input.text, input.externalMessageId ?? null, input.webhookEventId ?? null, input.deliveryStatus ?? null, input.deliveryError ?? null, input.sentAt ?? null, input.deliveredAt ?? null, input.createdAt ?? nowIso()],
     );
     return mapInboxMessage(result.rows[0]);
   }

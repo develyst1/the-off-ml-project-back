@@ -19,8 +19,16 @@ create table if not exists inbox_messages (
   text text not null,
   external_message_id text,
   webhook_event_id text,
+  delivery_status text,
+  delivery_error text,
+  sent_at timestamptz,
+  delivered_at timestamptz,
   created_at timestamptz not null default now()
 );
+alter table inbox_messages add column if not exists delivery_status text;
+alter table inbox_messages add column if not exists delivery_error text;
+alter table inbox_messages add column if not exists sent_at timestamptz;
+alter table inbox_messages add column if not exists delivered_at timestamptz;
 create unique index if not exists inbox_messages_external_message_id_unique on inbox_messages(external_message_id) where external_message_id is not null;
 create unique index if not exists inbox_messages_webhook_event_id_unique on inbox_messages(webhook_event_id) where webhook_event_id is not null;
 create index if not exists inbox_messages_customer_created_at_idx on inbox_messages(customer_id, created_at);

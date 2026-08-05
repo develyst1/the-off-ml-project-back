@@ -1,9 +1,10 @@
-import type { CaseAiFeedback, CaseAnalysisContext, CaseDetail, CaseStatus, Message, MessageChannel, PendingCaseSelection } from "../domain/types";
+import type { CaseAiFeedback, CaseAnalysisContext, CaseDetail, CaseStatus, InboxMessage, Message, MessageChannel, PendingCaseSelection } from "../domain/types";
 import { env } from "../config/env";
 import { store } from "../repositories/store";
 import { aiCenterClient, type CaseHistoryCandidate, type CaseHistoryMatchDecision } from "./ai-center-client";
 import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
+import { realtimeEventHub } from "./realtime-event-hub";
 import { inferPendingInformationFields } from "../lib/pending-information";
 import { sanitizeCustomerFacingMessage } from "../lib/customer-facing-message";
 import { actionableSolutionSteps } from "../lib/solution-quality";
@@ -502,6 +503,11 @@ export const caseService = {
       });
     }
 
+    // The selected messages are the opening context; new messages are linked only
+    // after this point while the case remains active.
+    await store.setActiveCase(customerId, supportCase.id);
+    await store.setConversationState(customerId, "ACTIVE_CASE_CONVERSATION");
+
     const detail = await store.getCaseDetail(supportCase.id);
     if (!detail) throw new Error("Case detail missing after opening inbox conversation");
     try {
@@ -533,6 +539,41 @@ export const caseService = {
     if (detail.title?.trim()) return detail.title.trim();
     const original = detail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? detail.category ?? "Tech Support";
     return original.trim();
+  },
+  async linkInboxMessageToActiveCase(customerId: string, inboxMessage: InboxMessage) {
+    const inboxUser = await store.getInboxUser(customerId);
+    const activeCaseId = inboxUser?.customer.activeCaseId;
+    if (!activeCaseId) return undefined;
+
+    const detail = await store.getCaseDetail(activeCaseId);
+    if (!detail || CLOSED_CASE_STATUSES.includes(detail.status)) return undefined;
+    if (detail.messages.some((message) => message.metadata?.sourceInboxMessageId === inboxMessage.id)) return detail;
+
+    const isCustomer = inboxMessage.senderType === "CUSTOMER";
+    const isBot = inboxMessage.senderType === "BOT";
+    await store.createMessage({
+      caseId: activeCaseId,
+      direction: isCustomer ? "inbound_customer" : "OUTBOUND",
+      channel: "line",
+      originalText: inboxMessage.text,
+      senderType: isCustomer ? "CUSTOMER" : isBot ? "BOT" : "TECH",
+      contentType: "TEXT",
+      messageType: isCustomer ? "CUSTOMER_ADDITIONAL_INFO" : "CUSTOMER_REPLY",
+      isVisibleToCustomer: inboxMessage.deliveryStatus !== "FAILED",
+      deliveryStatus: isCustomer ? "RECEIVED" : inboxMessage.deliveryStatus ?? "SENT",
+      deliveryError: inboxMessage.deliveryError,
+      externalMessageId: inboxMessage.externalMessageId,
+      webhookEventId: inboxMessage.webhookEventId,
+      receivedAt: isCustomer ? inboxMessage.createdAt : undefined,
+      sentAt: inboxMessage.sentAt ?? (!isCustomer ? inboxMessage.createdAt : undefined),
+      deliveredAt: inboxMessage.deliveredAt,
+      metadata: {
+        source: isCustomer ? "line" : "tech_console",
+        sourceInboxMessageId: inboxMessage.id,
+        sourceCreatedAt: inboxMessage.createdAt,
+      },
+    });
+    return store.getCaseDetail(activeCaseId);
   },
 
   async getCustomerCases(customerId: string) {
@@ -1338,6 +1379,14 @@ export const caseService = {
         const delivery = await lineClient.reply({ lineUserId: detail.customer.lineUserId, text: outboundText });
         if (!delivery.delivered) throw new Error("LINE ยังไม่ยืนยันการส่งข้อความ");
       } catch (error) {
+        await store.createInboxMessage({
+          customerId: detail.customer.id,
+          direction: "OUTBOUND",
+          senderType: "TECH",
+          text: outboundText,
+          deliveryStatus: "FAILED",
+          deliveryError: error instanceof Error ? error.message : String(error),
+        });
         await store.updateMessage(outboundMessage.id, {
           deliveryStatus: "FAILED",
           deliveryError: error instanceof Error ? error.message : String(error),
@@ -1351,6 +1400,27 @@ export const caseService = {
         deliveryStatus: "SENT",
         sentAt,
         deliveredAt: sentAt,
+      });
+      const inboxMessage = await store.createInboxMessage({
+        customerId: detail.customer.id,
+        direction: "OUTBOUND",
+        senderType: "TECH",
+        text: outboundText,
+        deliveryStatus: "SENT",
+        sentAt,
+        deliveredAt: sentAt,
+        createdAt: sentAt,
+      });
+      realtimeEventHub.publish({
+        name: "conversation.message.created",
+        data: {
+          eventId: `case:${input.caseId}:close:${outboundMessage.id}`,
+          messageId: inboxMessage.id,
+          conversationId: detail.customer.id,
+          userId: detail.customer.id,
+          createdAt: inboxMessage.createdAt,
+          direction: inboxMessage.direction,
+        },
       });
       await store.updateCase(input.caseId, {
         status: "closed",
@@ -1396,6 +1466,14 @@ export const caseService = {
       delivery = await lineClient.reply({ lineUserId: detail.customer.lineUserId, text });
       if (!delivery.delivered) throw new Error("LINE ยังไม่ยืนยันการส่งข้อความ");
     } catch (error) {
+      await store.createInboxMessage({
+        customerId: detail.customer.id,
+        direction: "OUTBOUND",
+        senderType: "TECH",
+        text,
+        deliveryStatus: "FAILED",
+        deliveryError: error instanceof Error ? error.message : String(error),
+      });
       await store.createMessage({
         caseId: input.caseId,
         direction: "OUTBOUND",
@@ -1423,7 +1501,7 @@ export const caseService = {
       deliveryStatus: "PROCESSED",
     });
 
-    await store.createMessage({
+    const deliveredMessage = await store.createMessage({
       caseId: input.caseId,
       direction: "OUTBOUND",
       channel: "line",
@@ -1436,6 +1514,27 @@ export const caseService = {
       sentAt,
       deliveredAt: sentAt,
       externalMessageId,
+    });
+    const inboxMessage = await store.createInboxMessage({
+      customerId: detail.customer.id,
+      direction: "OUTBOUND",
+      senderType: "TECH",
+      text,
+      deliveryStatus: "SENT",
+      sentAt,
+      deliveredAt: sentAt,
+      createdAt: sentAt,
+    });
+    realtimeEventHub.publish({
+      name: "conversation.message.created",
+      data: {
+        eventId: `case:${input.caseId}:reply:${deliveredMessage.id}`,
+        messageId: inboxMessage.id,
+        conversationId: detail.customer.id,
+        userId: detail.customer.id,
+        createdAt: inboxMessage.createdAt,
+        direction: inboxMessage.direction,
+      },
     });
 
     const solutionAnalysis = await extractAndStoreTechSolution({

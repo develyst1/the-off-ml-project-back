@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { store } from "../repositories/store";
 import { caseService } from "../services/case-service";
 import { lineClient } from "../services/line-client";
+import { realtimeEventHub } from "../services/realtime-event-hub";
 
 type InboxReplyBody = { text?: string };
 type OpenCaseBody = {
@@ -46,12 +47,45 @@ inboxRoutes.post("/:customerId/reply", async (c) => {
   const text = body.text?.trim();
   if (!text) return c.json({ error: "text_required" }, 400);
 
-  await lineClient.reply({ lineUserId: user.customer.lineUserId, text });
-  await store.createInboxMessage({
+  let delivery: { delivered: boolean };
+  try {
+    delivery = await lineClient.reply({ lineUserId: user.customer.lineUserId, text });
+    if (!delivery.delivered) throw new Error("LINE did not confirm delivery");
+  } catch (error) {
+    const failedMessage = await store.createInboxMessage({
+      customerId,
+      direction: "OUTBOUND",
+      senderType: "TECH",
+      text,
+      deliveryStatus: "FAILED",
+      deliveryError: error instanceof Error ? error.message : String(error),
+    });
+    await caseService.linkInboxMessageToActiveCase(customerId, failedMessage);
+    return c.json({ error: "line_reply_failed" }, 502);
+  }
+
+  const sentAt = new Date().toISOString();
+  const inboxMessage = await store.createInboxMessage({
     customerId,
     direction: "OUTBOUND",
     senderType: "TECH",
     text,
+    deliveryStatus: "SENT",
+    sentAt,
+    deliveredAt: sentAt,
+    createdAt: sentAt,
+  });
+  await caseService.linkInboxMessageToActiveCase(customerId, inboxMessage);
+  realtimeEventHub.publish({
+    name: "conversation.message.created",
+    data: {
+      eventId: `inbox:${inboxMessage.id}`,
+      messageId: inboxMessage.id,
+      conversationId: customerId,
+      userId: customerId,
+      createdAt: inboxMessage.createdAt,
+      direction: inboxMessage.direction,
+    },
   });
   await store.setConversationState(customerId, "HANDOFF_TO_TECH");
   return c.json({ data: await store.getInboxUser(customerId) });

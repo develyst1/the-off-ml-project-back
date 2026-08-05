@@ -59,6 +59,10 @@ export type InboxMessage = {
   senderType: "CUSTOMER" | "TECH" | "BOT";
   externalMessageId?: string;
   webhookEventId?: string;
+  deliveryStatus?: "PENDING" | "SENT" | "DELIVERED" | "FAILED";
+  deliveryError?: string;
+  sentAt?: string;
+  deliveredAt?: string;
   createdAt: string;
 };
 

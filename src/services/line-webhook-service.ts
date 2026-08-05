@@ -314,7 +314,13 @@ export async function receiveLineInboxMessage(input: LineTextMessageInput): Prom
     text: input.text,
     externalMessageId: input.messageId,
     webhookEventId: input.webhookEventId,
+    deliveryStatus: "DELIVERED",
+    createdAt: input.timestamp ? new Date(input.timestamp).toISOString() : undefined,
   });
+
+  // Keep the open case and Inbox on the same conversation record. The active
+  // case is cleared on close, so later messages cannot leak into a closed case.
+  await caseService.linkInboxMessageToActiveCase(customer.id, inboxMessage);
 
   if (customer.conversationState === "IDLE" && isGreetingMessage(input.text)) {
     try {

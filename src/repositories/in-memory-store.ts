@@ -94,8 +94,8 @@ export class InMemoryStore implements CaseStore {
     return updated;
   }
 
-  async createInboxMessage(input: Omit<InboxMessage, "id" | "createdAt">): Promise<InboxMessage> {
-    const message: InboxMessage = { ...input, id: createId("inbox"), createdAt: nowIso() };
+  async createInboxMessage(input: Omit<InboxMessage, "id" | "createdAt"> & { createdAt?: string }): Promise<InboxMessage> {
+    const message: InboxMessage = { ...input, id: createId("inbox"), createdAt: input.createdAt ?? nowIso() };
     this.inboxMessages.set(message.id, message);
     return message;
   }
