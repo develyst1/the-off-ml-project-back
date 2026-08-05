@@ -101,6 +101,10 @@ type DbMessage = {
 type DbInboxMessage = {
   id: string;
   customer_id: string;
+  case_id: string | null;
+  assigned_case_id: string | null;
+  assigned_by: string | null;
+  assigned_at: Date | null;
   direction: InboxMessage["direction"];
   sender_type: InboxMessage["senderType"];
   text: string;
@@ -295,6 +299,10 @@ function mapInboxMessage(row: DbInboxMessage): InboxMessage {
   return {
     id: row.id,
     customerId: row.customer_id,
+    caseId: row.case_id ?? undefined,
+    assignedCaseId: row.assigned_case_id ?? undefined,
+    assignedBy: row.assigned_by ?? undefined,
+    assignedAt: row.assigned_at ? dateIso(row.assigned_at) : undefined,
     direction: row.direction,
     senderType: row.sender_type,
     text: row.text,
@@ -451,10 +459,19 @@ export class PostgresStore implements CaseStore {
 
   async createInboxMessage(input: Omit<InboxMessage, "id" | "createdAt"> & { createdAt?: string }): Promise<InboxMessage> {
     const result = await this.query<DbInboxMessage>(
-      `insert into inbox_messages (id, customer_id, direction, sender_type, text, external_message_id, webhook_event_id, delivery_status, delivery_error, sent_at, delivered_at, created_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) returning *`,
-      [createId("inbox"), input.customerId, input.direction, input.senderType, input.text, input.externalMessageId ?? null, input.webhookEventId ?? null, input.deliveryStatus ?? null, input.deliveryError ?? null, input.sentAt ?? null, input.deliveredAt ?? null, input.createdAt ?? nowIso()],
+      `insert into inbox_messages (id, customer_id, case_id, assigned_case_id, assigned_by, assigned_at, direction, sender_type, text, external_message_id, webhook_event_id, delivery_status, delivery_error, sent_at, delivered_at, created_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) returning *`,
+      [createId("inbox"), input.customerId, input.caseId ?? null, input.assignedCaseId ?? input.caseId ?? null, input.assignedBy ?? null, input.assignedAt ?? null, input.direction, input.senderType, input.text, input.externalMessageId ?? null, input.webhookEventId ?? null, input.deliveryStatus ?? null, input.deliveryError ?? null, input.sentAt ?? null, input.deliveredAt ?? null, input.createdAt ?? nowIso()],
     );
+    return mapInboxMessage(result.rows[0]);
+  }
+
+  async assignInboxMessageToCase(messageId: string, input: { caseId: string; assignedBy: string; assignedAt?: string }): Promise<InboxMessage> {
+    const result = await this.query<DbInboxMessage>(
+      "update inbox_messages set case_id = $2, assigned_case_id = $2, assigned_by = $3, assigned_at = $4 where id = $1 returning *",
+      [messageId, input.caseId, input.assignedBy, input.assignedAt ?? nowIso()],
+    );
+    if (!result.rows[0]) throw new Error("Inbox message not found");
     return mapInboxMessage(result.rows[0]);
   }
 

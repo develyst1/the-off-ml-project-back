@@ -54,6 +54,10 @@ export type Customer = {
 export type InboxMessage = {
   id: string;
   customerId: string;
+  caseId?: string;
+  assignedCaseId?: string;
+  assignedBy?: string;
+  assignedAt?: string;
   direction: "INBOUND" | "OUTBOUND";
   text: string;
   senderType: "CUSTOMER" | "TECH" | "BOT";

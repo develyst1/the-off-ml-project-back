@@ -100,6 +100,14 @@ export class InMemoryStore implements CaseStore {
     return message;
   }
 
+  async assignInboxMessageToCase(messageId: string, input: { caseId: string; assignedBy: string; assignedAt?: string }): Promise<InboxMessage> {
+    const message = this.inboxMessages.get(messageId);
+    if (!message) throw new Error("Inbox message not found");
+    const updated = { ...message, caseId: input.caseId, assignedCaseId: input.caseId, assignedBy: input.assignedBy, assignedAt: input.assignedAt ?? nowIso() };
+    this.inboxMessages.set(messageId, updated);
+    return updated;
+  }
+
   async getInboxMessageByExternalMessageId(externalMessageId: string): Promise<InboxMessage | undefined> {
     return [...this.inboxMessages.values()].find((message) => message.externalMessageId === externalMessageId);
   }

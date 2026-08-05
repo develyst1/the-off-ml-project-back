@@ -28,6 +28,13 @@ function isGenericResolutionOutcome(value: string) {
   return /(ข้อมูล.*อัปเดต.*เรียบร้อย|ใช้งาน.*ได้.*แล้ว|แก้ไข.*เรียบร้อย|ดำเนินการ.*เรียบร้อย|เรียบร้อยแล้ว)/u.test(value.trim());
 }
 
+function normalizeExtractedSolutionStep(value: string) {
+  return value
+    .replace(/\s*ปิดเคส\s+OFF-\d{4}-\d+\b/giu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
 function contextTime(message: Pick<Message, "createdAt" | "receivedAt" | "metadata">) {
   const sourceCreatedAt = typeof message.metadata?.sourceCreatedAt === "string" ? message.metadata.sourceCreatedAt : undefined;
   return sourceCreatedAt ?? message.receivedAt ?? message.createdAt;
@@ -256,8 +263,10 @@ async function extractAndStoreTechSolution(input: {
   // to put in `solutionSteps`.
   // Prefer the concrete action completed by Tech Support. A generic outcome
   // such as "ข้อมูลอัปเดตเรียบร้อยแล้ว" explains the result, not the fix.
-  const specificSolutionSteps = solutionSteps.filter((step) => !isGenericResolutionOutcome(step));
-  const extractedSolutionSteps = [...new Set([...teamActions, ...specificSolutionSteps])];
+  const specificSolutionSteps = solutionSteps
+    .map(normalizeExtractedSolutionStep)
+    .filter((step) => step && !isGenericResolutionOutcome(step));
+  const extractedSolutionSteps = [...new Set([...teamActions.map(normalizeExtractedSolutionStep), ...specificSolutionSteps].filter(Boolean))];
   const normalizedSolutionAnalysis = {
     ...solutionAnalysis,
     hasTroubleshootingSteps: extractedSolutionSteps.length > 0,
@@ -579,14 +588,22 @@ export const caseService = {
     const original = detail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? detail.category ?? "Tech Support";
     return original.trim();
   },
-  async linkInboxMessageToActiveCase(customerId: string, inboxMessage: InboxMessage) {
+  async linkInboxMessageToActiveCase(customerId: string, inboxMessage: InboxMessage, forcedCaseId?: string) {
     const inboxUser = await store.getInboxUser(customerId);
-    const activeCaseId = inboxUser?.customer.activeCaseId;
+    const activeCaseId = forcedCaseId ?? inboxUser?.customer.activeCaseId;
     if (!activeCaseId) return undefined;
+
+    const openCases = (inboxUser?.cases ?? []).filter((item) => !CLOSED_CASE_STATUSES.includes(item.status));
+    // Never infer an association when this user has more than one open case.
+    if (!forcedCaseId && (openCases.length !== 1 || openCases[0]?.id !== activeCaseId)) return undefined;
 
     const detail = await store.getCaseDetail(activeCaseId);
     if (!detail || CLOSED_CASE_STATUSES.includes(detail.status)) return undefined;
     if (detail.messages.some((message) => message.metadata?.sourceInboxMessageId === inboxMessage.id)) return detail;
+    await store.assignInboxMessageToCase(inboxMessage.id, {
+      caseId: activeCaseId,
+      assignedBy: "SYSTEM_ACTIVE_CASE",
+    });
 
     const isCustomer = inboxMessage.senderType === "CUSTOMER";
     const isBot = inboxMessage.senderType === "BOT";
@@ -1977,6 +1994,20 @@ export const caseService = {
 
   getCase(caseId: string) {
     return store.getCaseDetail(caseId);
+  },
+
+  async assignInboxMessageToCase(input: { messageId: string; caseId: string; assignedBy: string }) {
+    const supportCase = await store.getCaseDetail(input.caseId);
+    if (!supportCase || CLOSED_CASE_STATUSES.includes(supportCase.status)) throw new Error("ไม่พบเคสที่เปิดอยู่สำหรับจัดข้อความ");
+    const message = await store.assignInboxMessageToCase(input.messageId, { caseId: input.caseId, assignedBy: input.assignedBy });
+    await this.linkInboxMessageToActiveCase(supportCase.customer.id, { ...message, caseId: input.caseId }, input.caseId);
+    return message;
+  },
+
+  async setActiveCaseFromConsole(caseId: string) {
+    const detail = await store.getCaseDetail(caseId);
+    if (!detail || CLOSED_CASE_STATUSES.includes(detail.status)) throw new Error("เลือกได้เฉพาะเคสที่ยังเปิดอยู่");
+    return store.setActiveCase(detail.customer.id, caseId);
   },
 
   async refreshExtractedSolution(caseId: string) {

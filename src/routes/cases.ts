@@ -203,6 +203,23 @@ caseRoutes.patch("/:id/ai-feedback", async (c) => {
   return c.json({ data: await caseService.updateAiFeedback(c.req.param("id"), field, value) });
 });
 
+caseRoutes.get("/:id/messages", async (c) => {
+  const detail = await caseService.getCase(c.req.param("id"));
+  if (!detail) return c.json({ error: "case_not_found" }, 404);
+  return c.json({ data: [...detail.messages].sort((a, b) => new Date(a.receivedAt ?? a.sentAt ?? a.createdAt).getTime() - new Date(b.receivedAt ?? b.sentAt ?? b.createdAt).getTime()) });
+});
+
+caseRoutes.post("/:id/messages", async (c) => {
+  const body = await readJsonObject(c);
+  const content = typeof body.content === "string" ? body.content.trim() : "";
+  if (!content) return c.json({ error: "content_required" }, 400);
+  return c.json({ data: await caseService.sendConsoleReply({ caseId: c.req.param("id"), text: content }) });
+});
+
+caseRoutes.post("/:id/set-active", async (c) => {
+  return c.json({ data: await caseService.setActiveCaseFromConsole(c.req.param("id")) });
+});
+
 caseRoutes.post("/:id/refresh-solution", async (c) => {
   return c.json({ data: await caseService.refreshExtractedSolution(c.req.param("id")) });
 });

@@ -14,6 +14,10 @@ create table if not exists customers (
 create table if not exists inbox_messages (
   id text primary key,
   customer_id text not null references customers(id) on delete cascade,
+  case_id text,
+  assigned_case_id text,
+  assigned_by text,
+  assigned_at timestamptz,
   direction text not null,
   sender_type text not null,
   text text not null,
@@ -29,10 +33,15 @@ alter table inbox_messages add column if not exists delivery_status text;
 alter table inbox_messages add column if not exists delivery_error text;
 alter table inbox_messages add column if not exists sent_at timestamptz;
 alter table inbox_messages add column if not exists delivered_at timestamptz;
+alter table inbox_messages add column if not exists case_id text;
+alter table inbox_messages add column if not exists assigned_case_id text;
+alter table inbox_messages add column if not exists assigned_by text;
+alter table inbox_messages add column if not exists assigned_at timestamptz;
 create unique index if not exists inbox_messages_external_message_id_unique on inbox_messages(external_message_id) where external_message_id is not null;
 create unique index if not exists inbox_messages_webhook_event_id_unique on inbox_messages(webhook_event_id) where webhook_event_id is not null;
 create index if not exists inbox_messages_customer_created_at_idx on inbox_messages(customer_id, created_at);
 create index if not exists inbox_messages_created_at_idx on inbox_messages(created_at);
+create index if not exists inbox_messages_case_sent_at_idx on inbox_messages(case_id, sent_at, created_at);
 
 create table if not exists support_cases (
   id text primary key,

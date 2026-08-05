@@ -30,6 +30,16 @@ inboxRoutes.get("/:customerId", async (c) => {
   return c.json({ data: user });
 });
 
+inboxRoutes.post("/messages/:messageId/assign-case", async (c) => {
+  const body: { caseId?: string; assignedBy?: string } = await c.req.json<{ caseId?: string; assignedBy?: string }>().catch(() => ({}));
+  if (!body.caseId?.trim()) return c.json({ error: "case_id_required" }, 400);
+  return c.json({ data: await caseService.assignInboxMessageToCase({
+    messageId: c.req.param("messageId"),
+    caseId: body.caseId,
+    assignedBy: body.assignedBy?.trim() || "Tech Support Console",
+  }) });
+});
+
 inboxRoutes.post("/:customerId/read", async (c) => {
   const customerId = c.req.param("customerId");
   const user = await store.getInboxUser(customerId);
