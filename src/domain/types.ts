@@ -228,8 +228,10 @@ export type Message = {
 
 export type Analysis = {
   id: string;
+  analysisId: string;
   caseId: string;
   messageId?: string;
+  analysisVersion: number;
   analysisType: "customer_message" | "customer_outcome" | "tech_solution" | "customer_rewrite" | "case_match" | "tech_message_review";
   summary?: string;
   category?: string;
@@ -260,6 +262,20 @@ export type CaseAiFeedback = {
   aiCategory?: string;
   aiSummary?: string;
   aiSolution?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AiReviewFeedback = {
+  id: string;
+  caseId: string;
+  analysisId?: string;
+  analysisVersion: number;
+  feedbackType: "ISSUE_UNDERSTANDING" | "SOLUTION_SELECTION";
+  result: "CORRECT" | "INCORRECT";
+  reviewSource: "CASE_DETAIL" | "CONFIDENCE_REVIEW";
+  reason?: string;
+  reviewedBy?: string;
   createdAt: string;
   updatedAt: string;
 };

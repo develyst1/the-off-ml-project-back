@@ -249,7 +249,7 @@ describe("LINE customer close-case requests", () => {
     expect(detail?.status).toBe("awaiting_tech");
     expect(detail?.messages.some((message) => message.originalText === "ปิดเคส" && message.senderType === "CUSTOMER")).toBe(true);
     expect(detail?.messages.some((message) => message.messageType === "CASE_FORWARDED")).toBe(true);
-    expect(detail?.messages.some((message) => message.originalText.includes("ลูกค้าขอปิดเคสผ่าน LINE") && message.senderType === "SYSTEM")).toBe(true);
+    expect(detail?.messages.some((message) => message.originalText.includes("ผู้ใช้งานขอปิดเคสผ่าน LINE") && message.senderType === "SYSTEM")).toBe(true);
     expect(lineReplies.at(-1)).toContain("รับคำขอปิดเคส");
     expect(lineReplies.at(-1)).not.toContain("รบกวนแจ้งหมายเลขเคส");
     expect(refreshedCustomer.activeCaseId).toBe(supportCase.id);

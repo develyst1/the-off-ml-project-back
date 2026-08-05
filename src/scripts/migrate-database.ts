@@ -12,8 +12,122 @@ const pool = new Pool({
   ssl: env.DATABASE_SSL ? { rejectUnauthorized: false } : undefined,
 });
 
+type PostgresError = {
+  message?: string;
+  code?: string;
+  position?: string;
+  detail?: string;
+  hint?: string;
+};
+
+function splitSqlStatements(sql: string) {
+  const statements: string[] = [];
+  let start = 0;
+  let quote: "'" | '"' | null = null;
+  let dollarQuote: string | null = null;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let index = 0; index < sql.length; index += 1) {
+    const character = sql[index];
+    const next = sql[index + 1];
+
+    if (lineComment) {
+      if (character === "\n") lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (character === "*" && next === "/") {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (dollarQuote) {
+      if (sql.startsWith(dollarQuote, index)) {
+        index += dollarQuote.length - 1;
+        dollarQuote = null;
+      }
+      continue;
+    }
+    if (quote) {
+      if (character === quote) {
+        if (quote === "'" && next === "'") {
+          index += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (character === "-" && next === "-") {
+      lineComment = true;
+      index += 1;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (character === "$") {
+      const match = sql.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/);
+      if (match) {
+        dollarQuote = match[0];
+        index += dollarQuote.length - 1;
+        continue;
+      }
+    }
+    if (character === ";") {
+      const statement = sql.slice(start, index + 1).trim();
+      if (statement) statements.push(statement);
+      start = index + 1;
+    }
+  }
+
+  const trailingStatement = sql.slice(start).trim();
+  if (trailingStatement) statements.push(trailingStatement);
+  return statements;
+}
+
+function statementName(sql: string, index: number) {
+  const firstSqlLine = sql
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0 && !line.startsWith("--"));
+  return `schema_${index + 1}:${firstSqlLine?.slice(0, 100) ?? "unknown"}`;
+}
+
+async function runSchemaMigration() {
+  const statements = splitSqlStatements(schemaSql);
+  for (const [index, statement] of statements.entries()) {
+    const name = statementName(statement, index);
+    try {
+      await pool.query(statement);
+    } catch (error) {
+      const migrationError = error as PostgresError;
+      console.error(JSON.stringify({
+        migrated: false,
+        phase: "schema",
+        statement: name,
+        sql: statement,
+        message: migrationError.message,
+        code: migrationError.code,
+        position: migrationError.position,
+        detail: migrationError.detail,
+        hint: migrationError.hint,
+      }));
+      throw error;
+    }
+  }
+}
+
 try {
-  await pool.query(schemaSql);
+  await runSchemaMigration();
   await pool.query("begin");
   await pool.query(`
     update support_cases c
@@ -96,6 +210,15 @@ try {
     missingProblemSummary: Number(missingSummaryRows[0]?.count ?? 0),
   }));
 } catch (error) {
+  const migrationError = error as PostgresError;
+  console.error(JSON.stringify({
+    migrated: false,
+    message: migrationError.message ?? "Database migration failed",
+    code: migrationError.code,
+    position: migrationError.position,
+    detail: migrationError.detail,
+    hint: migrationError.hint,
+  }));
   await pool.query("rollback").catch(() => undefined);
   throw error;
 } finally {

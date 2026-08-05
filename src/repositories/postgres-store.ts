@@ -1,6 +1,6 @@
 import pg from "pg";
 import { env } from "../config/env";
-import type { Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { AiReviewFeedback, Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore, ChatRetentionCleanupResult } from "./case-store";
 import { normalizeCaseMessage } from "./case-message-normalizer";
@@ -121,6 +121,7 @@ type DbAnalysis = {
   id: string;
   case_id: string;
   message_id: string | null;
+  analysis_version: number | null;
   analysis_type: Analysis["analysisType"];
   summary: string | null;
   category: string | null;
@@ -138,6 +139,20 @@ type DbCaseAiFeedback = {
   ai_category: string | null;
   ai_summary: string | null;
   ai_solution: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+type DbAiReviewFeedback = {
+  id: string;
+  case_id: string;
+  analysis_id: string | null;
+  analysis_version: number;
+  feedback_type: AiReviewFeedback["feedbackType"];
+  result: AiReviewFeedback["result"];
+  review_source: AiReviewFeedback["reviewSource"];
+  reason: string | null;
+  reviewed_by: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -319,8 +334,10 @@ function mapInboxMessage(row: DbInboxMessage): InboxMessage {
 function mapAnalysis(row: DbAnalysis): Analysis {
   return {
     id: row.id,
+    analysisId: row.id,
     caseId: row.case_id,
     messageId: row.message_id ?? undefined,
+    analysisVersion: row.analysis_version ?? 1,
     analysisType: row.analysis_type,
     summary: row.summary ?? undefined,
     category: row.category ?? undefined,
@@ -340,6 +357,22 @@ function mapCaseAiFeedback(row: DbCaseAiFeedback): CaseAiFeedback {
     aiCategory: row.ai_category ?? undefined,
     aiSummary: row.ai_summary ?? undefined,
     aiSolution: row.ai_solution ?? undefined,
+    createdAt: dateIso(row.created_at),
+    updatedAt: dateIso(row.updated_at),
+  };
+}
+
+function mapAiReviewFeedback(row: DbAiReviewFeedback): AiReviewFeedback {
+  return {
+    id: row.id,
+    caseId: row.case_id,
+    analysisId: row.analysis_id ?? undefined,
+    analysisVersion: row.analysis_version,
+    feedbackType: row.feedback_type,
+    result: row.result,
+    reviewSource: row.review_source,
+    reason: row.reason ?? undefined,
+    reviewedBy: row.reviewed_by ?? undefined,
     createdAt: dateIso(row.created_at),
     updatedAt: dateIso(row.updated_at),
   };
@@ -744,10 +777,15 @@ export class PostgresStore implements CaseStore {
     return result.rows[0] ? mapMessage(result.rows[0]) : undefined;
   }
 
-  async createAnalysis(input: Omit<Analysis, "id" | "createdAt">): Promise<Analysis> {
+  async createAnalysis(input: Omit<Analysis, "id" | "analysisId" | "createdAt" | "analysisVersion">): Promise<Analysis> {
     const result = await this.query<DbAnalysis>(
-      `insert into analyses (id, case_id, message_id, analysis_type, summary, category, confidence, raw_json, created_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `insert into analyses (
+         id, case_id, message_id, analysis_version, analysis_type,
+         summary, category, confidence, raw_json, created_at
+       )
+       select $1, $2, $3, coalesce(max(analysis_version), 0) + 1, $4, $5, $6, $7, $8, $9
+       from analyses
+       where case_id = $2
        returning *`,
       [
         createId("ana"),
@@ -763,6 +801,43 @@ export class PostgresStore implements CaseStore {
     );
 
     return mapAnalysis(result.rows[0]);
+  }
+
+  async upsertAiReviewFeedback(input: Omit<AiReviewFeedback, "id" | "createdAt" | "updatedAt">): Promise<AiReviewFeedback> {
+    const timestamp = nowIso();
+    const result = await this.query<DbAiReviewFeedback>(
+      `insert into ai_review_feedback (
+        id, case_id, analysis_id, analysis_version, feedback_type, result,
+        review_source, reason, reviewed_by, created_at, updated_at
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      on conflict (case_id, analysis_version, feedback_type) do update set
+        analysis_id = excluded.analysis_id,
+        result = excluded.result,
+        review_source = excluded.review_source,
+        reason = excluded.reason,
+        reviewed_by = excluded.reviewed_by,
+        updated_at = excluded.updated_at
+      returning *`,
+      [
+        createId("review"),
+        input.caseId,
+        input.analysisId ?? null,
+        input.analysisVersion,
+        input.feedbackType,
+        input.result,
+        input.reviewSource,
+        input.reason ?? null,
+        input.reviewedBy ?? null,
+        timestamp,
+        timestamp,
+      ],
+    );
+    return mapAiReviewFeedback(result.rows[0]);
+  }
+
+  async listAiReviewFeedback(): Promise<AiReviewFeedback[]> {
+    const result = await this.query<DbAiReviewFeedback>("select * from ai_review_feedback order by updated_at desc");
+    return result.rows.map(mapAiReviewFeedback);
   }
 
   async upsertCaseAiFeedback(input: Omit<CaseAiFeedback, "id" | "createdAt" | "updatedAt">): Promise<CaseAiFeedback> {

@@ -437,7 +437,10 @@ export const caseService = {
     const caseAnalysisContext = buildInboxCaseAnalysisContext({
       subject: resolvedTitle,
       detail: resolvedDescription,
-      messages: timelineMessages,
+      // Only messages selected in the open-case modal are reference context
+      // for the initial AI analysis. The complete range remains the case
+      // timeline, but must not dilute the selected problem evidence.
+      messages: sourceMessages,
     });
     const feedbackExamples = await feedbackExamplesForContext(caseAnalysisContext);
     const supportCase = await store.createCase({
@@ -526,7 +529,7 @@ export const caseService = {
         text: `${resolvedTitle}\n${resolvedDescription}`,
         caseAnalysisContext,
         feedbackExamples,
-        conversationContext: timelineMessages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : "ทีม Tech"}: ${message.text}`),
+        conversationContext: sourceMessages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : "ทีม Tech"}: ${message.text}`),
       });
       await store.createAnalysis({
         caseId: supportCase.id,

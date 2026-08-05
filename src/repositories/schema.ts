@@ -192,6 +192,7 @@ create table if not exists analyses (
   id text primary key,
   case_id text not null references support_cases(id) on delete cascade,
   message_id text references messages(id) on delete set null,
+  analysis_version integer not null default 1,
   analysis_type text not null,
   summary text,
   category text,
@@ -199,6 +200,24 @@ create table if not exists analyses (
   raw_json jsonb not null,
   created_at timestamptz not null default now()
 );
+
+alter table analyses add column if not exists analysis_version integer not null default 1;
+with ranked_analyses as (
+  select
+    id,
+    row_number() over (
+      partition by case_id
+      order by created_at asc, id asc
+    )::integer as analysis_version
+  from analyses
+)
+update analyses
+set analysis_version = ranked_analyses.analysis_version
+from ranked_analyses
+where analyses.id = ranked_analyses.id
+  and analyses.analysis_version is distinct from ranked_analyses.analysis_version;
+create unique index if not exists analyses_case_id_analysis_version_uidx
+  on analyses(case_id, analysis_version);
 
 create table if not exists case_ai_feedback (
   id text primary key,
@@ -213,6 +232,162 @@ create table if not exists case_ai_feedback (
   updated_at timestamptz not null default now(),
   unique (case_id, feedback_type)
 );
+
+-- Central source of truth for Tech review results. IDs remain text because the
+-- existing support_cases and analyses primary keys are text-based.
+create table if not exists ai_review_feedback (
+  id text primary key,
+  case_id text not null references support_cases(id) on delete cascade,
+  analysis_id text references analyses(id) on delete set null,
+  analysis_version integer not null default 1,
+  feedback_type varchar(50) not null,
+  result varchar(20) not null,
+  review_source varchar(30) not null,
+  reason text,
+  reviewed_by varchar(255),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint ai_review_feedback_type_check check (
+    feedback_type in ('ISSUE_UNDERSTANDING', 'SOLUTION_SELECTION')
+  ),
+  constraint ai_review_feedback_result_check check (
+    result in ('CORRECT', 'INCORRECT')
+  ),
+  constraint ai_review_feedback_source_check check (
+    review_source in ('CASE_DETAIL', 'CONFIDENCE_REVIEW')
+  ),
+  constraint ai_review_feedback_unique unique (
+    case_id,
+    analysis_version,
+    feedback_type
+  )
+);
+
+-- Existing databases may already have this table from a partial rollout.
+-- PostgreSQL does not support ADD CONSTRAINT IF NOT EXISTS, so check the
+-- catalog before adding the named unique constraint.
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'ai_review_feedback_unique'
+      and conrelid = 'ai_review_feedback'::regclass
+  ) then
+    alter table ai_review_feedback
+      add constraint ai_review_feedback_unique
+      unique (case_id, analysis_version, feedback_type);
+  end if;
+end $$;
+
+create index if not exists idx_ai_review_feedback_case
+  on ai_review_feedback(case_id, analysis_version);
+create index if not exists idx_ai_review_feedback_analytics
+  on ai_review_feedback(feedback_type, result, updated_at);
+
+-- Preserve historical Case Detail feedback before later phases move reads and
+-- writes to ai_review_feedback. case_ai_feedback takes precedence because it
+-- already stores the feedback snapshot; legacy support_cases fields fill gaps.
+insert into ai_review_feedback (
+  id,
+  case_id,
+  analysis_id,
+  analysis_version,
+  feedback_type,
+  result,
+  review_source,
+  reason,
+  reviewed_by,
+  created_at,
+  updated_at
+)
+select
+  'arf_legacy_' || md5(concat_ws('|', feedback.case_id, feedback.analysis_version::text, feedback.feedback_type)),
+  feedback.case_id,
+  null,
+  feedback.analysis_version,
+  feedback.feedback_type,
+  feedback.result,
+  'CASE_DETAIL',
+  null,
+  null,
+  feedback.created_at,
+  feedback.updated_at
+from (
+  select
+    legacy.case_id,
+    greatest(coalesce(support_case.problem_summary_version, 1), 1) as analysis_version,
+    legacy.feedback_type,
+    case upper(legacy.value)
+      when 'CORRECT' then 'CORRECT'
+      when 'LIKE' then 'CORRECT'
+      when 'POSITIVE' then 'CORRECT'
+      when 'TRUE' then 'CORRECT'
+      when 'INCORRECT' then 'INCORRECT'
+      when 'DISLIKE' then 'INCORRECT'
+      when 'NEGATIVE' then 'INCORRECT'
+      when 'FALSE' then 'INCORRECT'
+    end as result,
+    legacy.created_at,
+    legacy.updated_at
+  from case_ai_feedback legacy
+  join support_cases support_case on support_case.id = legacy.case_id
+) feedback
+where feedback.result is not null
+on conflict (case_id, analysis_version, feedback_type) do nothing;
+
+insert into ai_review_feedback (
+  id,
+  case_id,
+  analysis_id,
+  analysis_version,
+  feedback_type,
+  result,
+  review_source,
+  reason,
+  reviewed_by,
+  created_at,
+  updated_at
+)
+select
+  'arf_legacy_' || md5(concat_ws('|', feedback.case_id, feedback.analysis_version::text, feedback.feedback_type)),
+  feedback.case_id,
+  null,
+  feedback.analysis_version,
+  feedback.feedback_type,
+  feedback.result,
+  'CASE_DETAIL',
+  null,
+  null,
+  feedback.created_at,
+  feedback.updated_at
+from (
+  select
+    support_case.id as case_id,
+    greatest(coalesce(support_case.problem_summary_version, 1), 1) as analysis_version,
+    legacy.feedback_type,
+    case upper(legacy.value)
+      when 'CORRECT' then 'CORRECT'
+      when 'LIKE' then 'CORRECT'
+      when 'POSITIVE' then 'CORRECT'
+      when 'TRUE' then 'CORRECT'
+      when 'INCORRECT' then 'INCORRECT'
+      when 'DISLIKE' then 'INCORRECT'
+      when 'NEGATIVE' then 'INCORRECT'
+      when 'FALSE' then 'INCORRECT'
+    end as result,
+    support_case.created_at,
+    support_case.updated_at
+  from support_cases support_case
+  cross join lateral (
+    values
+      ('ISSUE_UNDERSTANDING'::text, support_case.case_understanding_feedback),
+      ('SOLUTION_SELECTION'::text, support_case.solution_selection_feedback)
+  ) as legacy(feedback_type, value)
+  where legacy.value is not null
+) feedback
+where feedback.result is not null
+on conflict (case_id, analysis_version, feedback_type) do nothing;
 
 create table if not exists solutions (
   id text primary key,

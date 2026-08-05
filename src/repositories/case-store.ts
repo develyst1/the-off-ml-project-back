@@ -1,4 +1,4 @@
-import type { Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { AiReviewFeedback, Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 
 export type ChatRetentionCleanupResult = {
   cutoffAt: string;
@@ -30,7 +30,9 @@ export type CaseStore = {
   updateMessage(id: string, patch: Partial<Pick<Message, "direction" | "messageType" | "senderType" | "deliveryStatus" | "deliveryError" | "sentAt" | "deliveredAt" | "failedAt">>): Promise<Message>;
   getMessageByExternalMessageId(externalMessageId: string): Promise<Message | undefined>;
   getMessageByWebhookEventId(webhookEventId: string): Promise<Message | undefined>;
-  createAnalysis(input: Omit<Analysis, "id" | "createdAt">): Promise<Analysis>;
+  createAnalysis(input: Omit<Analysis, "id" | "analysisId" | "createdAt" | "analysisVersion">): Promise<Analysis>;
+  upsertAiReviewFeedback(input: Omit<AiReviewFeedback, "id" | "createdAt" | "updatedAt">): Promise<AiReviewFeedback>;
+  listAiReviewFeedback(): Promise<AiReviewFeedback[]>;
   upsertCaseAiFeedback(input: Omit<CaseAiFeedback, "id" | "createdAt" | "updatedAt">): Promise<CaseAiFeedback>;
   deleteCaseAiFeedback(caseId: string, feedbackType: CaseAiFeedback["feedbackType"]): Promise<void>;
   listCaseAiFeedback(): Promise<CaseAiFeedback[]>;

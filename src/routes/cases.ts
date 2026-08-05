@@ -1,8 +1,10 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { CaseStatus } from "../domain/types";
 import { readJsonObject, requiredString } from "../lib/request";
 import { caseService } from "../services/case-service";
+import { saveAiReviewFeedback } from "../services/ai-review-feedback-service";
 import { categoryKeyOf } from "../lib/category";
+import { store } from "../repositories/store";
 
 const statuses: CaseStatus[] = [
   "new",
@@ -22,6 +24,29 @@ const statuses: CaseStatus[] = [
 ];
 
 export const caseRoutes = new Hono();
+
+async function caseDetailResponse(detail: Awaited<ReturnType<typeof caseService.getCase>>) {
+  if (!detail) return undefined;
+
+  const currentAnalysis = [...detail.analyses]
+    .sort((left, right) => right.analysisVersion - left.analysisVersion || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+  const feedback = currentAnalysis
+    ? (await store.listAiReviewFeedback()).filter((item) => (
+      item.caseId === detail.id && item.analysisVersion === currentAnalysis.analysisVersion
+    ))
+    : [];
+
+  return {
+    ...detail,
+    currentAnalysis: currentAnalysis
+      ? { id: currentAnalysis.analysisId, analysisVersion: currentAnalysis.analysisVersion }
+      : undefined,
+    aiFeedback: {
+      issueUnderstanding: feedback.find((item) => item.feedbackType === "ISSUE_UNDERSTANDING")?.result,
+      solutionSelection: feedback.find((item) => item.feedbackType === "SOLUTION_SELECTION")?.result,
+    },
+  };
+}
 
 const CLOSED_CASE_STATUSES = new Set<CaseStatus>(["resolved", "sent_to_customer", "closed"]);
 const SLA_MONITORED_STATUSES = new Set<CaseStatus>([
@@ -92,7 +117,7 @@ caseRoutes.get("/:id", async (c) => {
     return c.json({ error: "case_not_found" }, 404);
   }
 
-  return c.json({ data: detail });
+  return c.json({ data: await caseDetailResponse(detail) });
 });
 
 caseRoutes.post("/:id/accept", async (c) => {
@@ -189,7 +214,7 @@ caseRoutes.patch("/:id/status", async (c) => {
   return c.json({ data: await caseService.updateStatus(c.req.param("id"), status as CaseStatus) });
 });
 
-caseRoutes.patch("/:id/ai-feedback", async (c) => {
+const legacyAiFeedbackRoute = async (c: Context) => {
   const body = await readJsonObject(c);
   const field = body.field === "caseUnderstandingFeedback" || body.field === "solutionSelectionFeedback"
     ? body.field
@@ -200,7 +225,52 @@ caseRoutes.patch("/:id/ai-feedback", async (c) => {
     return c.json({ error: "invalid_ai_feedback", message: "ต้องระบุ field และ value ของ feedback ให้ถูกต้อง" }, 400);
   }
 
-  return c.json({ data: await caseService.updateAiFeedback(c.req.param("id"), field, value) });
+  return c.json({ data: await caseService.updateAiFeedback(c.req.param("id")!, field!, value ?? null) });
+};
+
+caseRoutes.patch("/:id/ai-feedback", async (c) => {
+  const body = await readJsonObject(c);
+  const analysisId = typeof body.analysisId === "string" && body.analysisId.trim()
+    ? body.analysisId.trim()
+    : undefined;
+  const analysisVersion = typeof body.analysisVersion === "number" && Number.isInteger(body.analysisVersion) && body.analysisVersion > 0
+    ? body.analysisVersion
+    : undefined;
+  const feedbackType = body.feedbackType === "ISSUE_UNDERSTANDING" || body.feedbackType === "SOLUTION_SELECTION"
+    ? body.feedbackType
+    : undefined;
+  const result = body.result === "CORRECT" || body.result === "INCORRECT" ? body.result : undefined;
+  const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : undefined;
+
+  if (!analysisVersion || !feedbackType || !result) {
+    return c.json({ error: "invalid_ai_feedback", message: "ต้องระบุ analysisVersion, feedbackType และ result ให้ถูกต้อง" }, 400);
+  }
+
+  const caseId = c.req.param("id");
+  if (!await caseService.getCase(caseId)) {
+    return c.json({ error: "case_not_found", message: "ไม่พบเคส" }, 404);
+  }
+
+  try {
+    const feedback = await saveAiReviewFeedback({
+      caseId,
+      analysisId,
+      analysisVersion,
+      feedbackType,
+      result,
+      reviewSource: "CASE_DETAIL",
+      reason,
+      reviewedBy: "TECH",
+    });
+    const detail = await caseService.getCase(caseId);
+    const response = await caseDetailResponse(detail);
+    return c.json({ data: { feedback, aiFeedback: response?.aiFeedback ?? {} } });
+  } catch (error) {
+    return c.json({
+      error: "invalid_ai_feedback",
+      message: error instanceof Error ? error.message : "ไม่สามารถบันทึกผลการตรวจ AI ได้",
+    }, 400);
+  }
 });
 
 caseRoutes.get("/:id/messages", async (c) => {

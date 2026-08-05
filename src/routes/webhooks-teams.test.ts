@@ -113,7 +113,10 @@ describe("POST /webhooks/teams/actions", () => {
     expect(lineSendCount).toBe(1);
     expect(sentMessages).toHaveLength(1);
     expect(sentMessages?.[0]?.senderType).toBe("TECH");
-    expect(detail?.solutions).toHaveLength(0);
+    // A concrete action reported by Teams is now stored as the extracted
+    // solution, even when there is no end-user troubleshooting step.
+    expect(detail?.solutions).toHaveLength(1);
+    expect(detail?.solutions[0]?.solutionSteps).toEqual(["รีเซ็ตข้อมูลในระบบแล้ว"]);
     expect(detail?.analyses.some((analysis) => analysis.analysisType === "tech_solution")).toBe(true);
     const techSolutionAnalysis = detail?.analyses.find((analysis) => analysis.analysisType === "tech_solution");
     expect((techSolutionAnalysis?.rawJson as { teamActions?: string[] }).teamActions).toEqual(["รีเซ็ตข้อมูลในระบบแล้ว"]);
@@ -158,8 +161,9 @@ describe("POST /webhooks/teams/actions", () => {
     expect(closedMessage?.sentAt).toBeDefined();
     expect(systemEvent?.isVisibleToCustomer).toBe(false);
     expect(systemEvent?.metadata?.eventType).toBe("CASE_CLOSED");
-    expect(detail?.solutions).toHaveLength(0);
-    expect(detail?.analyses.some((analysis) => analysis.analysisType === "tech_solution")).toBe(false);
+    // Closing with a concrete resolution also refreshes the extracted solution.
+    expect(detail?.solutions).toHaveLength(1);
+    expect(detail?.analyses.some((analysis) => analysis.analysisType === "tech_solution")).toBe(true);
   });
 
   test("composes customer reply and more-info drafts without sending LINE", async () => {
@@ -206,34 +210,159 @@ describe("POST /webhooks/teams/actions", () => {
     expect(detail?.status).toBe("assigned");
   });
 
-  test("persists both AI feedback values and returns the full case detail", async () => {
-    const supportCase = await createCase();
+  test("stores Case Detail feedback against the selected AI analysis version", async () => {
+    const supportCase = await createCase(73);
+    const analysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "customer_message",
+      confidence: 85,
+      rawJson: {},
+    });
     const understandingResponse = await patchAiFeedback(supportCase.id, {
-      field: "caseUnderstandingFeedback",
-      value: "CORRECT",
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      feedbackType: "ISSUE_UNDERSTANDING",
+      result: "CORRECT",
     });
     const solutionResponse = await patchAiFeedback(supportCase.id, {
-      field: "solutionSelectionFeedback",
-      value: "INCORRECT",
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      feedbackType: "SOLUTION_SELECTION",
+      result: "INCORRECT",
     });
     const detail = await store.getCaseDetail(supportCase.id);
 
     expect(understandingResponse.status).toBe(200);
     expect(solutionResponse.status).toBe(200);
-    expect((await understandingResponse.json() as { data?: { messages?: unknown[] } }).data?.messages).toBeDefined();
-    expect((await solutionResponse.json() as { data?: { messages?: unknown[] } }).data?.messages).toBeDefined();
-    expect(detail?.caseUnderstandingFeedback).toBe("CORRECT");
-    expect(detail?.solutionSelectionFeedback).toBe("INCORRECT");
+    const understanding = await understandingResponse.json() as { data?: { feedback?: { id?: string; analysisId?: string; analysisVersion?: number; result?: string } } };
+    const solution = await solutionResponse.json() as { data?: { feedback?: { analysisVersion?: number; result?: string } } };
+    expect(understanding.data?.feedback?.analysisId).toBe(analysis.analysisId);
+    expect(understanding.data?.feedback?.analysisVersion).toBe(analysis.analysisVersion);
+    expect(understanding.data?.feedback?.result).toBe("CORRECT");
+    expect(solution.data?.feedback?.result).toBe("INCORRECT");
+    expect(solution.data?.feedback?.analysisVersion).toBe(analysis.analysisVersion);
+    expect(detail?.caseUnderstandingFeedback).toBeUndefined();
+    expect(detail?.solutionSelectionFeedback).toBeUndefined();
+    expect(detail?.confidenceScore).toBe(73);
+    expect(detail?.analyses.find((item) => item.analysisId === analysis.analysisId)?.confidence).toBe(85);
 
-    const savedFeedback = await store.listCaseAiFeedback();
-    expect(savedFeedback.filter((item) => item.caseId === supportCase.id)).toHaveLength(2);
-    expect(savedFeedback.find((item) => item.caseId === supportCase.id && item.feedbackType === "ISSUE_UNDERSTANDING")?.value).toBe("CORRECT");
+    const updatedResponse = await patchAiFeedback(supportCase.id, {
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      feedbackType: "ISSUE_UNDERSTANDING",
+      result: "INCORRECT",
+    });
+    const updated = await updatedResponse.json() as { data?: { feedback?: { id?: string; result?: string } } };
+    expect(updatedResponse.status).toBe(200);
+    expect(updated.data?.feedback?.id).toBe(understanding.data?.feedback?.id);
+    expect(updated.data?.feedback?.result).toBe("INCORRECT");
+    const afterFeedback = await store.getCaseDetail(supportCase.id);
+    expect(afterFeedback?.confidenceScore).toBe(73);
+    expect(afterFeedback?.analyses.find((item) => item.analysisId === analysis.analysisId)?.confidence).toBe(85);
+  });
 
-    await patchAiFeedback(supportCase.id, { field: "caseUnderstandingFeedback", value: "INCORRECT" });
-    expect((await store.listCaseAiFeedback()).find((item) => item.caseId === supportCase.id && item.feedbackType === "ISSUE_UNDERSTANDING")?.value).toBe("INCORRECT");
+  test("stores Confidence Review feedback by type without changing model confidence", async () => {
+    const supportCase = await createCase(94);
+    const analysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "customer_message",
+      confidence: 91,
+      rawJson: {},
+    });
+    const confirmed = await postConfidenceReview({
+      caseId: supportCase.id,
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      understandingResult: "CORRECT",
+      solutionResult: "CORRECT",
+    }, `match_${supportCase.id}`);
+    const confirmationBody = await confirmed.json() as {
+      data?: { feedback?: Array<{ feedbackType: string; result: string; reviewSource: string }>; case?: { confidenceReviewStatus?: string } };
+    };
+    const afterConfirmation = await store.getCaseDetail(supportCase.id);
 
-    await patchAiFeedback(supportCase.id, { field: "caseUnderstandingFeedback", value: null });
-    expect((await store.listCaseAiFeedback()).filter((item) => item.caseId === supportCase.id && item.feedbackType === "ISSUE_UNDERSTANDING")).toHaveLength(0);
+    expect(confirmed.status).toBe(200);
+    expect(confirmationBody.data?.feedback).toEqual(expect.arrayContaining([
+      expect.objectContaining({ feedbackType: "ISSUE_UNDERSTANDING", result: "CORRECT", reviewSource: "CONFIDENCE_REVIEW" }),
+      expect.objectContaining({ feedbackType: "SOLUTION_SELECTION", result: "CORRECT", reviewSource: "CONFIDENCE_REVIEW" }),
+    ]));
+    expect(confirmationBody.data?.case?.confidenceReviewStatus).toBe("QUALITY_APPROVED");
+    expect(afterConfirmation?.confidenceScore).toBe(94);
+    expect(afterConfirmation?.analyses.find((item) => item.analysisId === analysis.analysisId)?.confidence).toBe(91);
+
+    const rejected = await postConfidenceReview({
+      caseId: supportCase.id,
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      solutionResult: "INCORRECT",
+      reason: "วิธีแก้ยังไม่ตรงกับข้อมูลที่ทีมตรวจสอบ",
+    }, `match_${supportCase.id}`);
+    const rejectionBody = await rejected.json() as {
+      data?: { feedback?: Array<{ feedbackType: string; result: string }>; case?: { confidenceReviewStatus?: string } };
+    };
+
+    expect(rejected.status).toBe(200);
+    expect(rejectionBody.data?.feedback).toEqual([
+      expect.objectContaining({ feedbackType: "SOLUTION_SELECTION", result: "INCORRECT" }),
+    ]);
+    expect(rejectionBody.data?.case?.confidenceReviewStatus).toBe("QUALITY_REJECTED");
+    const afterRejection = await store.getCaseDetail(supportCase.id);
+    expect(afterRejection?.confidenceScore).toBe(94);
+    expect(afterRejection?.analyses.find((item) => item.analysisId === analysis.analysisId)?.confidence).toBe(91);
+  });
+
+  test("calculates Analytics accuracy from current analysis-version feedback only", async () => {
+    const supportCases = await Promise.all([createCase(90), createCase(90), createCase(90), createCase(90)]);
+    const firstAnalysis = await store.createAnalysis({
+      caseId: supportCases[0].id,
+      analysisType: "customer_message",
+      category: "NETWORK_CONNECTION",
+      confidence: 90,
+      rawJson: {},
+    });
+    await patchAiFeedback(supportCases[0].id, {
+      analysisId: firstAnalysis.analysisId,
+      analysisVersion: firstAnalysis.analysisVersion,
+      feedbackType: "ISSUE_UNDERSTANDING",
+      result: "CORRECT",
+    });
+    const reanalyzed = await store.createAnalysis({
+      caseId: supportCases[0].id,
+      analysisType: "customer_message",
+      category: "NETWORK_CONNECTION",
+      confidence: 90,
+      rawJson: {},
+    });
+    await patchAiFeedback(supportCases[0].id, {
+      analysisId: reanalyzed.analysisId,
+      analysisVersion: reanalyzed.analysisVersion,
+      feedbackType: "ISSUE_UNDERSTANDING",
+      result: "INCORRECT",
+    });
+
+    for (const supportCase of supportCases.slice(1)) {
+      const analysis = await store.createAnalysis({
+        caseId: supportCase.id,
+        analysisType: "customer_message",
+        category: "NETWORK_CONNECTION",
+        confidence: 90,
+        rawJson: {},
+      });
+      await patchAiFeedback(supportCase.id, {
+        analysisId: analysis.analysisId,
+        analysisVersion: analysis.analysisVersion,
+        feedbackType: "ISSUE_UNDERSTANDING",
+        result: "CORRECT",
+      });
+    }
+
+    const response = await app.fetch(new Request("http://localhost/analytics/summary"));
+    const body = await response.json() as { data: { categories: Array<{ key: string; caseUnderstandingAccuracy: number; caseUnderstandingReviewedCount: number }> } };
+    const network = body.data.categories.find((item) => item.key === "NETWORK_CONNECTION");
+
+    expect(response.status).toBe(200);
+    expect(network?.caseUnderstandingReviewedCount).toBe(4);
+    expect(network?.caseUnderstandingAccuracy).toBe(75);
   });
 
   test("keeps only explicitly selected Inbox messages as case references", async () => {

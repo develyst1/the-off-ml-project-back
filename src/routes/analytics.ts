@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { caseService } from "../services/case-service";
 import { isSolutionReadyForAutoAnswer } from "../services/auto-answer-guardrail";
 import { categoryKeyOf, categoryLabelOf } from "../lib/category";
+import { store } from "../repositories/store";
 
 export const analyticsRoutes = new Hono();
 
@@ -22,6 +23,7 @@ function categoryForCase(item: Awaited<ReturnType<typeof caseService.listCases>>
 
 analyticsRoutes.get("/summary", async (c) => {
   const cases = await caseService.listCases();
+  const feedback = await store.listAiReviewFeedback();
   const total = cases.length;
   const solved = cases.filter((item) => item.status === "resolved" || item.status === "sent_to_customer" || item.status === "closed").length;
   const overSla = 0;
@@ -42,6 +44,19 @@ analyticsRoutes.get("/summary", async (c) => {
     solutionSelectionReviewed: number;
   }>();
   const confidenceCounts = new Map<string, number>();
+  const latestAnalysisVersionByCase = new Map(cases.map((item) => [
+    item.id,
+    item.analyses.reduce((latest, analysis) => Math.max(latest, analysis.analysisVersion), 0),
+  ]));
+  const currentFeedback = new Map<string, typeof feedback[number]>();
+  for (const item of feedback) {
+    if (latestAnalysisVersionByCase.get(item.caseId) !== item.analysisVersion) continue;
+    const key = `${item.caseId}:${item.analysisVersion}:${item.feedbackType}`;
+    const existing = currentFeedback.get(key);
+    if (!existing || new Date(item.updatedAt).getTime() > new Date(existing.updatedAt).getTime()) {
+      currentFeedback.set(key, item);
+    }
+  }
 
   for (const item of cases) {
     const category = categoryKeyOf(categoryForCase(item));
@@ -53,13 +68,22 @@ analyticsRoutes.get("/summary", async (c) => {
       solutionSelectionReviewed: 0,
     };
     current.count += 1;
-    if (item.caseUnderstandingFeedback) {
+    const analysisVersion = latestAnalysisVersionByCase.get(item.id);
+    const understanding = analysisVersion
+      ? currentFeedback.get(`${item.id}:${analysisVersion}:ISSUE_UNDERSTANDING`)
+      : undefined;
+    const solutionSelection = analysisVersion
+      ? currentFeedback.get(`${item.id}:${analysisVersion}:SOLUTION_SELECTION`)
+      : undefined;
+    // ai_review_feedback is the source of truth. Do not combine it with legacy
+    // support_cases fields, otherwise migrated feedback would be double-counted.
+    if (understanding) {
       current.caseUnderstandingReviewed += 1;
-      if (item.caseUnderstandingFeedback === "CORRECT") current.caseUnderstandingCorrect += 1;
+      if (understanding.result === "CORRECT") current.caseUnderstandingCorrect += 1;
     }
-    if (item.solutionSelectionFeedback) {
+    if (solutionSelection) {
       current.solutionSelectionReviewed += 1;
-      if (item.solutionSelectionFeedback === "CORRECT") current.solutionSelectionCorrect += 1;
+      if (solutionSelection.result === "CORRECT") current.solutionSelectionCorrect += 1;
     }
     categoryCounts.set(category, current);
     confidenceCounts.set(bucketConfidence(item.confidenceScore ?? 0), (confidenceCounts.get(bucketConfidence(item.confidenceScore ?? 0)) ?? 0) + 1);
@@ -72,10 +96,12 @@ analyticsRoutes.get("/summary", async (c) => {
     value: total ? Math.round((statistics.count / total) * 100) : 0,
     caseUnderstandingAccuracy: statistics.caseUnderstandingReviewed
       ? Math.round((statistics.caseUnderstandingCorrect / statistics.caseUnderstandingReviewed) * 100)
-      : undefined,
+      : 0,
     solutionSelectionAccuracy: statistics.solutionSelectionReviewed
       ? Math.round((statistics.solutionSelectionCorrect / statistics.solutionSelectionReviewed) * 100)
-      : undefined,
+      : 0,
+    caseUnderstandingReviewedCount: statistics.caseUnderstandingReviewed,
+    solutionSelectionReviewedCount: statistics.solutionSelectionReviewed,
   }));
 
   const confidenceDistribution = ["0-59%", "60-89%", "90-97%", "98-100%"].map((label) => ({

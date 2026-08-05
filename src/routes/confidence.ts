@@ -3,13 +3,19 @@ import { readJsonObject, requiredString } from "../lib/request";
 import { store } from "../repositories/store";
 import { caseService } from "../services/case-service";
 import { hasActionableSolutionSteps } from "../lib/solution-quality";
+import { saveAiReviewFeedback } from "../services/ai-review-feedback-service";
 
 export const confidenceRoutes = new Hono();
 
 type ReviewStage = "QUALITY" | "AUTO_ANSWER";
+type FeedbackResult = "CORRECT" | "INCORRECT";
 
 function getReviewStage(caseConfidence: number, solutionConfidence?: number): ReviewStage {
   return caseConfidence >= 98 && (solutionConfidence ?? 0) >= 98 ? "AUTO_ANSWER" : "QUALITY";
+}
+
+function getFeedbackResult(value: unknown): FeedbackResult | undefined {
+  return value === "CORRECT" || value === "INCORRECT" ? value : undefined;
 }
 
 confidenceRoutes.get("/suggestions", async (c) => {
@@ -18,6 +24,8 @@ confidenceRoutes.get("/suggestions", async (c) => {
     .flatMap((item) => {
       const customerMessage = item.messages.find((message) => message.senderType === "CUSTOMER");
       const latestSolution = [...item.solutions].reverse().find((solution) => hasActionableSolutionSteps(solution.solutionSteps));
+      const currentAnalysis = [...item.analyses]
+        .sort((left, right) => right.analysisVersion - left.analysisVersion || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
       const caseConfidence = item.confidenceScore ?? 0;
       const solutionConfidence = latestSolution?.confidence ?? caseConfidence;
       const reviewStage = getReviewStage(caseConfidence, latestSolution?.confidence);
@@ -40,6 +48,9 @@ confidenceRoutes.get("/suggestions", async (c) => {
         solutionText: latestSolution.solutionSteps.join("\n"),
         caseUnderstandingConfidence: caseConfidence,
         caseDiscriminationConfidence: solutionConfidence,
+        analysisId: currentAnalysis?.analysisId,
+        analysisVersion: currentAnalysis?.analysisVersion,
+        hasSuggestedSolution: Boolean(latestSolution),
         reviewStage,
         reviewHint: reviewStage === "AUTO_ANSWER"
           ? "ผ่านเกณฑ์คะแนนแล้ว รออนุมัติให้ตอบอัตโนมัติ"
@@ -53,6 +64,93 @@ confidenceRoutes.get("/suggestions", async (c) => {
 confidenceRoutes.post("/suggestions/:id/review", async (c) => {
   const body = await readJsonObject(c);
   const caseId = requiredString(body, "caseId");
+
+  const hasCentralFeedbackPayload = body.analysisVersion !== undefined
+    || body.understandingResult !== undefined
+    || body.solutionResult !== undefined;
+
+  if (hasCentralFeedbackPayload) {
+    const analysisVersion = body.analysisVersion;
+    const analysisId = typeof body.analysisId === "string" && body.analysisId.trim()
+      ? body.analysisId.trim()
+      : undefined;
+    const understandingResult = getFeedbackResult(body.understandingResult);
+    const solutionResult = getFeedbackResult(body.solutionResult);
+    const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : undefined;
+
+    if (typeof analysisVersion !== "number" || !Number.isInteger(analysisVersion) || analysisVersion < 1) {
+      return c.json({ error: "invalid_analysis_version" }, 400);
+    }
+    if (!understandingResult && !solutionResult) {
+      return c.json({ error: "feedback_result_is_required" }, 400);
+    }
+    if ((body.understandingResult !== undefined && !understandingResult)
+      || (body.solutionResult !== undefined && !solutionResult)) {
+      return c.json({ error: "invalid_feedback_result", allowed: ["CORRECT", "INCORRECT"] }, 400);
+    }
+
+    const detail = await caseService.getCase(caseId);
+    if (!detail) return c.json({ error: "case_not_found" }, 404);
+
+    const matchingAnalysis = detail.analyses.find((analysis) => (
+      analysis.analysisVersion === analysisVersion
+      && (!analysisId || analysis.analysisId === analysisId)
+    ));
+    if (!matchingAnalysis) {
+      return c.json({ error: "analysis_not_found_for_case_version" }, 400);
+    }
+
+    const feedback = await Promise.all([
+      understandingResult
+        ? saveAiReviewFeedback({
+          caseId,
+          analysisId: matchingAnalysis.analysisId,
+          analysisVersion,
+          feedbackType: "ISSUE_UNDERSTANDING",
+          result: understandingResult,
+          reviewSource: "CONFIDENCE_REVIEW",
+          reason,
+          reviewedBy: "Tech Support Console",
+        })
+        : undefined,
+      solutionResult
+        ? saveAiReviewFeedback({
+          caseId,
+          analysisId: matchingAnalysis.analysisId,
+          analysisVersion,
+          feedbackType: "SOLUTION_SELECTION",
+          result: solutionResult,
+          reviewSource: "CONFIDENCE_REVIEW",
+          reason,
+          reviewedBy: "Tech Support Console",
+        })
+        : undefined,
+    ]);
+    const savedFeedback = feedback.filter((item): item is NonNullable<typeof item> => Boolean(item));
+    const reviewedAt = new Date().toISOString();
+    const confidenceReviewStatus = understandingResult === "INCORRECT" || solutionResult === "INCORRECT"
+      ? "QUALITY_REJECTED"
+      : understandingResult === "CORRECT" && solutionResult === "CORRECT"
+        ? "QUALITY_APPROVED"
+        : "PENDING";
+    const reviewed = await store.updateCase(caseId, {
+      confidenceReviewStatus,
+      confidenceReviewedAt: reviewedAt,
+      confidenceReviewedBy: "Tech Support Console",
+    });
+
+    return c.json({
+      data: {
+        id: c.req.param("id"),
+        caseId,
+        analysisId: matchingAnalysis.analysisId,
+        analysisVersion,
+        feedback: savedFeedback,
+        case: reviewed,
+      },
+    });
+  }
+
   const result = requiredString(body, "result");
   const solutionId = typeof body.solutionId === "string" && body.solutionId.trim() ? body.solutionId.trim() : undefined;
   const requestedStage = body.reviewStage === "QUALITY" || body.reviewStage === "AUTO_ANSWER" ? body.reviewStage : undefined;
@@ -142,9 +240,7 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
   }
 
   const reviewed = await store.updateCase(caseId, {
-    confidenceScore: result === "rejected" && rejectionReason === "CASE_UNDERSTANDING"
-      ? Math.max(0, (detail.confidenceScore ?? 0) - 10)
-      : detail.confidenceScore,
+    confidenceScore: detail.confidenceScore,
     confidenceReviewStatus: reviewStage === "AUTO_ANSWER"
       ? result === "approved" ? "AUTO_ANSWER_APPROVED" : "AUTO_ANSWER_REJECTED"
       : result === "approved" ? "QUALITY_APPROVED" : "QUALITY_REJECTED",

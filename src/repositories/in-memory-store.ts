@@ -1,4 +1,4 @@
-import type { Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { AiReviewFeedback, Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore, ChatRetentionCleanupResult } from "./case-store";
 import { normalizeCaseMessage } from "./case-message-normalizer";
@@ -11,6 +11,7 @@ export class InMemoryStore implements CaseStore {
   private messages = new Map<string, Message>();
   private inboxMessages = new Map<string, InboxMessage>();
   private analyses = new Map<string, Analysis>();
+  private aiReviewFeedback = new Map<string, AiReviewFeedback>();
   private caseAiFeedback = new Map<string, CaseAiFeedback>();
   private solutions = new Map<string, Solution>();
   private caseMatchLogs = new Map<string, CaseMatchLog>();
@@ -243,15 +244,40 @@ export class InMemoryStore implements CaseStore {
     return [...this.messages.values()].find((message) => message.webhookEventId === webhookEventId);
   }
 
-  async createAnalysis(input: Omit<Analysis, "id" | "createdAt">): Promise<Analysis> {
+  async createAnalysis(input: Omit<Analysis, "id" | "analysisId" | "createdAt" | "analysisVersion">): Promise<Analysis> {
+    const latestVersion = [...this.analyses.values()]
+      .filter((analysis) => analysis.caseId === input.caseId)
+      .reduce((maximum, analysis) => Math.max(maximum, analysis.analysisVersion), 0);
+    const id = createId("ana");
     const analysis: Analysis = {
       ...input,
-      id: createId("ana"),
+      id,
+      analysisId: id,
+      analysisVersion: latestVersion + 1,
       createdAt: nowIso(),
     };
 
     this.analyses.set(analysis.id, analysis);
     return analysis;
+  }
+
+  async upsertAiReviewFeedback(input: Omit<AiReviewFeedback, "id" | "createdAt" | "updatedAt">): Promise<AiReviewFeedback> {
+    const existing = [...this.aiReviewFeedback.values()].find((item) => (
+      item.caseId === input.caseId
+      && item.analysisVersion === input.analysisVersion
+      && item.feedbackType === input.feedbackType
+    ));
+    const timestamp = nowIso();
+    const feedback: AiReviewFeedback = existing
+      ? { ...existing, ...input, updatedAt: timestamp }
+      : { ...input, id: createId("review"), createdAt: timestamp, updatedAt: timestamp };
+    this.aiReviewFeedback.set(feedback.id, feedback);
+    return feedback;
+  }
+
+  async listAiReviewFeedback(): Promise<AiReviewFeedback[]> {
+    return [...this.aiReviewFeedback.values()]
+      .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
   }
 
   async upsertCaseAiFeedback(input: Omit<CaseAiFeedback, "id" | "createdAt" | "updatedAt">): Promise<CaseAiFeedback> {
