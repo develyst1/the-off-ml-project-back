@@ -368,6 +368,12 @@ export const caseService = {
       const timestamp = new Date(message.createdAt).getTime();
       return timestamp >= from.getTime() && timestamp <= to.getTime();
     });
+    const conversationStartedAt = from.toISOString();
+    const openedAt = new Date();
+    const timelineMessages = inboxUser.messages.filter((message) => {
+      const timestamp = new Date(message.createdAt).getTime();
+      return timestamp >= from.getTime() && timestamp <= openedAt.getTime();
+    });
     const hasManualCaseDetails = Boolean(input.title?.trim() && input.description?.trim());
     const selectedIds = input.selectedMessageIds?.length ? new Set(input.selectedMessageIds) : undefined;
     if (!hasManualCaseDetails && !selectedIds) {
@@ -396,17 +402,19 @@ export const caseService = {
     const caseAnalysisContext = buildInboxCaseAnalysisContext({
       subject: resolvedTitle,
       detail: resolvedDescription,
-      messages: sourceMessages,
+      messages: timelineMessages,
     });
     const feedbackExamples = await feedbackExamplesForContext(caseAnalysisContext);
     const supportCase = await store.createCase({
       customerId,
       status: "analyzing",
       title: resolvedTitle,
+      conversationStartedAt,
     });
 
     const copiedMessages = [] as Message[];
-    for (const inboxMessage of sourceMessages) {
+    for (const inboxMessage of timelineMessages) {
+      const isCaseReference = selectedIds?.has(inboxMessage.id) ?? false;
       copiedMessages.push(await store.createMessage({
         caseId: supportCase.id,
         direction: inboxMessage.senderType === "CUSTOMER" ? "inbound_customer" : "outbound_tech",
@@ -414,10 +422,12 @@ export const caseService = {
         originalText: inboxMessage.text,
         senderType: inboxMessage.senderType === "CUSTOMER" ? "CUSTOMER" : inboxMessage.senderType === "BOT" ? "BOT" : "TECH",
         messageType: inboxMessage.senderType === "CUSTOMER" ? "CUSTOMER_MESSAGE" : inboxMessage.senderType === "BOT" ? "CASE_ACKNOWLEDGEMENT" : "TECH_GENERAL_MESSAGE",
-        deliveryStatus: "SENT",
+        deliveryStatus: inboxMessage.senderType === "CUSTOMER" ? "RECEIVED" : inboxMessage.deliveryStatus ?? "SENT",
         receivedAt: inboxMessage.createdAt,
+        sentAt: inboxMessage.sentAt ?? (inboxMessage.senderType === "CUSTOMER" ? undefined : inboxMessage.createdAt),
+        deliveredAt: inboxMessage.deliveredAt,
         metadata: {
-          isCaseReference: true,
+          isCaseReference,
           sourceInboxMessageId: inboxMessage.id,
           source: inboxMessage.senderType === "TECH" ? "tech_console" : inboxMessage.senderType === "BOT" ? "line_bot" : "line",
           sourceCreatedAt: inboxMessage.createdAt,
@@ -478,7 +488,7 @@ export const caseService = {
         text: `${resolvedTitle}\n${resolvedDescription}`,
         caseAnalysisContext,
         feedbackExamples,
-        conversationContext: sourceMessages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : "ทีม Tech"}: ${message.text}`),
+        conversationContext: timelineMessages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : "ทีม Tech"}: ${message.text}`),
       });
       await store.createAnalysis({
         caseId: supportCase.id,
@@ -1425,6 +1435,7 @@ export const caseService = {
       await store.updateCase(input.caseId, {
         status: "closed",
         closedAt: sentAt,
+        conversationEndedAt: sentAt,
         closedBy: responder,
         closeSummary: input.closeSummary,
         lineSentAt: sentAt,
@@ -1548,6 +1559,7 @@ export const caseService = {
       await store.updateCase(input.caseId, {
         status: "closed",
         closedAt: sentAt,
+        conversationEndedAt: sentAt,
         closedBy: input.closedBy ?? "Tech Support Console",
         lineSentAt: sentAt,
         lineDeliveredAt: sentAt,

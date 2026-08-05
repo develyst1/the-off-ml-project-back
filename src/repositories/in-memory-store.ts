@@ -167,7 +167,7 @@ export class InMemoryStore implements CaseStore {
     };
   }
 
-  async createCase(input: { customerId: string; status?: CaseStatus; title?: string; category?: string; confidenceScore?: number }): Promise<SupportCase> {
+  async createCase(input: { customerId: string; status?: CaseStatus; title?: string; category?: string; confidenceScore?: number; conversationStartedAt?: string }): Promise<SupportCase> {
     const timestamp = nowIso();
     const sequenceYear = new Date().getUTCFullYear();
     const sequenceNumber = this.nextCaseNumbers.get(sequenceYear) ?? 1;
@@ -182,6 +182,7 @@ export class InMemoryStore implements CaseStore {
       status: input.status ?? "new",
       category: input.category,
       confidenceScore: input.confidenceScore,
+      conversationStartedAt: input.conversationStartedAt ?? timestamp,
       createdAt: timestamp,
       updatedAt: timestamp,
     };

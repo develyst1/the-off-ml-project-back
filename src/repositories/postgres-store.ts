@@ -36,6 +36,8 @@ type DbCase = {
   tech_replied_at: Date | null;
   line_sent_at: Date | null;
   line_delivered_at: Date | null;
+  conversation_started_at: Date | null;
+  conversation_ended_at: Date | null;
   closed_at: Date | null;
   closed_by: string | null;
   close_cause: string | null;
@@ -224,6 +226,8 @@ function mapCase(row: DbCase): SupportCase {
     techRepliedAt: row.tech_replied_at ? dateIso(row.tech_replied_at) : undefined,
     lineSentAt: row.line_sent_at ? dateIso(row.line_sent_at) : undefined,
     lineDeliveredAt: row.line_delivered_at ? dateIso(row.line_delivered_at) : undefined,
+    conversationStartedAt: row.conversation_started_at ? dateIso(row.conversation_started_at) : undefined,
+    conversationEndedAt: row.conversation_ended_at ? dateIso(row.conversation_ended_at) : undefined,
     closedAt: row.closed_at ? dateIso(row.closed_at) : undefined,
     closedBy: row.closed_by ?? undefined,
     closeSummary: row.close_cause && row.close_resolution && row.close_prevention
@@ -518,6 +522,7 @@ export class PostgresStore implements CaseStore {
     title?: string;
     category?: string;
     confidenceScore?: number;
+    conversationStartedAt?: string;
   }): Promise<SupportCase> {
     await this.ready();
     const client = await this.pool.connect();
@@ -536,10 +541,10 @@ export class PostgresStore implements CaseStore {
       const caseNumber = `OFF-${year}-${String(sequenceNumber).padStart(5, "0")}`;
       await client.query("update case_number_counters set next_number = $2 where sequence_year = $1", [year, sequenceNumber + 1]);
       const result = await client.query<DbCase>(
-        `insert into support_cases (id, case_number, sequence_number, sequence_year, customer_id, title, status, category, confidence_score, created_at, updated_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+        `insert into support_cases (id, case_number, sequence_number, sequence_year, customer_id, title, status, category, confidence_score, conversation_started_at, created_at, updated_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
          returning *`,
-        [createId("case"), caseNumber, sequenceNumber, year, input.customerId, input.title ?? null, input.status ?? "new", input.category ?? null, input.confidenceScore ?? null, nowIso()],
+        [createId("case"), caseNumber, sequenceNumber, year, input.customerId, input.title ?? null, input.status ?? "new", input.category ?? null, input.confidenceScore ?? null, input.conversationStartedAt ?? nowIso(), nowIso()],
       );
       await client.query("commit");
       return mapCase(result.rows[0]);
@@ -595,7 +600,9 @@ export class PostgresStore implements CaseStore {
          confidence_reviewed_by = $35,
          case_understanding_feedback = $36,
          solution_selection_feedback = $37,
-         updated_at = $38
+         conversation_started_at = $38,
+         conversation_ended_at = $39,
+         updated_at = $40
        where id = $1
        returning *`,
       [
@@ -636,6 +643,8 @@ export class PostgresStore implements CaseStore {
          "confidenceReviewedBy" in patch ? patch.confidenceReviewedBy ?? null : current.confidence_reviewed_by,
          "caseUnderstandingFeedback" in patch ? patch.caseUnderstandingFeedback ?? null : current.case_understanding_feedback,
          "solutionSelectionFeedback" in patch ? patch.solutionSelectionFeedback ?? null : current.solution_selection_feedback,
+         "conversationStartedAt" in patch ? patch.conversationStartedAt ?? null : current.conversation_started_at,
+         "conversationEndedAt" in patch ? patch.conversationEndedAt ?? null : current.conversation_ended_at,
          nowIso(),
       ],
     );

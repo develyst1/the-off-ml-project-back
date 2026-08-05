@@ -137,6 +137,8 @@ export type SupportCase = {
   techRepliedAt?: string;
   lineSentAt?: string;
   lineDeliveredAt?: string;
+  conversationStartedAt?: string;
+  conversationEndedAt?: string;
   closedAt?: string;
   closedBy?: string;
   closeSummary?: { cause: string; resolution: string; prevention: string };
