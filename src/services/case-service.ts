@@ -9,6 +9,7 @@ import { inferPendingInformationFields } from "../lib/pending-information";
 import { sanitizeCustomerFacingMessage } from "../lib/customer-facing-message";
 import { actionableSolutionSteps } from "../lib/solution-quality";
 import { isAutoAnswerAllowedForRelevance, isAutoAnswerAllowedForSolution } from "./automation-settings";
+import { createHash } from "node:crypto";
 
 const CLOSED_CASE_STATUSES: CaseStatus[] = ["closed", "resolved", "sent_to_customer"];
 const CLOSED_INCOMING_CASE_STATUS_VALUES = new Set<string>([
@@ -96,6 +97,57 @@ function similarityScore(left: string, right: string) {
   return intersection / Math.max(1, new Set([...leftGrams, ...rightGrams]).size);
 }
 
+function diagnosticId(value: string) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+function logFeedbackMemoryDiagnostic(input: {
+  feedback: Array<{
+    caseId: string;
+    analysisId: string | null;
+    analysisVersion: number;
+    feedbackType: "ISSUE_UNDERSTANDING" | "SOLUTION_SELECTION";
+    result: "CORRECT" | "INCORRECT";
+  }>;
+  selected: Array<{
+    caseId: string;
+    analysisId: string | null;
+    analysisVersion: number;
+    feedbackType: "ISSUE_UNDERSTANDING" | "SOLUTION_SELECTION";
+    result: "CORRECT" | "INCORRECT";
+  }>;
+  excludeCaseId?: string;
+}) {
+  if (!env.AI_FEEDBACK_MEMORY_DEBUG) return;
+
+  const count = (items: typeof input.feedback, feedbackType: typeof input.feedback[number]["feedbackType"], result: typeof input.feedback[number]["result"]) => (
+    items.filter((item) => item.feedbackType === feedbackType && item.result === result).length
+  );
+  console.info({
+    event: "ai_feedback_memory_diagnostic",
+    source: "ai_review_feedback",
+    understandingCorrectCount: count(input.selected, "ISSUE_UNDERSTANDING", "CORRECT"),
+    understandingIncorrectCount: count(input.selected, "ISSUE_UNDERSTANDING", "INCORRECT"),
+    solutionCorrectCount: count(input.selected, "SOLUTION_SELECTION", "CORRECT"),
+    solutionIncorrectCount: count(input.selected, "SOLUTION_SELECTION", "INCORRECT"),
+    fetchedCountByGroup: {
+      understandingCorrect: count(input.feedback, "ISSUE_UNDERSTANDING", "CORRECT"),
+      understandingIncorrect: count(input.feedback, "ISSUE_UNDERSTANDING", "INCORRECT"),
+      solutionCorrect: count(input.feedback, "SOLUTION_SELECTION", "CORRECT"),
+      solutionIncorrect: count(input.feedback, "SOLUTION_SELECTION", "INCORRECT"),
+    },
+    selectedAnalysisReferences: input.selected.map((item) => ({
+      caseIdHash: diagnosticId(item.caseId),
+      analysisIdHash: item.analysisId ? diagnosticId(item.analysisId) : null,
+      analysisVersion: item.analysisVersion,
+    })),
+    excludedCurrentCase: Boolean(input.excludeCaseId),
+    excludedCurrentCaseHash: input.excludeCaseId ? diagnosticId(input.excludeCaseId) : null,
+    maxPerGroup: 5,
+    confidenceMutated: false,
+  });
+}
+
 export async function feedbackExamplesForContext(context: CaseAnalysisContext, excludeCaseId?: string) {
   const currentText = [context.subject, context.detail, ...context.referenceMessages.map((message) => message.content)].join("\n");
   const feedback = (await Promise.all([
@@ -108,19 +160,37 @@ export async function feedbackExamplesForContext(context: CaseAnalysisContext, e
     result: result as "CORRECT" | "INCORRECT",
     limit: 5,
   })))).flat();
-  return feedback
+  const ranked = feedback
     .filter((item) => item.caseId !== excludeCaseId)
     .map((item) => ({ item, score: similarityScore(currentText, item.context) }))
     .filter(({ score }) => score >= 0.08)
     .sort((left, right) => right.score - left.score || new Date(right.item.updatedAt).getTime() - new Date(left.item.updatedAt).getTime())
-    .slice(0, 20)
-    .map(({ item }) => ({
+    .slice(0, 5);
+  const selected = ranked.map(({ item }) => ({
       feedbackType: item.feedbackType,
       value: item.result,
       aiOutput: item.aiOutput,
       reason: item.reason,
       context: item.context,
-    }));
+  }));
+  logFeedbackMemoryDiagnostic({
+    feedback: feedback.map((item) => ({
+      caseId: item.caseId,
+      analysisId: item.analysisId,
+      analysisVersion: item.analysisVersion,
+      feedbackType: item.feedbackType,
+      result: item.result,
+    })),
+    selected: ranked.map(({ item }) => ({
+      caseId: item.caseId,
+      analysisId: item.analysisId,
+      analysisVersion: item.analysisVersion,
+      feedbackType: item.feedbackType,
+      result: item.result,
+    })),
+    excludeCaseId,
+  });
+  return selected;
 }
 
 function caseDetailText(detail: CaseDetail) {

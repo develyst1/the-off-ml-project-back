@@ -128,3 +128,20 @@ test("feedback memory does not change case or analysis confidence", async () => 
   expect(detail?.confidenceScore).toBe(77);
   expect(analysis?.confidence).toBe(66);
 });
+
+test("limits memory examples and preserves analysis identity and feedback meaning", async () => {
+  for (let index = 0; index < 6; index += 1) {
+    await createFeedbackFixture(`limited-${index}`, index % 2 === 0 ? "ISSUE_UNDERSTANDING" : "SOLUTION_SELECTION", index % 2 === 0 ? "CORRECT" : "INCORRECT");
+  }
+
+  const memory = await feedbackExamplesForContext({
+    subject: "ปัญหา limited",
+    detail: "รายละเอียด limited",
+    referenceMessages: [],
+  });
+
+  expect(memory.length).toBeLessThanOrEqual(5);
+  expect(memory.every((item) => item.feedbackType === "ISSUE_UNDERSTANDING" || item.feedbackType === "SOLUTION_SELECTION")).toBe(true);
+  expect(memory.every((item) => item.value === "CORRECT" || item.value === "INCORRECT")).toBe(true);
+  expect(memory.every((item) => typeof item.context === "string" && typeof item.aiOutput === "string")).toBe(true);
+});

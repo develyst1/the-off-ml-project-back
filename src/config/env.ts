@@ -8,6 +8,7 @@ type Env = {
   AI_CENTER_TEMPERATURE: number;
   AI_CENTER_MAX_TOKENS: number;
   AI_CENTER_TIMEOUT_MS: number;
+  AI_FEEDBACK_MEMORY_DEBUG: boolean;
   CASE_MATCH_CONFIDENCE_THRESHOLD: number;
   CASE_MATCH_CANDIDATE_LIMIT: number;
   CASE_MATCH_PENDING_TTL_MINUTES: number;
@@ -26,6 +27,7 @@ const port = Number(Bun.env.PORT ?? 4000);
 const aiCenterTemperature = Number(Bun.env.AI_CENTER_TEMPERATURE ?? 0.2);
 const aiCenterMaxTokens = Number(Bun.env.AI_CENTER_MAX_TOKENS ?? 900);
 const aiCenterTimeoutMs = Number(Bun.env.AI_CENTER_TIMEOUT_MS ?? 15000);
+const aiFeedbackMemoryDebug = Bun.env.AI_FEEDBACK_MEMORY_DEBUG === "true";
 const caseMatchConfidenceThreshold = Number(Bun.env.CASE_MATCH_CONFIDENCE_THRESHOLD ?? 0.75);
 const caseMatchCandidateLimit = Number(Bun.env.CASE_MATCH_CANDIDATE_LIMIT ?? 15);
 const caseMatchPendingTtlMinutes = Number(Bun.env.CASE_MATCH_PENDING_TTL_MINUTES ?? 20);
@@ -71,6 +73,7 @@ export const env: Env = {
   AI_CENTER_TEMPERATURE: aiCenterTemperature,
   AI_CENTER_MAX_TOKENS: aiCenterMaxTokens,
   AI_CENTER_TIMEOUT_MS: aiCenterTimeoutMs,
+  AI_FEEDBACK_MEMORY_DEBUG: aiFeedbackMemoryDebug,
   CASE_MATCH_CONFIDENCE_THRESHOLD: caseMatchConfidenceThreshold,
   CASE_MATCH_CANDIDATE_LIMIT: caseMatchCandidateLimit,
   CASE_MATCH_PENDING_TTL_MINUTES: caseMatchPendingTtlMinutes,
