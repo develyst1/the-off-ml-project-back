@@ -146,6 +146,28 @@ describe("Inbox LINE handoff", () => {
     expect(inboxUser?.customer.conversationState).toBe("HANDOFF_TO_TECH");
     expect(inboxUser?.cases).toHaveLength(0);
   });
+
+  test("persists an incoming LINE message with the active case before linking the timeline", async () => {
+    const lineUserId = `U-incoming-active-case-${++sequence}`;
+    const customer = await store.upsertCustomer({ lineUserId, displayName: "Active case" });
+    const supportCase = await store.createCase({ customerId: customer.id, status: "awaiting_tech", title: "Incoming assignment" });
+    await store.setActiveCase(customer.id, supportCase.id);
+
+    await receiveLineInboxMessage({
+      lineUserId,
+      messageId: `incoming-active-case-${sequence}`,
+      text: "new message for the active case",
+      replyToken: `reply-incoming-active-case-${sequence}`,
+    });
+
+    const inboxUser = await store.getInboxUser(customer.id);
+    const inboxMessage = inboxUser?.messages.find((message) => message.text === "new message for the active case");
+    const detail = await store.getCaseDetail(supportCase.id);
+
+    expect(inboxMessage?.caseId).toBe(supportCase.id);
+    expect(inboxMessage?.assignedCaseId).toBe(supportCase.id);
+    expect(detail?.messages.filter((message) => message.metadata?.sourceInboxMessageId === inboxMessage?.id)).toHaveLength(1);
+  });
 });
 
 describe("pending LINE information requests", () => {
@@ -630,7 +652,9 @@ describe("LINE contextual troubleshooting outcomes", () => {
 
     const detail = await caseService.getCase(supportCase.id);
     const refreshedCustomer = await store.upsertCustomer({ lineUserId });
+    const incomingMessage = await store.getInboxMessageByExternalMessageId(`outcome-ambiguous-${sequence}`);
     expect(detail?.messages.some((message) => message.originalText === "ยังไม่หาย")).toBe(false);
+    expect(incomingMessage?.caseId).toBeUndefined();
     expect(refreshedCustomer.pendingCaseSelection?.mode).toBe("choose");
   });
 });

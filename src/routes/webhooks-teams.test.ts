@@ -609,6 +609,35 @@ describe("POST /webhooks/teams/actions", () => {
     expect(body.data.messages.filter((message) => message.metadata?.sourceInboxMessageId === messages[0]?.id)).toHaveLength(1);
   });
 
+  test("allows an explicitly selected message to move from an older case to a newly opened case", async () => {
+    const customer = await store.upsertCustomer({ lineUserId: `U-reassign-selected-${++sequence}`, displayName: "Reassign selected" });
+    const oldCase = await store.createCase({ customerId: customer.id, status: "awaiting_tech", title: "Older case" });
+    const message = await store.createInboxMessage({
+      customerId: customer.id,
+      direction: "INBOUND",
+      senderType: "CUSTOMER",
+      text: "A new issue selected for a new case",
+      caseId: oldCase.id,
+      assignedCaseId: oldCase.id,
+      assignedBy: "SYSTEM",
+      createdAt: "2026-08-06T04:00:00.000Z",
+    });
+
+    const response = await openInboxCase(customer.id, {
+      title: "New case from selected message",
+      description: "The selected message belongs to the new issue",
+      from: "2026-08-06T03:59:00.000Z",
+      to: "2026-08-06T04:03:00.000Z",
+      selectedMessageIds: [message.id],
+    });
+    const body = await response.json() as { data: { id: string } };
+    const inboxUser = await store.getInboxUser(customer.id);
+
+    expect(response.status).toBe(201);
+    expect(inboxUser?.messages.find((item) => item.id === message.id)?.caseId).toBe(body.data.id);
+    expect(inboxUser?.messages.find((item) => item.id === message.id)?.assignedCaseId).toBe(body.data.id);
+  });
+
   test("links an incoming message only when the active case is the sole open case", async () => {
     const { caseService } = await import("../services/case-service");
     const customer = await store.upsertCustomer({ lineUserId: `U-active-link-${++sequence}`, displayName: "Active link" });

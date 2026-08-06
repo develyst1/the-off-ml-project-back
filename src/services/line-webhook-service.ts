@@ -99,7 +99,7 @@ const NON_CASE_CREATING_INTENTS = new Set<LineMessageIntentName>([
 ]);
 
 const ACTIVE_CASE_STATUSES = new Set(["analyzing", "awaiting_tech", "assigned", "tech_replied", "analyzing_solution", "awaiting_customer_info", "awaiting_confirmation", "reopened", "in_progress"]);
-const CLOSED_CASE_STATUSES = new Set(["closed", "resolved", "sent_to_customer"]);
+const CLOSED_CASE_STATUSES = new Set(["closed", "resolved", "sent_to_customer", "cancelled"]);
 
 const INTENT_CONFIDENCE_THRESHOLD = 0.7;
 const SHORT_FOLLOW_UP_RELATION_CONFIDENCE_THRESHOLD = 0.85;
@@ -307,8 +307,15 @@ export async function receiveLineInboxMessage(input: LineTextMessageInput): Prom
   }
 
   const customer = await store.upsertCustomer({ lineUserId: input.lineUserId, displayName });
+  // Resolve from the latest repository state before writing the Inbox row so
+  // the canonical record and its realtime event carry the same caseId.
+  const assignedCaseId = await caseService.resolveIncomingCaseId(customer.id);
   const inboxMessage = await store.createInboxMessage({
     customerId: customer.id,
+    caseId: assignedCaseId,
+    assignedCaseId,
+    assignedBy: assignedCaseId ? "SYSTEM_ACTIVE_CASE" : undefined,
+    assignedAt: assignedCaseId ? new Date().toISOString() : undefined,
     direction: "INBOUND",
     senderType: "CUSTOMER",
     text: input.text,
@@ -317,10 +324,9 @@ export async function receiveLineInboxMessage(input: LineTextMessageInput): Prom
     deliveryStatus: "DELIVERED",
     createdAt: input.timestamp ? new Date(input.timestamp).toISOString() : undefined,
   });
-
-  // Keep the open case and Inbox on the same conversation record. The active
-  // case is cleared on close, so later messages cannot leak into a closed case.
-  const linkedCase = await caseService.linkInboxMessageToActiveCase(customer.id, inboxMessage);
+  const linkedCase = assignedCaseId
+    ? await caseService.linkInboxMessageToActiveCase(customer.id, inboxMessage, assignedCaseId)
+    : undefined;
 
   if (customer.conversationState === "IDLE" && isGreetingMessage(input.text)) {
     try {
@@ -683,7 +689,8 @@ async function handlePendingInformationResponse(
 export async function receiveLineTextMessage(input: LineTextMessageInput): Promise<LineTextMessageResult> {
   const existingMessage = await store.getMessageByExternalMessageId(input.messageId);
   const existingWebhook = input.webhookEventId ? await store.getMessageByWebhookEventId(input.webhookEventId) : undefined;
-  if (existingMessage || existingWebhook) {
+  const existingInboxMessage = await store.getInboxMessageByExternalMessageId(input.messageId);
+  if (existingMessage || existingWebhook || existingInboxMessage) {
     console.log({
       event: "line_webhook_duplicate_message",
       lineUserId: input.lineUserId,
@@ -1219,6 +1226,56 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       });
       return { processed: true, duplicate: false, caseDetail: relatedResult.detail };
     }
+  }
+
+  const openCustomerCases = customerCases.filter((item) => !CLOSED_CASE_STATUSES.has(item.status));
+  if (!isNewCaseRequest && openCustomerCases.length > 1) {
+    const inboxMessage = await store.createInboxMessage({
+      customerId: customer.id,
+      direction: "INBOUND",
+      senderType: "CUSTOMER",
+      text: input.text,
+      externalMessageId: input.messageId,
+      webhookEventId: input.webhookEventId,
+      deliveryStatus: "DELIVERED",
+      createdAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
+    });
+    console.info({
+      event: "line_incoming_case_assignment",
+      lineUserId: input.lineUserId,
+      conversationId: customer.id,
+      activeCaseId: customer.activeCaseId,
+      activeCaseFound: Boolean(activeCase && openCustomerCases.some((item) => item.id === activeCase.id)),
+      activeCaseStatus: activeCase?.status,
+      openCaseIds: openCustomerCases.map((item) => item.id),
+      openCaseStatuses: openCustomerCases.map((item) => item.status),
+      openCaseCount: openCustomerCases.length,
+      selectedCaseId: undefined,
+      assignmentReason: "MULTIPLE_OPEN_CASES",
+    });
+    await store.setPendingCaseSelection(customer.id, {
+      mode: "choose",
+      candidateCaseIds: openCustomerCases.slice(0, 5).map((item) => item.id),
+      createdAt: new Date().toISOString(),
+    });
+    const rows = openCustomerCases.slice(0, 5).map((item, index) => `${index + 1}. ${item.caseNumber} — ${caseService.formatCaseTitle(item)}`);
+    await lineClient.replyToToken({
+      replyToken: input.replyToken,
+      text: `ต้องการอัปเดตเคสไหนคะ\n\n${rows.join("\n")}\n\nพิมพ์หมายเลข 1-${Math.min(openCustomerCases.length, 5)} ได้เลยค่ะ`,
+    });
+    realtimeEventHub.publish({
+      name: "conversation.message.created",
+      data: {
+        eventId: `line:${input.webhookEventId ?? input.messageId}`,
+        messageId: inboxMessage.id,
+        conversationId: customer.id,
+        userId: customer.id,
+        senderType: inboxMessage.senderType,
+        createdAt: inboxMessage.createdAt,
+        direction: inboxMessage.direction,
+      },
+    });
+    return { processed: true, duplicate: false, caseDetail: undefined };
   }
 
   let matchedExistingCase: CaseDetail | undefined;

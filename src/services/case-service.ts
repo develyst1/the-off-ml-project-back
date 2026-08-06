@@ -11,6 +11,10 @@ import { actionableSolutionSteps } from "../lib/solution-quality";
 import { isAutoAnswerAllowedForRelevance, isAutoAnswerAllowedForSolution } from "./automation-settings";
 
 const CLOSED_CASE_STATUSES: CaseStatus[] = ["closed", "resolved", "sent_to_customer"];
+const CLOSED_INCOMING_CASE_STATUS_VALUES = new Set<string>([
+  ...CLOSED_CASE_STATUSES,
+  "cancelled",
+]);
 const RECENT_CLOSED_CASE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 
 type CaseHistoryMatchResult = {
@@ -429,9 +433,6 @@ export const caseService = {
       throw new Error(selectedIds ? "กรุณาเลือกข้อความอย่างน้อย 1 รายการ" : "ไม่พบข้อความในช่วงเวลาที่เลือก");
     }
 
-    if (selectedIds && sourceMessages.some((message) => message.caseId)) {
-      throw new Error("Selected Inbox message is already assigned to a case");
-    }
     const latestInbound = [...sourceMessages].reverse().find((message) => message.senderType === "CUSTOMER");
     const generatedDraft = hasManualCaseDetails
       ? undefined
@@ -466,13 +467,10 @@ export const caseService = {
     await store.setActiveCase(customerId, supportCase.id);
 
     if (selectedIds) {
-      const alreadyAssigned = sourceMessages.find((message) => message.caseId && message.caseId !== supportCase.id);
-      if (alreadyAssigned) {
-        throw new Error("ข้อความที่เลือกถูกจัดเข้ากับเคสอื่นแล้ว กรุณาตรวจสอบรายการข้อความอีกครั้ง");
-      }
       const assignedMessages = await store.assignInboxMessagesToCase([...selectedIds], {
         caseId: supportCase.id,
         assignedBy: "SYSTEM_OPEN_CASE",
+        allowReassignment: true,
       });
       for (const message of assignedMessages) {
         realtimeEventHub.publish({
@@ -631,33 +629,66 @@ export const caseService = {
     const original = detail.messages.find((message) => message.senderType === "CUSTOMER")?.originalText ?? detail.category ?? "Tech Support";
     return original.trim();
   },
-  async linkInboxMessageToActiveCase(customerId: string, inboxMessage: InboxMessage, forcedCaseId?: string) {
+  async resolveIncomingCaseId(customerId: string) {
     const inboxUser = await store.getInboxUser(customerId);
-    const openCases = (inboxUser?.cases ?? []).filter((item) => !CLOSED_CASE_STATUSES.includes(item.status));
-    let activeCaseId = forcedCaseId ?? inboxUser?.customer.activeCaseId;
-    if (!activeCaseId) {
-      if (forcedCaseId || openCases.length !== 1) return undefined;
-      activeCaseId = openCases[0]?.id;
-      if (!activeCaseId) return undefined;
-      await store.setActiveCase(customerId, activeCaseId);
+    const allCases = inboxUser?.cases ?? [];
+    const openCases = allCases.filter((item) => !CLOSED_INCOMING_CASE_STATUS_VALUES.has(item.status));
+    const activeCaseId = inboxUser?.customer.activeCaseId;
+    const activeCase = activeCaseId ? allCases.find((item) => item.id === activeCaseId) : undefined;
+    const activeCaseIsOpen = Boolean(activeCase && !CLOSED_INCOMING_CASE_STATUS_VALUES.has(activeCase.status));
+    let selectedCaseId: string | undefined;
+    let assignmentReason: "ACTIVE_CASE_VALID" | "SINGLE_OPEN_CASE" | "MULTIPLE_OPEN_CASES" | "NO_OPEN_CASE" | "STALE_ACTIVE_CASE" | "ACTIVE_CASE_NOT_OWNED_BY_USER";
+
+    if (activeCaseId && activeCase && !activeCaseIsOpen) {
+      await store.setActiveCase(customerId);
+      assignmentReason = "STALE_ACTIVE_CASE";
+      if (openCases.length === 1) {
+        selectedCaseId = openCases[0]?.id;
+        if (selectedCaseId) await store.setActiveCase(customerId, selectedCaseId);
+      }
+    } else if (activeCaseId && !activeCase) {
+      await store.setActiveCase(customerId);
+      assignmentReason = "ACTIVE_CASE_NOT_OWNED_BY_USER";
+      if (openCases.length === 1) {
+        selectedCaseId = openCases[0]?.id;
+        if (selectedCaseId) await store.setActiveCase(customerId, selectedCaseId);
+      }
+    } else if (activeCaseIsOpen && openCases.length === 1) {
+      selectedCaseId = activeCase?.id;
+      assignmentReason = "ACTIVE_CASE_VALID";
+    } else if (openCases.length === 1) {
+      selectedCaseId = openCases[0]?.id;
+      assignmentReason = "SINGLE_OPEN_CASE";
+      if (selectedCaseId) await store.setActiveCase(customerId, selectedCaseId);
+    } else if (openCases.length > 1) {
+      assignmentReason = "MULTIPLE_OPEN_CASES";
+    } else {
+      assignmentReason = "NO_OPEN_CASE";
     }
 
-    if (!forcedCaseId) {
-      const activeCase = openCases.find((item) => item.id === activeCaseId);
-      if (!activeCase) {
-        // Clear a stale pointer to a closed/missing case. Only recover to a
-        // single open case; never guess when more than one remains.
-        if (inboxUser?.customer.activeCaseId === activeCaseId) await store.setActiveCase(customerId);
-        if (openCases.length !== 1 || !openCases[0]) return undefined;
-        activeCaseId = openCases[0].id;
-        await store.setActiveCase(customerId, activeCaseId);
-      } else if (openCases.length !== 1) {
-        return undefined;
-      }
-    }
+    console.info({
+      event: "line_incoming_case_assignment",
+      lineUserId: inboxUser?.customer.lineUserId,
+      conversationId: customerId,
+      activeCaseId,
+      activeCaseFound: Boolean(activeCase),
+      activeCaseStatus: activeCase?.status,
+      openCaseIds: openCases.map((item) => item.id),
+      openCaseStatuses: openCases.map((item) => item.status),
+      openCaseCount: openCases.length,
+      selectedCaseId,
+      assignmentReason,
+    });
+
+    return selectedCaseId;
+  },
+
+  async linkInboxMessageToActiveCase(customerId: string, inboxMessage: InboxMessage, forcedCaseId?: string) {
+    const activeCaseId = forcedCaseId ?? await caseService.resolveIncomingCaseId(customerId);
+    if (!activeCaseId) return undefined;
 
     const detail = await store.getCaseDetail(activeCaseId);
-    if (!detail || CLOSED_CASE_STATUSES.includes(detail.status)) return undefined;
+    if (!detail || CLOSED_INCOMING_CASE_STATUS_VALUES.has(detail.status)) return undefined;
     if (detail.messages.some((message) => message.metadata?.sourceInboxMessageId === inboxMessage.id)) return detail;
     await store.assignInboxMessageToCase(inboxMessage.id, {
       caseId: activeCaseId,
@@ -963,6 +994,22 @@ export const caseService = {
     const contextualText = input.resolvedText?.trim() || input.text;
     const shouldNotifyTech = input.notifyTech ?? requiresTechFollowUp(contextualText);
 
+    const receivedAt = input.receivedAt ?? new Date().toISOString();
+    const inboxMessage = await store.createInboxMessage({
+      customerId: detail.customer.id,
+      caseId: input.caseId,
+      assignedCaseId: input.caseId,
+      assignedBy: "SYSTEM_ACTIVE_CASE",
+      assignedAt: new Date().toISOString(),
+      direction: "INBOUND",
+      senderType: "CUSTOMER",
+      text: input.text,
+      externalMessageId: input.externalMessageId,
+      webhookEventId: input.webhookEventId,
+      deliveryStatus: "DELIVERED",
+      createdAt: receivedAt,
+    });
+
     const message = await store.createMessage({
       caseId: input.caseId,
       direction: "inbound_customer",
@@ -973,7 +1020,25 @@ export const caseService = {
       messageType: "CUSTOMER_ADDITIONAL_INFO",
       normalizedText: input.text.trim().replace(/\s+/g, " "),
       webhookEventId: input.webhookEventId,
-      receivedAt: input.receivedAt,
+      receivedAt,
+      metadata: {
+        source: "line",
+        sourceInboxMessageId: inboxMessage.id,
+        sourceCreatedAt: receivedAt,
+      },
+    });
+    realtimeEventHub.publish({
+      name: "conversation.message.created",
+      data: {
+        eventId: `line:${input.webhookEventId ?? input.externalMessageId ?? inboxMessage.id}`,
+        messageId: inboxMessage.id,
+        conversationId: detail.customer.id,
+        userId: detail.customer.id,
+        caseId: inboxMessage.caseId,
+        senderType: inboxMessage.senderType,
+        createdAt: inboxMessage.createdAt,
+        direction: inboxMessage.direction,
+      },
     });
     const shouldAnalyze = shouldRefreshProblemSummary(contextualText);
     const analysis = shouldAnalyze
@@ -2115,6 +2180,19 @@ export const caseService = {
     if (!supportCase || CLOSED_CASE_STATUSES.includes(supportCase.status)) throw new Error("ไม่พบเคสที่เปิดอยู่สำหรับจัดข้อความ");
     const message = await store.assignInboxMessageToCase(input.messageId, { caseId: input.caseId, assignedBy: input.assignedBy });
     await this.linkInboxMessageToActiveCase(supportCase.customer.id, { ...message, caseId: input.caseId }, input.caseId);
+    realtimeEventHub.publish({
+      name: "conversation.message.created",
+      data: {
+        eventId: `inbox:${message.id}:assigned:${input.caseId}`,
+        messageId: message.id,
+        conversationId: supportCase.customer.id,
+        userId: supportCase.customer.id,
+        caseId: input.caseId,
+        senderType: message.senderType,
+        createdAt: message.createdAt,
+        direction: message.direction,
+      },
+    });
     return message;
   },
 

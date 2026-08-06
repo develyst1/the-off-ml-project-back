@@ -19,7 +19,7 @@ export type CaseStore = {
   markInboxRead(customerId: string, readAt?: string): Promise<Customer>;
   createInboxMessage(input: Omit<InboxMessage, "id" | "createdAt"> & { createdAt?: string }): Promise<InboxMessage>;
   assignInboxMessageToCase(messageId: string, input: { caseId: string; assignedBy: string; assignedAt?: string }): Promise<InboxMessage>;
-  assignInboxMessagesToCase(messageIds: string[], input: { caseId: string; assignedBy: string; assignedAt?: string }): Promise<InboxMessage[]>;
+  assignInboxMessagesToCase(messageIds: string[], input: { caseId: string; assignedBy: string; assignedAt?: string; allowReassignment?: boolean }): Promise<InboxMessage[]>;
   getInboxMessageByExternalMessageId(externalMessageId: string): Promise<InboxMessage | undefined>;
   getInboxMessageByWebhookEventId(webhookEventId: string): Promise<InboxMessage | undefined>;
   listInboxUsers(): Promise<InboxUser[]>;

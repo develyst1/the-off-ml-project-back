@@ -111,13 +111,13 @@ export class InMemoryStore implements CaseStore {
     return updated;
   }
 
-  async assignInboxMessagesToCase(messageIds: string[], input: { caseId: string; assignedBy: string; assignedAt?: string }): Promise<InboxMessage[]> {
+  async assignInboxMessagesToCase(messageIds: string[], input: { caseId: string; assignedBy: string; assignedAt?: string; allowReassignment?: boolean }): Promise<InboxMessage[]> {
     const assignedAt = input.assignedAt ?? nowIso();
     const updated: InboxMessage[] = [];
     for (const messageId of messageIds) {
       const message = this.inboxMessages.get(messageId);
       if (!message) continue;
-      if (message.caseId) continue;
+      if (message.caseId && !input.allowReassignment) continue;
       const next = { ...message, caseId: input.caseId, assignedCaseId: input.caseId, assignedBy: input.assignedBy, assignedAt };
       this.inboxMessages.set(messageId, next);
       updated.push(next);

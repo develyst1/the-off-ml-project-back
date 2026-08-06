@@ -519,7 +519,7 @@ export class PostgresStore implements CaseStore {
     return mapInboxMessage(result.rows[0]);
   }
 
-  async assignInboxMessagesToCase(messageIds: string[], input: { caseId: string; assignedBy: string; assignedAt?: string }): Promise<InboxMessage[]> {
+  async assignInboxMessagesToCase(messageIds: string[], input: { caseId: string; assignedBy: string; assignedAt?: string; allowReassignment?: boolean }): Promise<InboxMessage[]> {
     if (messageIds.length === 0) return [];
     await this.ready();
     const client = await this.pool.connect();
@@ -529,9 +529,9 @@ export class PostgresStore implements CaseStore {
       const result = await client.query<DbInboxMessage>(
         `update inbox_messages
          set case_id = $2, assigned_case_id = $2, assigned_by = $3, assigned_at = $4
-         where id = any($1::text[]) and case_id is null
+         where id = any($1::text[]) and (case_id is null or $5 = true)
          returning *`,
-        [messageIds, input.caseId, input.assignedBy, assignedAt],
+        [messageIds, input.caseId, input.assignedBy, assignedAt, input.allowReassignment ?? false],
       );
       await client.query("commit");
       return result.rows.map(mapInboxMessage);
