@@ -406,6 +406,22 @@ describe("POST /webhooks/teams/actions", () => {
       feedbackType: "ISSUE_UNDERSTANDING",
       result: "INCORRECT",
     });
+    const mismatchedAnalysisCase = await createCase(90);
+    const mismatchedAnalysis = await store.createAnalysis({
+      caseId: mismatchedAnalysisCase.id,
+      analysisType: "customer_message",
+      category: "NETWORK_CONNECTION",
+      confidence: 90,
+      rawJson: {},
+    });
+    await store.upsertAiReviewFeedback({
+      caseId: mismatchedAnalysisCase.id,
+      analysisId: "analysis-from-another-run",
+      analysisVersion: mismatchedAnalysis.analysisVersion,
+      feedbackType: "ISSUE_UNDERSTANDING",
+      result: "INCORRECT",
+      reviewSource: "CASE_DETAIL",
+    });
 
     const response = await app.fetch(new Request("http://localhost/analytics/summary"));
     const body = await response.json() as { data: { categories: Array<{
@@ -450,7 +466,7 @@ describe("POST /webhooks/teams/actions", () => {
       to: new Date(new Date(second.createdAt).getTime() + 60_000).toISOString(),
       selectedMessageIds: [second.id],
     });
-    const body = await response.json() as { data: { id: string; messages: Array<{ originalText: string; sourceMessageId?: string; externalMessageId?: string; webhookEventId?: string; metadata?: Record<string, unknown> }> } };
+    const body = await response.json() as { data: { id: string; caseId?: string; activeCaseId?: string; messages: Array<{ originalText: string; sourceMessageId?: string; externalMessageId?: string; webhookEventId?: string; metadata?: Record<string, unknown> }> } };
     const referenceMessages = body.data.messages.filter((message) => message.metadata?.isCaseReference === true);
     const definition = body.data.messages.find((message) => message.metadata?.eventType === "CASE_CREATED_FROM_INBOX");
     const detail = await store.getCaseDetail(body.data.id);
@@ -470,6 +486,211 @@ describe("POST /webhooks/teams/actions", () => {
     expect(analysisContext?.caseAnalysisContext?.subject).toBe("หัวข้อจากทีม Tech");
     expect(analysisContext?.caseAnalysisContext?.detail).toBe("รายละเอียดจากทีม Tech");
     expect(analysisContext?.caseAnalysisContext?.referenceMessages?.map((message) => message.messageId)).toEqual([second.id]);
+    const inboxUser = await store.getInboxUser(customer.id);
+    const selectedInboxMessage = inboxUser?.messages.find((message) => message.id === second.id);
+    expect(selectedInboxMessage?.caseId).toBe(body.data.id);
+    expect(selectedInboxMessage?.assignedCaseId).toBe(body.data.id);
+    expect(selectedInboxMessage?.assignedBy).toBe("SYSTEM_OPEN_CASE");
+    expect(inboxUser?.customer.activeCaseId).toBe(body.data.id);
+    expect(detail?.messages.filter((message) => message.metadata?.sourceInboxMessageId === second.id)).toHaveLength(1);
+  });
+
+  test("deduplicates case timeline rows by source identity without collapsing same-text messages", async () => {
+    const customer = await store.upsertCustomer({ lineUserId: `U-case-dedupe-${++sequence}`, displayName: "Timeline dedupe" });
+    const supportCase = await store.createCase({ customerId: customer.id, status: "assigned", title: "Timeline" });
+    const sourceInboxMessageId = `inbox-source-${sequence}`;
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INTERNAL",
+      channel: "system",
+      originalText: "ข้อมูลไม่อัปเดต",
+      senderType: "SYSTEM",
+      messageType: "SYSTEM_EVENT",
+      deliveryStatus: "PROCESSED",
+      metadata: { sourceInboxMessageId },
+    });
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "ข้อมูลไม่อัปเดต",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+      metadata: { sourceInboxMessageId },
+    });
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "ข้อมูลไม่อัปเดต",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+      metadata: { sourceInboxMessageId: `${sourceInboxMessageId}-second` },
+    });
+    const detail = await store.getCaseDetail(supportCase.id);
+
+    expect(detail?.messages).toHaveLength(2);
+    expect(detail?.messages.every((message) => message.senderType === "CUSTOMER" && message.direction === "INBOUND")).toBe(true);
+  });
+
+  test("links Case Detail outbound messages to the same case in Inbox", async () => {
+    const customer = await store.upsertCustomer({ lineUserId: `U-case-message-${++sequence}`, displayName: "Case message" });
+    const supportCase = await store.createCase({ customerId: customer.id, status: "assigned", title: "Case composer" });
+    const response = await app.fetch(new Request(`http://localhost/cases/${supportCase.id}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "ทีม Tech ตรวจสอบให้แล้วค่ะ" }),
+    }));
+    const inboxUser = await store.getInboxUser(customer.id);
+    const inboxMessage = inboxUser?.messages.find((message) => message.text === "ทีม Tech ตรวจสอบให้แล้วค่ะ");
+    const detail = await store.getCaseDetail(supportCase.id);
+
+    expect(response.status).toBe(200);
+    expect(inboxMessage?.caseId).toBe(supportCase.id);
+    expect(inboxMessage?.assignedCaseId).toBe(supportCase.id);
+    expect(detail?.messages.some((message) => message.originalText === "ทีม Tech ตรวจสอบให้แล้วค่ะ" && message.channel === "line" && message.senderType === "TECH" && message.direction === "OUTBOUND")).toBe(true);
+  });
+
+  test("keeps Case Detail replies assigned to the current case even with multiple open cases", async () => {
+    const customer = await store.upsertCustomer({ lineUserId: `U-case-message-multiple-${++sequence}`, displayName: "Multiple case composer" });
+    await store.createCase({ customerId: customer.id, status: "assigned", title: "Older open case" });
+    const currentCase = await store.createCase({ customerId: customer.id, status: "assigned", title: "Current open case" });
+
+    const content = "ข้อความจากเคสปัจจุบัน";
+    const response = await app.fetch(new Request(`http://localhost/cases/${currentCase.id}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content, messageType: "CUSTOMER_REPLY" }),
+    }));
+    const body = await response.json() as { data: { id: string; caseId?: string } };
+    const inboxUser = await store.getInboxUser(customer.id);
+    const inboxMessage = inboxUser?.messages.find((message) => message.text === content);
+    const detail = await store.getCaseDetail(currentCase.id);
+    const timelineMessages = detail?.messages.filter((message) => message.originalText === content && message.channel === "line");
+
+    expect(response.status).toBe(200);
+    expect(body.data.caseId).toBe(currentCase.id);
+    expect(inboxMessage?.caseId).toBe(currentCase.id);
+    expect(inboxMessage?.senderType).toBe("TECH");
+    expect(inboxMessage?.direction).toBe("OUTBOUND");
+    expect(timelineMessages).toHaveLength(1);
+    expect(timelineMessages?.[0]?.metadata?.inboxMessageId).toBe(inboxMessage?.id);
+  });
+
+  test("assigns all selected reference messages to the newly opened case", async () => {
+    const customer = await store.upsertCustomer({ lineUserId: `U-selected-three-${++sequence}`, displayName: "Selected three" });
+    const timestamps = ["2026-08-06T04:00:00.000Z", "2026-08-06T04:01:00.000Z", "2026-08-06T04:02:00.000Z"];
+    const messages = await Promise.all(timestamps.map((createdAt, index) => store.createInboxMessage({
+      customerId: customer.id,
+      direction: index === 1 ? "OUTBOUND" : "INBOUND",
+      senderType: index === 1 ? "TECH" : "CUSTOMER",
+      text: `selected-${index + 1}`,
+      createdAt,
+    })));
+    const response = await openInboxCase(customer.id, {
+      title: "Selected messages",
+      description: "Three selected messages",
+      from: "2026-08-06T03:59:00.000Z",
+      to: "2026-08-06T04:03:00.000Z",
+      selectedMessageIds: messages.map((message) => message.id),
+    });
+    const body = await response.json() as { data: { id: string; caseId?: string; activeCaseId?: string; messages: Array<{ metadata?: Record<string, unknown> }> } };
+    const inboxUser = await store.getInboxUser(customer.id);
+    const selected = messages.map((message) => inboxUser?.messages.find((item) => item.id === message.id));
+
+    expect(response.status).toBe(201);
+    expect(body.data.caseId).toBe(body.data.id);
+    expect(body.data.activeCaseId).toBe(body.data.id);
+    expect(selected.every((message) => message?.caseId === body.data.id)).toBe(true);
+    expect(selected.every((message) => message?.assignedCaseId === body.data.id)).toBe(true);
+    expect(body.data.messages.filter((message) => message.metadata?.isCaseReference === true)).toHaveLength(3);
+    expect(body.data.messages.filter((message) => message.metadata?.sourceInboxMessageId === messages[0]?.id)).toHaveLength(1);
+  });
+
+  test("links an incoming message only when the active case is the sole open case", async () => {
+    const { caseService } = await import("../services/case-service");
+    const customer = await store.upsertCustomer({ lineUserId: `U-active-link-${++sequence}`, displayName: "Active link" });
+    const supportCase = await store.createCase({ customerId: customer.id, status: "assigned", title: "Active" });
+    await store.setActiveCase(customer.id, supportCase.id);
+    const incoming = await store.createInboxMessage({ customerId: customer.id, direction: "INBOUND", senderType: "CUSTOMER", text: "new incoming" });
+    await caseService.linkInboxMessageToActiveCase(customer.id, incoming);
+    const linked = await store.getInboxUser(customer.id);
+    const detail = await store.getCaseDetail(supportCase.id);
+
+    expect(linked?.messages.find((message) => message.id === incoming.id)?.caseId).toBe(supportCase.id);
+    expect(detail?.messages.some((message) => message.metadata?.sourceInboxMessageId === incoming.id && message.senderType === "CUSTOMER" && message.direction === "INBOUND")).toBe(true);
+  });
+
+  test("clears a closed active case and assigns the incoming message to the only open case", async () => {
+    const { caseService } = await import("../services/case-service");
+    const customer = await store.upsertCustomer({ lineUserId: `U-stale-active-${++sequence}`, displayName: "Stale active" });
+    const closedCase = await store.createCase({ customerId: customer.id, status: "closed", title: "Closed case" });
+    const openCase = await store.createCase({ customerId: customer.id, status: "awaiting_tech", title: "Open case" });
+    await store.setActiveCase(customer.id, closedCase.id);
+
+    const incoming = await store.createInboxMessage({ customerId: customer.id, direction: "INBOUND", senderType: "CUSTOMER", text: "new message after closed case" });
+    await caseService.linkInboxMessageToActiveCase(customer.id, incoming);
+    const inboxUser = await store.getInboxUser(customer.id);
+    const refreshedCustomer = inboxUser?.customer;
+
+    expect(refreshedCustomer?.activeCaseId).toBe(openCase.id);
+    expect(inboxUser?.messages.find((message) => message.id === incoming.id)?.caseId).toBe(openCase.id);
+  });
+
+  test("leaves incoming messages unassigned when multiple cases are open", async () => {
+    const { caseService } = await import("../services/case-service");
+    const customer = await store.upsertCustomer({ lineUserId: `U-multiple-open-${++sequence}`, displayName: "Multiple open" });
+    const first = await store.createCase({ customerId: customer.id, status: "assigned", title: "First" });
+    await store.createCase({ customerId: customer.id, status: "assigned", title: "Second" });
+    await store.setActiveCase(customer.id, first.id);
+    const incoming = await store.createInboxMessage({ customerId: customer.id, direction: "INBOUND", senderType: "CUSTOMER", text: "ambiguous incoming" });
+    const linked = await caseService.linkInboxMessageToActiveCase(customer.id, incoming);
+    const inboxUser = await store.getInboxUser(customer.id);
+
+    expect(linked).toBeUndefined();
+    expect(inboxUser?.messages.find((message) => message.id === incoming.id)?.caseId).toBeUndefined();
+  });
+
+  test("backfills only unassigned reference Inbox messages", async () => {
+    const customer = await store.upsertCustomer({ lineUserId: `U-backfill-${++sequence}`, displayName: "Backfill" });
+    const reference = await store.createInboxMessage({ customerId: customer.id, direction: "INBOUND", senderType: "CUSTOMER", text: "reference" });
+    const unrelatedCase = await store.createCase({ customerId: customer.id, status: "assigned", title: "Other case" });
+    const protectedMessage = await store.createInboxMessage({ customerId: customer.id, caseId: unrelatedCase.id, assignedCaseId: unrelatedCase.id, direction: "INBOUND", senderType: "CUSTOMER", text: "protected" });
+    const targetCase = await store.createCase({ customerId: customer.id, status: "assigned", title: "Backfill case" });
+    await store.createMessage({
+      caseId: targetCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: reference.text,
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+      metadata: { isCaseReference: true, sourceInboxMessageId: reference.id },
+    });
+    await store.createMessage({
+      caseId: targetCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: protectedMessage.text,
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+      metadata: { isCaseReference: true, sourceInboxMessageId: protectedMessage.id },
+    });
+
+    const { caseService } = await import("../services/case-service");
+    const result = await caseService.backfillCaseReferenceMessages(targetCase.id);
+    const inboxUser = await store.getInboxUser(customer.id);
+    const updatedDetail = await store.getCaseDetail(targetCase.id);
+
+    expect(result.assignedMessageIds).toEqual([reference.id]);
+    expect(inboxUser?.messages.find((message) => message.id === reference.id)?.caseId).toBe(targetCase.id);
+    expect(inboxUser?.messages.find((message) => message.id === protectedMessage.id)?.caseId).toBe(unrelatedCase.id);
+    expect(updatedDetail?.messages.find((message) => message.metadata?.sourceInboxMessageId === reference.id)?.metadata?.assignedAt).toBeDefined();
+    expect(updatedDetail?.messages.find((message) => message.metadata?.sourceInboxMessageId === reference.id)?.senderType).toBe("CUSTOMER");
+    expect(updatedDetail?.messages.find((message) => message.metadata?.sourceInboxMessageId === reference.id)?.direction).toBe("INBOUND");
   });
 
   test("does not add Inbox messages as references when a case is opened manually", async () => {

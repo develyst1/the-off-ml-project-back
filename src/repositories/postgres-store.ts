@@ -3,7 +3,7 @@ import { env } from "../config/env";
 import type { AiReviewFeedback, Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore, ChatRetentionCleanupResult } from "./case-store";
-import { normalizeCaseMessage } from "./case-message-normalizer";
+import { dedupeCaseMessages, normalizeCaseMessage } from "./case-message-normalizer";
 import { schemaSql } from "./schema";
 import { toAiReviewFeedbackMemoryItem } from "../lib/ai-review-feedback-memory";
 
@@ -508,12 +508,39 @@ export class PostgresStore implements CaseStore {
   }
 
   async assignInboxMessageToCase(messageId: string, input: { caseId: string; assignedBy: string; assignedAt?: string }): Promise<InboxMessage> {
+    const current = await this.query<{ case_id: string | null }>("select case_id from inbox_messages where id = $1", [messageId]);
+    if (!current.rows[0]) throw new Error("Inbox message not found");
+    if (current.rows[0].case_id && current.rows[0].case_id !== input.caseId) throw new Error("Inbox message is already assigned to another case");
     const result = await this.query<DbInboxMessage>(
       "update inbox_messages set case_id = $2, assigned_case_id = $2, assigned_by = $3, assigned_at = $4 where id = $1 returning *",
       [messageId, input.caseId, input.assignedBy, input.assignedAt ?? nowIso()],
     );
     if (!result.rows[0]) throw new Error("Inbox message not found");
     return mapInboxMessage(result.rows[0]);
+  }
+
+  async assignInboxMessagesToCase(messageIds: string[], input: { caseId: string; assignedBy: string; assignedAt?: string }): Promise<InboxMessage[]> {
+    if (messageIds.length === 0) return [];
+    await this.ready();
+    const client = await this.pool.connect();
+    const assignedAt = input.assignedAt ?? nowIso();
+    try {
+      await client.query("begin");
+      const result = await client.query<DbInboxMessage>(
+        `update inbox_messages
+         set case_id = $2, assigned_case_id = $2, assigned_by = $3, assigned_at = $4
+         where id = any($1::text[]) and case_id is null
+         returning *`,
+        [messageIds, input.caseId, input.assignedBy, assignedAt],
+      );
+      await client.query("commit");
+      return result.rows.map(mapInboxMessage);
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async getInboxMessageByExternalMessageId(externalMessageId: string): Promise<InboxMessage | undefined> {
@@ -751,7 +778,7 @@ export class PostgresStore implements CaseStore {
     return mapMessage(result.rows[0]);
   }
 
-  async updateMessage(id: string, patch: Partial<Pick<Message, "direction" | "messageType" | "senderType" | "deliveryStatus" | "deliveryError" | "sentAt" | "deliveredAt" | "failedAt">>): Promise<Message> {
+  async updateMessage(id: string, patch: Partial<Pick<Message, "direction" | "messageType" | "senderType" | "deliveryStatus" | "deliveryError" | "sentAt" | "deliveredAt" | "failedAt" | "metadata">>): Promise<Message> {
     const result = await this.query<DbMessage>(
       `update case_messages
        set direction = coalesce($2, direction),
@@ -762,10 +789,11 @@ export class PostgresStore implements CaseStore {
            sent_at = coalesce($7, sent_at),
            delivered_at = coalesce($8, delivered_at),
            failed_at = coalesce($9, failed_at),
+           metadata = case when $10::jsonb is null then metadata else metadata || $10::jsonb end,
            updated_at = now()
        where id = $1
        returning *`,
-      [id, patch.direction ?? null, patch.senderType ?? null, patch.messageType ?? null, patch.deliveryStatus ?? null, patch.deliveryError ?? null, patch.sentAt ?? null, patch.deliveredAt ?? null, patch.failedAt ?? null],
+      [id, patch.direction ?? null, patch.senderType ?? null, patch.messageType ?? null, patch.deliveryStatus ?? null, patch.deliveryError ?? null, patch.sentAt ?? null, patch.deliveredAt ?? null, patch.failedAt ?? null, patch.metadata ? JSON.stringify(patch.metadata) : null],
     );
     if (!result.rows[0]) throw new Error("Message not found");
     return mapMessage(result.rows[0]);
@@ -1099,7 +1127,7 @@ export class PostgresStore implements CaseStore {
     const customer = customerResult.rows[0];
     if (!customer) return undefined;
 
-    const messages = messageResult.rows.map(mapMessage);
+    const messages = dedupeCaseMessages(messageResult.rows.map(mapMessage));
     const customerMessages = messages
       .filter((message) => message.senderType === "CUSTOMER" && (message.direction === "INBOUND" || message.direction === "inbound_customer"))
       .sort((left, right) => new Date(left.receivedAt ?? left.createdAt).getTime() - new Date(right.receivedAt ?? right.createdAt).getTime());

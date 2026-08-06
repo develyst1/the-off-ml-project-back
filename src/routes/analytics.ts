@@ -61,8 +61,12 @@ analyticsRoutes.get("/summary", async (c) => {
   }));
   const currentFeedback = new Map<string, typeof feedback[number]>();
   for (const item of feedback) {
-    if (latestAnalysisByCase.get(item.caseId)?.analysisVersion !== item.analysisVersion) continue;
-    const key = `${item.caseId}:${item.analysisVersion}:${item.feedbackType}`;
+    const analysis = latestAnalysisByCase.get(item.caseId);
+    // Feedback is valid only when it points at the exact current analysis,
+    // not merely the same case/version. This prevents an orphaned analysis id
+    // from being counted in the current Analytics bucket.
+    if (!analysis || analysis.analysisVersion !== item.analysisVersion || analysis.analysisId !== item.analysisId) continue;
+    const key = `${item.caseId}:${item.analysisId}:${item.analysisVersion}:${item.feedbackType}`;
     const existing = currentFeedback.get(key);
     if (!existing || new Date(item.updatedAt).getTime() > new Date(existing.updatedAt).getTime()) {
       currentFeedback.set(key, item);
@@ -83,10 +87,10 @@ analyticsRoutes.get("/summary", async (c) => {
     current.count += 1;
     const analysisVersion = analysis?.analysisVersion;
     const understanding = analysisVersion
-      ? currentFeedback.get(`${item.id}:${analysisVersion}:ISSUE_UNDERSTANDING`)
+      ? currentFeedback.get(`${item.id}:${analysis.analysisId}:${analysisVersion}:ISSUE_UNDERSTANDING`)
       : undefined;
     const solutionSelection = analysisVersion
-      ? currentFeedback.get(`${item.id}:${analysisVersion}:SOLUTION_SELECTION`)
+      ? currentFeedback.get(`${item.id}:${analysis.analysisId}:${analysisVersion}:SOLUTION_SELECTION`)
       : undefined;
     // ai_review_feedback is the source of truth. Do not combine it with legacy
     // support_cases fields, otherwise migrated feedback would be double-counted.

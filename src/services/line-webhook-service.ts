@@ -320,7 +320,7 @@ export async function receiveLineInboxMessage(input: LineTextMessageInput): Prom
 
   // Keep the open case and Inbox on the same conversation record. The active
   // case is cleared on close, so later messages cannot leak into a closed case.
-  await caseService.linkInboxMessageToActiveCase(customer.id, inboxMessage);
+  const linkedCase = await caseService.linkInboxMessageToActiveCase(customer.id, inboxMessage);
 
   if (customer.conversationState === "IDLE" && isGreetingMessage(input.text)) {
     try {
@@ -348,6 +348,8 @@ export async function receiveLineInboxMessage(input: LineTextMessageInput): Prom
       messageId: inboxMessage.id,
       conversationId: customer.id,
       userId: customer.id,
+      caseId: linkedCase?.id,
+      senderType: inboxMessage.senderType,
       createdAt: inboxMessage.createdAt,
       direction: inboxMessage.direction,
     },

@@ -39,7 +39,7 @@ async function caseDetailResponse(detail: Awaited<ReturnType<typeof caseService.
   return {
     ...detail,
     currentAnalysis: currentAnalysis
-      ? { id: currentAnalysis.analysisId, analysisVersion: currentAnalysis.analysisVersion }
+      ? { id: currentAnalysis.analysisId, analysisVersion: currentAnalysis.analysisVersion, createdAt: currentAnalysis.createdAt }
       : undefined,
     aiFeedback: {
       issueUnderstanding: feedback.find((item) => item.feedbackType === "ISSUE_UNDERSTANDING")?.result,
@@ -283,11 +283,18 @@ caseRoutes.post("/:id/messages", async (c) => {
   const body = await readJsonObject(c);
   const content = typeof body.content === "string" ? body.content.trim() : "";
   if (!content) return c.json({ error: "content_required" }, 400);
-  return c.json({ data: await caseService.sendConsoleReply({ caseId: c.req.param("id"), text: content }) });
+  const detail = await caseService.sendConsoleReply({ caseId: c.req.param("id"), text: content });
+  if (!detail) return c.json({ error: "case_not_found" }, 404);
+  return c.json({ data: { ...detail, caseId: detail.id } });
 });
 
 caseRoutes.post("/:id/set-active", async (c) => {
   return c.json({ data: await caseService.setActiveCaseFromConsole(c.req.param("id")) });
+});
+
+caseRoutes.post("/:id/backfill-reference-messages", async (c) => {
+  const result = await caseService.backfillCaseReferenceMessages(c.req.param("id"));
+  return c.json({ data: result });
 });
 
 caseRoutes.post("/:id/refresh-solution", async (c) => {

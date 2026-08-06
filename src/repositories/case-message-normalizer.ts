@@ -1,5 +1,79 @@
 import type { Message } from "../domain/types";
 
+const stableMessageIdentityKeys = [
+  "sourceInboxMessageId",
+  "inboxMessageId",
+  "lineMessageId",
+  "externalMessageId",
+  "webhookEventId",
+] as const;
+
+function stableMessageIdentity(message: Pick<Message, "metadata" | "externalMessageId" | "webhookEventId">) {
+  for (const key of stableMessageIdentityKeys) {
+    const value = key === "externalMessageId"
+      ? message.externalMessageId
+      : key === "webhookEventId"
+        ? message.webhookEventId
+        : message.metadata?.[key];
+    if (typeof value === "string" && value.trim()) return `${key}:${value}`;
+  }
+  return undefined;
+}
+
+function isFailedMessage(message: Pick<Message, "deliveryStatus">) {
+  return message.deliveryStatus?.toUpperCase() === "FAILED";
+}
+
+function canonicalMessagePriority(message: Pick<Message, "channel" | "senderType" | "direction" | "deliveryStatus">) {
+  const isLineParticipant = message.channel === "line" && (message.senderType === "CUSTOMER" || message.senderType === "TECH");
+  return (isLineParticipant ? 4 : message.channel === "line" ? 3 : 1) + (isFailedMessage(message) ? 0 : 1);
+}
+
+/**
+ * Case messages can contain a legacy copied row and the canonical Inbox row.
+ * Collapse only rows with a stable source identity; identical text is not an
+ * identity because two separate LINE messages may legitimately have the same text.
+ */
+export function dedupeCaseMessages(messages: Message[]) {
+  const result: Message[] = [];
+  const indexByIdentity = new Map<string, number>();
+
+  for (const message of messages) {
+    const identity = stableMessageIdentity(message);
+    if (!identity) {
+      result.push(message);
+      continue;
+    }
+
+    const existingIndex = indexByIdentity.get(identity);
+    if (existingIndex === undefined) {
+      indexByIdentity.set(identity, result.length);
+      result.push(message);
+      continue;
+    }
+
+    // If an optimistic/failed copy and a delivered copy share the same source,
+    // keep the delivered record in the timeline.
+    if (canonicalMessagePriority(message) > canonicalMessagePriority(result[existingIndex])) {
+      result[existingIndex] = message;
+    }
+  }
+
+  // A console reply historically created an internal raw row and a delivered
+  // LINE row. The LINE row is canonical for the conversation; keep the raw row
+  // for analysis linkage but do not render it as a second conversation bubble.
+  const referencedSourceIds = new Set(
+    result
+      .map((message) => message.sourceMessageId)
+      .filter((sourceMessageId): sourceMessageId is string => Boolean(sourceMessageId)),
+  );
+  return result.filter((message) => !(
+    message.direction === "INTERNAL"
+    && message.messageType === "TECH_RAW_REPLY"
+    && referencedSourceIds.has(message.id)
+  ));
+}
+
 const legacyDirection: Record<string, "INBOUND" | "OUTBOUND" | "INTERNAL"> = {
   inbound_customer: "INBOUND",
   inbound_tech: "INBOUND",

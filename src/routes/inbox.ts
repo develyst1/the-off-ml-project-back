@@ -94,6 +94,8 @@ inboxRoutes.post("/:customerId/reply", async (c) => {
       messageId: inboxMessage.id,
       conversationId: customerId,
       userId: customerId,
+      caseId: linkedCase?.id,
+      senderType: inboxMessage.senderType,
       createdAt: inboxMessage.createdAt,
       direction: inboxMessage.direction,
     },
@@ -105,7 +107,8 @@ inboxRoutes.post("/:customerId/reply", async (c) => {
 inboxRoutes.post("/:customerId/open-case", async (c) => {
   const body: OpenCaseBody = await c.req.json<OpenCaseBody>().catch(() => ({}));
   const detail = await caseService.openCaseFromInbox(c.req.param("customerId"), body);
-  return c.json({ data: detail }, 201);
+  if (!detail) return c.json({ error: "case_not_found" }, 404);
+  return c.json({ data: { ...detail, caseId: detail.id, activeCaseId: detail.customer.activeCaseId } }, 201);
 });
 
 inboxRoutes.post("/:customerId/ai-compose", async (c) => {

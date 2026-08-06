@@ -19,6 +19,7 @@ export type CaseStore = {
   markInboxRead(customerId: string, readAt?: string): Promise<Customer>;
   createInboxMessage(input: Omit<InboxMessage, "id" | "createdAt"> & { createdAt?: string }): Promise<InboxMessage>;
   assignInboxMessageToCase(messageId: string, input: { caseId: string; assignedBy: string; assignedAt?: string }): Promise<InboxMessage>;
+  assignInboxMessagesToCase(messageIds: string[], input: { caseId: string; assignedBy: string; assignedAt?: string }): Promise<InboxMessage[]>;
   getInboxMessageByExternalMessageId(externalMessageId: string): Promise<InboxMessage | undefined>;
   getInboxMessageByWebhookEventId(webhookEventId: string): Promise<InboxMessage | undefined>;
   listInboxUsers(): Promise<InboxUser[]>;
@@ -27,7 +28,7 @@ export type CaseStore = {
   createCase(input: { customerId: string; status?: CaseStatus; title?: string; category?: string; confidenceScore?: number; conversationStartedAt?: string }): Promise<SupportCase>;
   updateCase(id: string, patch: Partial<Omit<SupportCase, "id" | "customerId" | "createdAt">>): Promise<SupportCase>;
   createMessage(input: Omit<Message, "id" | "createdAt">): Promise<Message>;
-  updateMessage(id: string, patch: Partial<Pick<Message, "direction" | "messageType" | "senderType" | "deliveryStatus" | "deliveryError" | "sentAt" | "deliveredAt" | "failedAt">>): Promise<Message>;
+  updateMessage(id: string, patch: Partial<Pick<Message, "direction" | "messageType" | "senderType" | "deliveryStatus" | "deliveryError" | "sentAt" | "deliveredAt" | "failedAt" | "metadata">>): Promise<Message>;
   getMessageByExternalMessageId(externalMessageId: string): Promise<Message | undefined>;
   getMessageByWebhookEventId(webhookEventId: string): Promise<Message | undefined>;
   createAnalysis(input: Omit<Analysis, "id" | "analysisId" | "createdAt" | "analysisVersion">): Promise<Analysis>;

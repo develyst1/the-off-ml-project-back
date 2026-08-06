@@ -3,6 +3,8 @@ export type ConversationMessageCreatedEvent = {
   messageId: string;
   conversationId: string;
   userId: string;
+  caseId?: string;
+  senderType?: "CUSTOMER" | "TECH" | "BOT" | "SYSTEM";
   createdAt: string;
   direction: "INBOUND" | "OUTBOUND";
 };

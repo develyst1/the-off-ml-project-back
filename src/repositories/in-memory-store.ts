@@ -2,7 +2,7 @@ import type { AiReviewFeedback, Analysis, AutomationSettings, CaseAiFeedback, Ca
 import { toAiReviewFeedbackMemoryItem } from "../lib/ai-review-feedback-memory";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore, ChatRetentionCleanupResult } from "./case-store";
-import { normalizeCaseMessage } from "./case-message-normalizer";
+import { dedupeCaseMessages, normalizeCaseMessage } from "./case-message-normalizer";
 
 export class InMemoryStore implements CaseStore {
   private customers = new Map<string, Customer>();
@@ -105,8 +105,23 @@ export class InMemoryStore implements CaseStore {
   async assignInboxMessageToCase(messageId: string, input: { caseId: string; assignedBy: string; assignedAt?: string }): Promise<InboxMessage> {
     const message = this.inboxMessages.get(messageId);
     if (!message) throw new Error("Inbox message not found");
+    if (message.caseId && message.caseId !== input.caseId) throw new Error("Inbox message is already assigned to another case");
     const updated = { ...message, caseId: input.caseId, assignedCaseId: input.caseId, assignedBy: input.assignedBy, assignedAt: input.assignedAt ?? nowIso() };
     this.inboxMessages.set(messageId, updated);
+    return updated;
+  }
+
+  async assignInboxMessagesToCase(messageIds: string[], input: { caseId: string; assignedBy: string; assignedAt?: string }): Promise<InboxMessage[]> {
+    const assignedAt = input.assignedAt ?? nowIso();
+    const updated: InboxMessage[] = [];
+    for (const messageId of messageIds) {
+      const message = this.inboxMessages.get(messageId);
+      if (!message) continue;
+      if (message.caseId) continue;
+      const next = { ...message, caseId: input.caseId, assignedCaseId: input.caseId, assignedBy: input.assignedBy, assignedAt };
+      this.inboxMessages.set(messageId, next);
+      updated.push(next);
+    }
     return updated;
   }
 
@@ -229,10 +244,10 @@ export class InMemoryStore implements CaseStore {
     return message;
   }
 
-  async updateMessage(id: string, patch: Partial<Pick<Message, "direction" | "messageType" | "senderType" | "deliveryStatus" | "deliveryError" | "sentAt" | "deliveredAt" | "failedAt">>): Promise<Message> {
+  async updateMessage(id: string, patch: Partial<Pick<Message, "direction" | "messageType" | "senderType" | "deliveryStatus" | "deliveryError" | "sentAt" | "deliveredAt" | "failedAt" | "metadata">>): Promise<Message> {
     const current = this.messages.get(id);
     if (!current) throw new Error("Message not found");
-    const updated = { ...current, ...patch };
+    const updated = { ...current, ...patch, metadata: patch.metadata ? { ...current.metadata, ...patch.metadata } : current.metadata };
     this.messages.set(id, updated);
     return updated;
   }
@@ -374,7 +389,7 @@ export class InMemoryStore implements CaseStore {
     const customer = this.customers.get(supportCase.customerId);
     if (!customer) return undefined;
 
-    const messages = [...this.messages.values()].filter((message) => message.caseId === id);
+    const messages = dedupeCaseMessages([...this.messages.values()].filter((message) => message.caseId === id));
     const customerMessages = messages
       .filter((message) => message.senderType === "CUSTOMER" && (message.direction === "INBOUND" || message.direction === "inbound_customer"))
       .sort((left, right) => new Date(left.receivedAt ?? left.createdAt).getTime() - new Date(right.receivedAt ?? right.createdAt).getTime());

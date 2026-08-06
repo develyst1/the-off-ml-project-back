@@ -429,6 +429,9 @@ export const caseService = {
       throw new Error(selectedIds ? "กรุณาเลือกข้อความอย่างน้อย 1 รายการ" : "ไม่พบข้อความในช่วงเวลาที่เลือก");
     }
 
+    if (selectedIds && sourceMessages.some((message) => message.caseId)) {
+      throw new Error("Selected Inbox message is already assigned to a case");
+    }
     const latestInbound = [...sourceMessages].reverse().find((message) => message.senderType === "CUSTOMER");
     const generatedDraft = hasManualCaseDetails
       ? undefined
@@ -457,6 +460,36 @@ export const caseService = {
       title: resolvedTitle,
       conversationStartedAt,
     });
+    // Persist the new active case immediately after creation so an error in a
+    // later analysis or Teams step cannot leave the conversation pointing at
+    // the previous case (or no case at all).
+    await store.setActiveCase(customerId, supportCase.id);
+
+    if (selectedIds) {
+      const alreadyAssigned = sourceMessages.find((message) => message.caseId && message.caseId !== supportCase.id);
+      if (alreadyAssigned) {
+        throw new Error("ข้อความที่เลือกถูกจัดเข้ากับเคสอื่นแล้ว กรุณาตรวจสอบรายการข้อความอีกครั้ง");
+      }
+      const assignedMessages = await store.assignInboxMessagesToCase([...selectedIds], {
+        caseId: supportCase.id,
+        assignedBy: "SYSTEM_OPEN_CASE",
+      });
+      for (const message of assignedMessages) {
+        realtimeEventHub.publish({
+          name: "conversation.message.created",
+          data: {
+            eventId: `case:${supportCase.id}:assign:${message.id}`,
+            messageId: message.id,
+            conversationId: customerId,
+            userId: customerId,
+            caseId: supportCase.id,
+            senderType: message.senderType,
+            createdAt: message.createdAt,
+            direction: message.direction,
+          },
+        });
+      }
+    }
 
     const copiedMessages = [] as Message[];
     for (const inboxMessage of timelineMessages) {
@@ -564,7 +597,6 @@ export const caseService = {
 
     // The selected messages are the opening context; new messages are linked only
     // after this point while the case remains active.
-    await store.setActiveCase(customerId, supportCase.id);
     await store.setConversationState(customerId, "ACTIVE_CASE_CONVERSATION");
 
     const detail = await store.getCaseDetail(supportCase.id);
@@ -601,12 +633,28 @@ export const caseService = {
   },
   async linkInboxMessageToActiveCase(customerId: string, inboxMessage: InboxMessage, forcedCaseId?: string) {
     const inboxUser = await store.getInboxUser(customerId);
-    const activeCaseId = forcedCaseId ?? inboxUser?.customer.activeCaseId;
-    if (!activeCaseId) return undefined;
-
     const openCases = (inboxUser?.cases ?? []).filter((item) => !CLOSED_CASE_STATUSES.includes(item.status));
-    // Never infer an association when this user has more than one open case.
-    if (!forcedCaseId && (openCases.length !== 1 || openCases[0]?.id !== activeCaseId)) return undefined;
+    let activeCaseId = forcedCaseId ?? inboxUser?.customer.activeCaseId;
+    if (!activeCaseId) {
+      if (forcedCaseId || openCases.length !== 1) return undefined;
+      activeCaseId = openCases[0]?.id;
+      if (!activeCaseId) return undefined;
+      await store.setActiveCase(customerId, activeCaseId);
+    }
+
+    if (!forcedCaseId) {
+      const activeCase = openCases.find((item) => item.id === activeCaseId);
+      if (!activeCase) {
+        // Clear a stale pointer to a closed/missing case. Only recover to a
+        // single open case; never guess when more than one remains.
+        if (inboxUser?.customer.activeCaseId === activeCaseId) await store.setActiveCase(customerId);
+        if (openCases.length !== 1 || !openCases[0]) return undefined;
+        activeCaseId = openCases[0].id;
+        await store.setActiveCase(customerId, activeCaseId);
+      } else if (openCases.length !== 1) {
+        return undefined;
+      }
+    }
 
     const detail = await store.getCaseDetail(activeCaseId);
     if (!detail || CLOSED_CASE_STATUSES.includes(detail.status)) return undefined;
@@ -638,6 +686,7 @@ export const caseService = {
         source: isCustomer ? "line" : "tech_console",
         sourceInboxMessageId: inboxMessage.id,
         sourceCreatedAt: inboxMessage.createdAt,
+        assignedAt: inboxMessage.assignedAt,
       },
     });
     return store.getCaseDetail(activeCaseId);
@@ -1341,6 +1390,34 @@ export const caseService = {
       deliveryStatus: delivery.delivered ? "delivered" : "pending",
     });
 
+    const sentAt = new Date().toISOString();
+    const inboxMessage = await store.createInboxMessage({
+      customerId: detail.customer.id,
+      caseId,
+      assignedCaseId: caseId,
+      assignedBy: "Tech Support Console",
+      assignedAt: sentAt,
+      direction: "OUTBOUND",
+      senderType: "TECH",
+      text: messageText,
+      deliveryStatus: delivery.delivered ? "SENT" : "FAILED",
+      sentAt: delivery.delivered ? sentAt : undefined,
+      deliveredAt: delivery.delivered ? sentAt : undefined,
+    });
+    realtimeEventHub.publish({
+      name: "conversation.message.created",
+      data: {
+        eventId: `case:${caseId}:request-info:${inboxMessage.id}`,
+        messageId: inboxMessage.id,
+        conversationId: detail.customer.id,
+        userId: detail.customer.id,
+        caseId,
+        senderType: inboxMessage.senderType,
+        createdAt: inboxMessage.createdAt,
+        direction: inboxMessage.direction,
+      },
+    });
+
     await store.updateCase(caseId, {
       lineSentAt: new Date().toISOString(),
       lineDeliveredAt: delivery.delivered ? new Date().toISOString() : undefined,
@@ -1448,6 +1525,10 @@ export const caseService = {
       } catch (error) {
         await store.createInboxMessage({
           customerId: detail.customer.id,
+          caseId: input.caseId,
+          assignedCaseId: input.caseId,
+          assignedBy: responder,
+          assignedAt: new Date().toISOString(),
           direction: "OUTBOUND",
           senderType: "TECH",
           text: outboundText,
@@ -1473,6 +1554,10 @@ export const caseService = {
       // so the existing delivered case message can be synchronized safely.
       const inboxMessage = await store.createInboxMessage({
         customerId: detail.customer.id,
+        caseId: input.caseId,
+        assignedCaseId: input.caseId,
+        assignedBy: responder,
+        assignedAt: new Date().toISOString(),
         direction: "OUTBOUND",
         senderType: "TECH",
         text: outboundText,
@@ -1481,6 +1566,9 @@ export const caseService = {
         deliveredAt: sentAt,
         createdAt: sentAt,
       });
+      await store.updateMessage(outboundMessage.id, {
+        metadata: { inboxMessageId: inboxMessage.id },
+      });
       realtimeEventHub.publish({
         name: "conversation.message.created",
         data: {
@@ -1488,6 +1576,8 @@ export const caseService = {
           messageId: inboxMessage.id,
           conversationId: detail.customer.id,
           userId: detail.customer.id,
+          caseId: input.caseId,
+          senderType: inboxMessage.senderType,
           createdAt: inboxMessage.createdAt,
           direction: inboxMessage.direction,
         },
@@ -1551,6 +1641,10 @@ export const caseService = {
     } catch (error) {
       await store.createInboxMessage({
         customerId: detail.customer.id,
+        caseId: input.caseId,
+        assignedCaseId: input.caseId,
+        assignedBy: input.closedBy ?? "Tech Support Console",
+        assignedAt: new Date().toISOString(),
         direction: "OUTBOUND",
         senderType: "TECH",
         text,
@@ -1600,6 +1694,10 @@ export const caseService = {
     });
     const inboxMessage = await store.createInboxMessage({
       customerId: detail.customer.id,
+      caseId: input.caseId,
+      assignedCaseId: input.caseId,
+      assignedBy: input.closedBy ?? "Tech Support Console",
+      assignedAt: sentAt,
       direction: "OUTBOUND",
       senderType: "TECH",
       text,
@@ -1608,6 +1706,9 @@ export const caseService = {
       deliveredAt: sentAt,
       createdAt: sentAt,
     });
+    await store.updateMessage(deliveredMessage.id, {
+      metadata: { inboxMessageId: inboxMessage.id },
+    });
     realtimeEventHub.publish({
       name: "conversation.message.created",
       data: {
@@ -1615,6 +1716,8 @@ export const caseService = {
         messageId: inboxMessage.id,
         conversationId: detail.customer.id,
         userId: detail.customer.id,
+        caseId: input.caseId,
+        senderType: inboxMessage.senderType,
         createdAt: inboxMessage.createdAt,
         direction: inboxMessage.direction,
       },
@@ -2013,6 +2116,34 @@ export const caseService = {
     const message = await store.assignInboxMessageToCase(input.messageId, { caseId: input.caseId, assignedBy: input.assignedBy });
     await this.linkInboxMessageToActiveCase(supportCase.customer.id, { ...message, caseId: input.caseId }, input.caseId);
     return message;
+  },
+
+  async backfillCaseReferenceMessages(caseId: string, assignedBy = "SYSTEM_REFERENCE_BACKFILL") {
+    const detail = await store.getCaseDetail(caseId);
+    if (!detail) throw new Error("Case not found");
+    const referenceMessageIds = [...new Set(detail.messages
+      .filter((message) => message.metadata?.isCaseReference === true)
+      .map((message) => message.metadata?.sourceInboxMessageId)
+      .filter((messageId): messageId is string => typeof messageId === "string" && messageId.trim().length > 0))];
+    const assignedMessages = await store.assignInboxMessagesToCase(referenceMessageIds, {
+      caseId,
+      assignedBy,
+    });
+    const assignedAtByInboxId = new Map(assignedMessages.map((message) => [message.id, message.assignedAt]));
+    for (const message of detail.messages) {
+      const sourceInboxMessageId = message.metadata?.sourceInboxMessageId;
+      if (typeof sourceInboxMessageId !== "string") continue;
+      const assignedAt = assignedAtByInboxId.get(sourceInboxMessageId);
+      if (!assignedAt) continue;
+      await store.updateMessage(message.id, {
+        metadata: { assignedAt },
+      });
+    }
+    return {
+      caseId,
+      referenceMessageIds,
+      assignedMessageIds: assignedMessages.map((message) => message.id),
+    };
   },
 
   async setActiveCaseFromConsole(caseId: string) {
