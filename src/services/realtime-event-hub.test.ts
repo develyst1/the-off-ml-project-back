@@ -3,7 +3,9 @@ import { realtimeEventHub } from "./realtime-event-hub";
 
 test("realtime event hub publishes each event id once", () => {
   const received: string[] = [];
-  const unsubscribe = realtimeEventHub.subscribe((event) => received.push(event.data.messageId));
+  const unsubscribe = realtimeEventHub.subscribe((event) => {
+    if (event.name === "conversation.message.created") received.push(event.data.messageId);
+  });
   const event = {
     name: "conversation.message.created" as const,
     data: {

@@ -9,9 +9,20 @@ export type ConversationMessageCreatedEvent = {
   direction: "INBOUND" | "OUTBOUND";
 };
 
+export type CaseAnalysisUpdatedEvent = {
+  eventId: string;
+  caseId: string;
+  analysisId: string;
+  analysisVersion: number;
+  createdAt: string;
+};
+
 export type RealtimeEvent = {
   name: "conversation.message.created";
   data: ConversationMessageCreatedEvent;
+} | {
+  name: "case.analysis.updated";
+  data: CaseAnalysisUpdatedEvent;
 };
 
 export interface RealtimeEventPublisher {

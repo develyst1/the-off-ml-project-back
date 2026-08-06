@@ -83,6 +83,49 @@ function buildInboxCaseAnalysisContext(input: {
   return { subject: input.subject, detail: input.detail, referenceMessages };
 }
 
+function buildConversationCaseAnalysisContext(detail: CaseDetail): {
+  context: CaseAnalysisContext;
+  messages: Message[];
+} {
+  const startedAt = new Date(detail.conversationStartedAt ?? detail.createdAt).getTime();
+  const endedAt = detail.conversationEndedAt
+    ? new Date(detail.conversationEndedAt).getTime()
+    : Number.POSITIVE_INFINITY;
+  const messages = detail.messages
+    .filter((message) => {
+      const occurredAt = new Date(message.receivedAt ?? message.sentAt ?? message.deliveredAt ?? message.createdAt).getTime();
+      return message.channel === "line"
+        && ["CUSTOMER", "TECH", "BOT"].includes(message.senderType ?? "")
+        && message.direction !== "INTERNAL"
+        && message.messageType !== "SYSTEM_EVENT"
+        && message.deliveryStatus?.toUpperCase() !== "FAILED"
+        && occurredAt >= startedAt
+        && occurredAt <= endedAt;
+    })
+    .sort((left, right) => (
+      new Date(contextTime(left)).getTime() - new Date(contextTime(right)).getTime()
+      || left.id.localeCompare(right.id)
+    ));
+
+  const creationEvent = detail.messages.find((message) => message.metadata?.eventType === "CASE_CREATED_FROM_INBOX");
+  const creationMetadata = creationEvent?.metadata ?? {};
+  const initialDetail = typeof creationMetadata.caseDetail === "string" ? creationMetadata.caseDetail : undefined;
+  const context: CaseAnalysisContext = {
+    subject: detail.title ?? "",
+    detail: detail.problemSummary ?? initialDetail ?? "",
+    referenceMessages: messages.map((message, index) => ({
+      messageId: message.id,
+      sender: message.senderType ?? "SYSTEM",
+      content: message.originalText,
+      createdAt: contextTime(message),
+      lineReceivedAt: message.receivedAt,
+      sequence: index + 1,
+    })),
+  };
+
+  return { context, messages };
+}
+
 function similarityScore(left: string, right: string) {
   const leftText = Array.from(left.toLocaleLowerCase().replace(/\s+/g, "")).slice(0, 1200);
   const rightText = Array.from(right.toLocaleLowerCase().replace(/\s+/g, "")).slice(0, 1200);
@@ -2326,6 +2369,69 @@ export const caseService = {
       rewrittenCustomerText: latestTechMessage.originalText,
     });
     return store.getCaseDetail(caseId);
+  },
+
+  async reanalyzeCase(caseId: string) {
+    const detail = await store.getCaseDetail(caseId);
+    if (!detail) throw new Error("Case not found");
+    if (CLOSED_CASE_STATUSES.includes(detail.status)) throw new Error("ปิดเคสแล้ว ไม่สามารถอัปเดตผลวิเคราะห์ได้");
+
+    const { context, messages } = buildConversationCaseAnalysisContext(detail);
+    if (messages.length === 0) throw new Error("ยังไม่มีข้อความในช่วงเวลาของเคสให้วิเคราะห์");
+
+    const feedbackExamples = await feedbackExamplesForContext(context, caseId);
+    const conversationContext = messages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : message.senderType === "TECH" ? "ทีม Tech" : "ระบบ"}: ${message.originalText}`);
+    const latestCustomerMessage = [...messages].reverse().find((message) => message.senderType === "CUSTOMER");
+    const analysis = await aiCenterClient.analyzeCustomerMessage({
+      text: [context.subject, context.detail].filter(Boolean).join("\n") || latestCustomerMessage?.originalText || conversationContext.join("\n"),
+      customerDisplayName: detail.customer.displayName,
+      conversationContext,
+      caseAnalysisContext: context,
+      feedbackExamples,
+    });
+    if (analysis.status === "AI_FAILED") throw new Error("AI วิเคราะห์ไม่สำเร็จ จึงยังไม่บันทึกผลวิเคราะห์ใหม่");
+
+    const sourceMessage = messages.at(-1);
+    const savedAnalysis = await store.createAnalysis({
+      caseId,
+      messageId: sourceMessage?.id,
+      analysisType: "customer_message",
+      summary: analysis.summary,
+      category: analysis.category,
+      confidence: analysis.confidence,
+      rawJson: {
+        ...analysis,
+        analysisMode: "CASE_REANALYSIS",
+        caseAnalysisContext: context,
+        sourceMessageIds: messages.map((message) => message.id),
+        feedbackExamples,
+      },
+    });
+    const analyzedAt = savedAnalysis.createdAt;
+    const aiStatus = analysis.status === "AI_LOW_CONFIDENCE" ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS";
+    await store.updateCase(caseId, {
+      aiStatus,
+      aiAnalyzedAt: analyzedAt,
+      category: analysis.category,
+      priority: analysis.urgency,
+      confidenceScore: analysis.confidence,
+      latestCustomerMessageId: latestCustomerMessage?.id ?? detail.latestCustomerMessageId,
+    });
+
+    realtimeEventHub.publish({
+      name: "case.analysis.updated",
+      data: {
+        eventId: `case-analysis:${caseId}:${savedAnalysis.analysisId}`,
+        caseId,
+        analysisId: savedAnalysis.analysisId,
+        analysisVersion: savedAnalysis.analysisVersion,
+        createdAt: savedAnalysis.createdAt,
+      },
+    });
+
+    const updatedDetail = await store.getCaseDetail(caseId);
+    if (!updatedDetail) throw new Error("Case detail missing after re-analysis");
+    return updatedDetail;
   },
 
   async getCaseByNumber(caseNumber: string) {

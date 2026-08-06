@@ -32,7 +32,9 @@ async function caseDetailResponse(detail: Awaited<ReturnType<typeof caseService.
     .sort((left, right) => right.analysisVersion - left.analysisVersion || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
   const feedback = currentAnalysis
     ? (await store.listAiReviewFeedback()).filter((item) => (
-      item.caseId === detail.id && item.analysisVersion === currentAnalysis.analysisVersion
+      item.caseId === detail.id
+      && item.analysisId === currentAnalysis.analysisId
+      && item.analysisVersion === currentAnalysis.analysisVersion
     ))
     : [];
 
@@ -298,5 +300,6 @@ caseRoutes.post("/:id/backfill-reference-messages", async (c) => {
 });
 
 caseRoutes.post("/:id/refresh-solution", async (c) => {
-  return c.json({ data: await caseService.refreshExtractedSolution(c.req.param("id")) });
+  const detail = await caseService.reanalyzeCase(c.req.param("id"));
+  return c.json({ data: await caseDetailResponse(detail) });
 });

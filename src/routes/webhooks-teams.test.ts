@@ -4,6 +4,7 @@ import { InMemoryStore } from "../repositories/in-memory-store";
 const store = new InMemoryStore();
 let lineShouldFail = false;
 let lineSendCount = 0;
+let aiAnalysisShouldFail = false;
 
 mock.module("../repositories/store", () => ({ store }));
 mock.module("../services/line-client", () => ({
@@ -20,7 +21,9 @@ mock.module("../services/line-client", () => ({
 mock.module("../services/teams-client", () => ({ teamsClient: { notifyCase: async () => ({ delivered: true }) } }));
 mock.module("../services/ai-center-client", () => ({
   aiCenterClient: {
-    analyzeCustomerMessage: async () => ({ status: "AI_SUCCESS", summary: "summary", caseTitle: "title", category: "category", urgency: "medium", confidence: 85, missingInformation: [] }),
+    analyzeCustomerMessage: async () => aiAnalysisShouldFail
+      ? ({ status: "AI_FAILED", summary: "failed", caseTitle: "title", category: "category", urgency: "medium", confidence: 50, missingInformation: [] })
+      : ({ status: "AI_SUCCESS", summary: "summary", caseTitle: "title", category: "category", urgency: "medium", confidence: 85, missingInformation: [] }),
     analyzeCaseRelation: async () => ({ related: true, confidence: 100, reason: "test" }),
     extractPendingInformation: async () => ({ values: {} }),
     generateLineContinuationReply: async () => "รับทราบค่ะ",
@@ -68,6 +71,12 @@ function postCompose(caseId: string, body: Record<string, unknown>) {
   }));
 }
 
+function postRefreshSolution(caseId: string) {
+  return app.fetch(new Request(`http://localhost/cases/${caseId}/refresh-solution`, {
+    method: "POST",
+  }));
+}
+
 function patchAiFeedback(caseId: string, body: Record<string, unknown>) {
   return app.fetch(new Request(`http://localhost/cases/${caseId}/ai-feedback`, {
     method: "PATCH",
@@ -93,6 +102,95 @@ function postConfidenceReview(body: Record<string, unknown>, suggestionId: strin
 }
 
 describe("POST /webhooks/teams/actions", () => {
+  test("re-analysis creates a new customer analysis from the latest case messages", async () => {
+    const supportCase = await createCase(75);
+    const initialMessage = await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "ไฟล์ขนาด 30 MB อัปโหลดไม่ได้",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+    });
+    const initialAnalysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      messageId: initialMessage.id,
+      analysisType: "customer_message",
+      summary: "ปัญหาไฟล์",
+      category: "ปัญหาการอัปโหลด",
+      confidence: 75,
+      rawJson: { sourceMessageIds: [initialMessage.id] },
+    });
+    await store.upsertAiReviewFeedback({
+      caseId: supportCase.id,
+      analysisId: initialAnalysis.analysisId,
+      analysisVersion: initialAnalysis.analysisVersion,
+      feedbackType: "ISSUE_UNDERSTANDING",
+      result: "CORRECT",
+      reviewSource: "CASE_DETAIL",
+    });
+    const newMessage = await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "ทีม Tech รีสตาร์ต service แล้ว ไฟล์เริ่มประมวลผลใหม่",
+      senderType: "TECH",
+      messageType: "TECH_REPLY",
+      deliveryStatus: "SENT",
+    });
+
+    const response = await postRefreshSolution(supportCase.id);
+    const body = await response.json() as { data: { currentAnalysis?: { id: string; analysisVersion: number; createdAt: string }; analyses: Array<{ analysisId: string; analysisVersion: number; analysisType: string; confidence: number; createdAt: string; rawJson: unknown }>; aiFeedback?: { issueUnderstanding?: string } } };
+    const reanalysis = body.data.analyses.find((analysis) => analysis.analysisType === "customer_message" && analysis.analysisVersion > initialAnalysis.analysisVersion);
+    const rawJson = reanalysis?.rawJson as { sourceMessageIds?: string[] } | undefined;
+
+    expect(response.status).toBe(200);
+    expect(reanalysis).toBeDefined();
+    expect(reanalysis?.analysisId).not.toBe(initialAnalysis.analysisId);
+    expect(reanalysis?.analysisVersion).toBe(initialAnalysis.analysisVersion + 1);
+    expect(reanalysis?.createdAt).not.toBe(initialAnalysis.createdAt);
+    expect(rawJson?.sourceMessageIds).toContain(initialMessage.id);
+    expect(rawJson?.sourceMessageIds).toContain(newMessage.id);
+    expect(body.data.currentAnalysis?.id).toBe(reanalysis?.analysisId);
+    expect(body.data.currentAnalysis?.analysisVersion).toBe(reanalysis?.analysisVersion);
+    expect(body.data.aiFeedback?.issueUnderstanding).toBeUndefined();
+    expect((await store.getCaseDetail(supportCase.id))?.analyses.find((analysis) => analysis.analysisId === initialAnalysis.analysisId)?.confidence).toBe(75);
+  });
+
+  test("AI failure does not create a partial re-analysis record", async () => {
+    const supportCase = await createCase(75);
+    const message = await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "ยังพบปัญหาเดิม",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+    });
+    const initialAnalysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      messageId: message.id,
+      analysisType: "customer_message",
+      summary: "เดิม",
+      category: "category",
+      confidence: 75,
+      rawJson: {},
+    });
+    const beforeCount = (await store.getCaseDetail(supportCase.id))?.analyses.length;
+    aiAnalysisShouldFail = true;
+    try {
+      const response = await postRefreshSolution(supportCase.id);
+      expect(response.status).toBe(500);
+    } finally {
+      aiAnalysisShouldFail = false;
+    }
+    const after = await store.getCaseDetail(supportCase.id);
+    expect(after?.analyses).toHaveLength(beforeCount ?? 0);
+    expect(after?.analyses.find((analysis) => analysis.analysisId === initialAnalysis.analysisId)?.confidence).toBe(75);
+  });
+
   test("sends a reply to LINE once and records the outbound case message", async () => {
     const supportCase = await createCase();
     const request = {
