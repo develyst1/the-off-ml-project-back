@@ -1,4 +1,5 @@
 import type { AiReviewFeedback, Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import { toAiReviewFeedbackMemoryItem } from "../lib/ai-review-feedback-memory";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore, ChatRetentionCleanupResult } from "./case-store";
 import { normalizeCaseMessage } from "./case-message-normalizer";
@@ -278,6 +279,23 @@ export class InMemoryStore implements CaseStore {
   async listAiReviewFeedback(): Promise<AiReviewFeedback[]> {
     return [...this.aiReviewFeedback.values()]
       .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+  }
+
+  async listAiReviewFeedbackForMemory(options: { feedbackType?: AiReviewFeedback["feedbackType"]; result?: AiReviewFeedback["result"]; limit: number }) {
+    const items = [...this.aiReviewFeedback.values()]
+      .filter((feedback) => !options.feedbackType || feedback.feedbackType === options.feedbackType)
+      .filter((feedback) => !options.result || feedback.result === options.result)
+      .map((feedback) => {
+        const matches = [...this.analyses.values()].filter((analysis) => (
+          analysis.caseId === feedback.caseId
+          && analysis.analysisVersion === feedback.analysisVersion
+          && (!feedback.analysisId || analysis.analysisId === feedback.analysisId)
+        ));
+        return matches.length === 1 ? toAiReviewFeedbackMemoryItem(feedback, matches[0]) : undefined;
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item))
+      .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+    return items.slice(0, Math.max(0, options.limit));
   }
 
   async upsertCaseAiFeedback(input: Omit<CaseAiFeedback, "id" | "createdAt" | "updatedAt">): Promise<CaseAiFeedback> {

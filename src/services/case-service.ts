@@ -92,22 +92,30 @@ function similarityScore(left: string, right: string) {
   return intersection / Math.max(1, new Set([...leftGrams, ...rightGrams]).size);
 }
 
-async function feedbackExamplesForContext(context: CaseAnalysisContext, excludeCaseId?: string) {
+export async function feedbackExamplesForContext(context: CaseAnalysisContext, excludeCaseId?: string) {
   const currentText = [context.subject, context.detail, ...context.referenceMessages.map((message) => message.content)].join("\n");
-  const feedback = await store.listCaseAiFeedback();
+  const feedback = (await Promise.all([
+    ["ISSUE_UNDERSTANDING", "CORRECT"],
+    ["ISSUE_UNDERSTANDING", "INCORRECT"],
+    ["SOLUTION_SELECTION", "CORRECT"],
+    ["SOLUTION_SELECTION", "INCORRECT"],
+  ].map(([feedbackType, result]) => store.listAiReviewFeedbackForMemory({
+    feedbackType: feedbackType as "ISSUE_UNDERSTANDING" | "SOLUTION_SELECTION",
+    result: result as "CORRECT" | "INCORRECT",
+    limit: 5,
+  })))).flat();
   return feedback
     .filter((item) => item.caseId !== excludeCaseId)
-    .map((item) => ({ item, score: similarityScore(currentText, [item.caseAnalysisContextSnapshot.subject, item.caseAnalysisContextSnapshot.detail, ...item.caseAnalysisContextSnapshot.referenceMessages.map((message) => message.content)].join("\n")) }))
+    .map((item) => ({ item, score: similarityScore(currentText, item.context) }))
     .filter(({ score }) => score >= 0.08)
     .sort((left, right) => right.score - left.score || new Date(right.item.updatedAt).getTime() - new Date(left.item.updatedAt).getTime())
-    .slice(0, 5)
+    .slice(0, 20)
     .map(({ item }) => ({
       feedbackType: item.feedbackType,
-      value: item.value,
-      aiCategory: item.aiCategory,
-      aiSummary: item.aiSummary,
-      aiSolution: item.aiSolution,
-      context: item.caseAnalysisContextSnapshot,
+      value: item.result,
+      aiOutput: item.aiOutput,
+      reason: item.reason,
+      context: item.context,
     }));
 }
 

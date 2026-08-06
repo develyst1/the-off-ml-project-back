@@ -3,6 +3,18 @@ import { store } from "../repositories/store";
 
 export type SaveAiReviewFeedbackInput = Omit<AiReviewFeedback, "id" | "createdAt" | "updatedAt">;
 
+export async function listAiReviewFeedbackForAnalysis(input: {
+  caseId: string;
+  analysisId: string;
+  analysisVersion: number;
+}): Promise<AiReviewFeedback[]> {
+  return (await store.listAiReviewFeedback()).filter((item) => (
+    item.caseId === input.caseId
+    && item.analysisId === input.analysisId
+    && item.analysisVersion === input.analysisVersion
+  ));
+}
+
 export async function saveAiReviewFeedback(input: SaveAiReviewFeedbackInput): Promise<AiReviewFeedback> {
   if (!Number.isInteger(input.analysisVersion) || input.analysisVersion < 1) {
     throw new Error("Analysis version must be a positive integer");

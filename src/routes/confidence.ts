@@ -3,15 +3,20 @@ import { readJsonObject, requiredString } from "../lib/request";
 import { store } from "../repositories/store";
 import { caseService } from "../services/case-service";
 import { hasActionableSolutionSteps } from "../lib/solution-quality";
-import { saveAiReviewFeedback } from "../services/ai-review-feedback-service";
+import { listAiReviewFeedbackForAnalysis, saveAiReviewFeedback } from "../services/ai-review-feedback-service";
 
 export const confidenceRoutes = new Hono();
 
 type ReviewStage = "QUALITY" | "AUTO_ANSWER";
 type FeedbackResult = "CORRECT" | "INCORRECT";
+type ReviewStatus = "LOW_CONFIDENCE" | "NEGATIVE_FEEDBACK" | "NOT_REVIEWED";
 
-function getReviewStage(caseConfidence: number, solutionConfidence?: number): ReviewStage {
-  return caseConfidence >= 98 && (solutionConfidence ?? 0) >= 98 ? "AUTO_ANSWER" : "QUALITY";
+const REVIEW_THRESHOLD = 98;
+
+function getReviewStage(caseConfidence: number, solutionConfidence?: number, hasSolution = true): ReviewStage {
+  return hasSolution && caseConfidence >= REVIEW_THRESHOLD && (solutionConfidence ?? 0) >= REVIEW_THRESHOLD
+    ? "AUTO_ANSWER"
+    : "QUALITY";
 }
 
 function getFeedbackResult(value: unknown): FeedbackResult | undefined {
@@ -20,43 +25,58 @@ function getFeedbackResult(value: unknown): FeedbackResult | undefined {
 
 confidenceRoutes.get("/suggestions", async (c) => {
   const cases = await caseService.listCases();
-  const suggestions = cases
-    .flatMap((item) => {
+  const suggestions = (await Promise.all(cases
+    .map(async (item) => {
       const customerMessage = item.messages.find((message) => message.senderType === "CUSTOMER");
       const latestSolution = [...item.solutions].reverse().find((solution) => hasActionableSolutionSteps(solution.solutionSteps));
       const currentAnalysis = [...item.analyses]
         .sort((left, right) => right.analysisVersion - left.analysisVersion || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+      if (!currentAnalysis) return [];
       const caseConfidence = item.confidenceScore ?? 0;
       const solutionConfidence = latestSolution?.confidence ?? caseConfidence;
-      const reviewStage = getReviewStage(caseConfidence, latestSolution?.confidence);
-      const needsQualityReview = reviewStage === "QUALITY"
-        && caseConfidence >= 90
-        && (item.confidenceReviewStatus ?? "PENDING") === "PENDING";
+      const baseReviewStage = getReviewStage(caseConfidence, latestSolution?.confidence, Boolean(latestSolution));
+      const currentFeedback = await listAiReviewFeedbackForAnalysis({
+        caseId: item.id,
+        analysisId: currentAnalysis.analysisId,
+        analysisVersion: currentAnalysis.analysisVersion,
+      });
+      const understandingFeedback = currentFeedback.find((entry) => entry.feedbackType === "ISSUE_UNDERSTANDING");
+      const solutionFeedback = currentFeedback.find((entry) => entry.feedbackType === "SOLUTION_SELECTION");
+      const hasNegativeFeedback = understandingFeedback?.result === "INCORRECT" || solutionFeedback?.result === "INCORRECT";
+      const hasPositiveFeedback = understandingFeedback?.result === "CORRECT" && solutionFeedback?.result === "CORRECT";
+      const reviewStage = hasNegativeFeedback ? "QUALITY" : baseReviewStage;
+      const reviewStatus: ReviewStatus = caseConfidence < REVIEW_THRESHOLD || solutionConfidence < REVIEW_THRESHOLD
+        ? "LOW_CONFIDENCE"
+        : hasNegativeFeedback
+          ? "NEGATIVE_FEEDBACK"
+          : "NOT_REVIEWED";
+      const needsQualityReview = reviewStage === "QUALITY" && !hasPositiveFeedback;
       const needsAutoAnswerReview = reviewStage === "AUTO_ANSWER"
         && latestSolution?.autoAnswerReviewResult === undefined;
 
-      if (!latestSolution || (!needsQualityReview && !needsAutoAnswerReview)) return [];
+      if (!needsQualityReview && !needsAutoAnswerReview) return [];
 
       return [{
         id: `match_${item.id}`,
         caseId: item.id,
         caseNumber: item.caseNumber,
         customerName: item.customer.displayName ?? "ผู้ใช้งาน LINE",
-        suggestedSolutionId: latestSolution.id,
+        suggestedSolutionId: latestSolution?.id ?? "",
         category: item.category ?? "-",
         originalText: customerMessage?.originalText ?? "",
-        solutionText: latestSolution.solutionSteps.join("\n"),
+        solutionText: latestSolution?.solutionSteps.join("\n") ?? "—",
         caseUnderstandingConfidence: caseConfidence,
         caseDiscriminationConfidence: solutionConfidence,
         analysisId: currentAnalysis?.analysisId,
         analysisVersion: currentAnalysis?.analysisVersion,
         hasSuggestedSolution: Boolean(latestSolution),
         reviewStage,
+        reviewStatus,
         reviewHint: reviewStage === "AUTO_ANSWER"
           ? "ผ่านเกณฑ์คะแนนแล้ว รออนุมัติให้ตอบอัตโนมัติ"
           : "ใช้เพื่อตรวจคุณภาพ AI เท่านั้น ยังไม่เปิดตอบอัตโนมัติ",
       }];
-    });
+    }))).flat();
 
   return c.json({ data: suggestions });
 });
@@ -173,7 +193,7 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
   const suggestedSolution = solutionId
     ? detail.solutions.find((solution) => solution.id === solutionId)
     : undefined;
-  const reviewStage = getReviewStage(detail.confidenceScore ?? 0, suggestedSolution?.confidence);
+  const reviewStage = getReviewStage(detail.confidenceScore ?? 0, suggestedSolution?.confidence, Boolean(suggestedSolution));
   if (requestedStage && requestedStage !== reviewStage) {
     return c.json({ error: "review_stage_changed", message: "คะแนนของเคสเปลี่ยน กรุณารีเฟรชรายการก่อนยืนยัน" }, 409);
   }
@@ -183,6 +203,30 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
   }
 
   const reviewedAt = new Date().toISOString();
+  const currentAnalysis = [...detail.analyses]
+    .sort((left, right) => right.analysisVersion - left.analysisVersion || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+
+  if (currentAnalysis && reviewStage === "QUALITY") {
+    const feedbackType = result === "approved"
+      ? ["ISSUE_UNDERSTANDING", "SOLUTION_SELECTION"] as const
+      : rejectionReason === "CASE_UNDERSTANDING"
+        ? ["ISSUE_UNDERSTANDING"] as const
+        : rejectionReason === "SOLUTION_SELECTION" || rejectionReason === "BETTER_SOLUTION"
+          ? ["SOLUTION_SELECTION"] as const
+          : [] as const;
+
+    await Promise.all(feedbackType.map((type) => saveAiReviewFeedback({
+      caseId,
+      analysisId: currentAnalysis.analysisId,
+      analysisVersion: currentAnalysis.analysisVersion,
+      feedbackType: type,
+      result: result === "approved" ? "CORRECT" : "INCORRECT",
+      reviewSource: "CONFIDENCE_REVIEW",
+      reason: additionalExplanation || rejectionReason,
+      reviewedBy: "Tech Support Console",
+    })));
+  }
+
   if (reviewStage === "AUTO_ANSWER" && suggestedSolution) {
     await store.updateSolution(suggestedSolution.id, {
       validatedByTeam: result === "approved",

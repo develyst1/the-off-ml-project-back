@@ -509,6 +509,13 @@ describe("POST /webhooks/teams/actions", () => {
 
   test("records 90-97% confirmation as quality review without enabling auto-answer", async () => {
     const supportCase = await createCase(95);
+    await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "customer_message",
+      category: "NETWORK_CONNECTION",
+      confidence: 95,
+      rawJson: {},
+    });
     const solution = await store.createSolution({
       caseId: supportCase.id,
       rawReplyText: "ให้ลองออกจากระบบแล้วเข้าใหม่",
@@ -536,8 +543,103 @@ describe("POST /webhooks/teams/actions", () => {
     expect(detail?.solutions.find((item) => item.id === solution.id)?.validatedByTeam).toBe(false);
   });
 
+  test("lists Confidence Review by current analysis feedback status", async () => {
+    const lowConfidenceCase = await createCase(95);
+    await store.createAnalysis({
+      caseId: lowConfidenceCase.id,
+      analysisType: "customer_message",
+      category: "NETWORK_CONNECTION",
+      confidence: 95,
+      rawJson: {},
+    });
+    await store.createSolution({
+      caseId: lowConfidenceCase.id,
+      rawReplyText: "ตรวจสอบการเชื่อมต่อเครือข่าย",
+      solutionSteps: ["ตรวจสอบการเชื่อมต่อเครือข่าย"],
+      rewrittenCustomerText: "กรุณาตรวจสอบการเชื่อมต่อเครือข่ายค่ะ",
+      confidence: 95,
+      validatedByTeam: false,
+    });
+
+    const negativeCase = await createCase(99);
+    const negativeAnalysis = await store.createAnalysis({
+      caseId: negativeCase.id,
+      analysisType: "customer_message",
+      category: "NETWORK_CONNECTION",
+      confidence: 99,
+      rawJson: {},
+    });
+    await store.createSolution({
+      caseId: negativeCase.id,
+      rawReplyText: "รีสตาร์ตระบบ",
+      solutionSteps: ["รีสตาร์ตระบบ"],
+      rewrittenCustomerText: "กรุณารีสตาร์ตระบบค่ะ",
+      confidence: 99,
+      validatedByTeam: false,
+    });
+    await patchAiFeedback(negativeCase.id, {
+      analysisId: negativeAnalysis.analysisId,
+      analysisVersion: negativeAnalysis.analysisVersion,
+      feedbackType: "ISSUE_UNDERSTANDING",
+      result: "INCORRECT",
+    });
+
+    const oldFeedbackCase = await createCase(99);
+    const oldAnalysis = await store.createAnalysis({
+      caseId: oldFeedbackCase.id,
+      analysisType: "customer_message",
+      category: "LOGIN_ACCESS",
+      confidence: 99,
+      rawJson: {},
+    });
+    await store.createSolution({
+      caseId: oldFeedbackCase.id,
+      rawReplyText: "ตรวจสอบสิทธิ์การเข้าใช้งาน",
+      solutionSteps: ["ตรวจสอบสิทธิ์การเข้าใช้งาน"],
+      rewrittenCustomerText: "กรุณาตรวจสอบสิทธิ์การเข้าใช้งานค่ะ",
+      confidence: 99,
+      validatedByTeam: false,
+    });
+    await patchAiFeedback(oldFeedbackCase.id, {
+      analysisId: oldAnalysis.analysisId,
+      analysisVersion: oldAnalysis.analysisVersion,
+      feedbackType: "ISSUE_UNDERSTANDING",
+      result: "INCORRECT",
+    });
+    const newAnalysis = await store.createAnalysis({
+      caseId: oldFeedbackCase.id,
+      analysisType: "customer_message",
+      category: "LOGIN_ACCESS",
+      confidence: 99,
+      rawJson: {},
+    });
+
+    const response = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const body = await response.json() as { data: Array<{ caseId: string; reviewStage: string; reviewStatus: string; analysisId?: string; analysisVersion?: number }> };
+    const lowConfidenceSuggestion = body.data.find((item) => item.caseId === lowConfidenceCase.id);
+    const negativeSuggestion = body.data.find((item) => item.caseId === negativeCase.id);
+    const oldFeedbackSuggestion = body.data.find((item) => item.caseId === oldFeedbackCase.id);
+
+    expect(response.status).toBe(200);
+    expect(lowConfidenceSuggestion).toEqual(expect.objectContaining({ reviewStage: "QUALITY", reviewStatus: "LOW_CONFIDENCE" }));
+    expect(negativeSuggestion).toEqual(expect.objectContaining({ reviewStage: "QUALITY", reviewStatus: "NEGATIVE_FEEDBACK" }));
+    expect(oldFeedbackSuggestion).toEqual(expect.objectContaining({
+      reviewStage: "AUTO_ANSWER",
+      reviewStatus: "NOT_REVIEWED",
+      analysisId: newAnalysis.analysisId,
+      analysisVersion: newAnalysis.analysisVersion,
+    }));
+  });
+
   test("approves only a 98% solution for auto-answer and persists the automation switch", async () => {
     const supportCase = await createCase(99);
+    await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "customer_message",
+      category: "NETWORK_CONNECTION",
+      confidence: 99,
+      rawJson: {},
+    });
     const solution = await store.createSolution({
       caseId: supportCase.id,
       rawReplyText: "รีสตาร์ตเครื่องแล้วลองใหม่",

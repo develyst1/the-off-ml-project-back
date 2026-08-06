@@ -881,10 +881,18 @@ export const aiCenterClient = {
       aiCategory?: string;
       aiSummary?: string;
       aiSolution?: string;
+      aiOutput?: string;
+      reason?: string | null;
       context: unknown;
     }>;
   }) {
     const fallback = fallbackCustomerAnalysis(input.text);
+    const feedbackMemory = {
+      positiveUnderstanding: input.feedbackExamples?.filter((item) => item.feedbackType === "ISSUE_UNDERSTANDING" && item.value === "CORRECT") ?? [],
+      negativeUnderstanding: input.feedbackExamples?.filter((item) => item.feedbackType === "ISSUE_UNDERSTANDING" && item.value === "INCORRECT") ?? [],
+      positiveSolutionSelection: input.feedbackExamples?.filter((item) => item.feedbackType === "SOLUTION_SELECTION" && item.value === "CORRECT") ?? [],
+      negativeSolutionSelection: input.feedbackExamples?.filter((item) => item.feedbackType === "SOLUTION_SELECTION" && item.value === "INCORRECT") ?? [],
+    };
     try {
       const content = await chatWithAiCenter([
       {
@@ -910,10 +918,11 @@ export const aiCenterClient = {
           customerDisplayName: input.customerDisplayName,
           conversationContext: input.conversationContext,
           caseAnalysisContext: input.caseAnalysisContext,
-          feedbackExamples: input.feedbackExamples,
+          feedbackMemory,
           instructions: [
             "Analyze the current case context as the primary source of truth. Do not analyze only the title or only the latest message.",
-            "Use positive feedback examples only as guidance and negative feedback examples as mistakes to avoid.",
+            "Use positiveUnderstanding and positiveSolutionSelection only as guidance for the matching task.",
+            "Use negativeUnderstanding and negativeSolutionSelection only as mistakes to avoid for the matching task; never mix the two feedback types.",
             "Never copy an old case answer. Do not invent troubleshooting steps; return an empty extractedSolution when the current context has no confirmed solution.",
           ],
           text: input.text,

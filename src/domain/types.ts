@@ -280,6 +280,18 @@ export type AiReviewFeedback = {
   updatedAt: string;
 };
 
+export type AiReviewFeedbackMemoryItem = {
+  caseId: string;
+  analysisId: string | null;
+  analysisVersion: number;
+  feedbackType: AiReviewFeedback["feedbackType"];
+  result: AiReviewFeedback["result"];
+  context: string;
+  aiOutput: string;
+  reason?: string | null;
+  updatedAt: string;
+};
+
 export type Solution = {
   id: string;
   caseId: string;

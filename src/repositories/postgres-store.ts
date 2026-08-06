@@ -5,6 +5,7 @@ import { createId, nowIso } from "../lib/ids";
 import type { CaseStore, ChatRetentionCleanupResult } from "./case-store";
 import { normalizeCaseMessage } from "./case-message-normalizer";
 import { schemaSql } from "./schema";
+import { toAiReviewFeedbackMemoryItem } from "../lib/ai-review-feedback-memory";
 
 const { Pool } = pg;
 
@@ -155,6 +156,13 @@ type DbAiReviewFeedback = {
   reviewed_by: string | null;
   created_at: Date;
   updated_at: Date;
+};
+
+type DbAiReviewFeedbackMemory = DbAiReviewFeedback & {
+  analysis_summary: string | null;
+  analysis_category: string | null;
+  analysis_raw_json: unknown;
+  matched_analysis_id: string;
 };
 
 type DbSolution = {
@@ -838,6 +846,43 @@ export class PostgresStore implements CaseStore {
   async listAiReviewFeedback(): Promise<AiReviewFeedback[]> {
     const result = await this.query<DbAiReviewFeedback>("select * from ai_review_feedback order by updated_at desc");
     return result.rows.map(mapAiReviewFeedback);
+  }
+
+  async listAiReviewFeedbackForMemory(options: { feedbackType?: AiReviewFeedback["feedbackType"]; result?: AiReviewFeedback["result"]; limit: number }) {
+    const result = await this.query<DbAiReviewFeedbackMemory>(
+      `select feedback.*, analysis.summary as analysis_summary, analysis.category as analysis_category,
+              analysis.raw_json as analysis_raw_json, analysis.id as matched_analysis_id
+       from ai_review_feedback feedback
+       inner join analyses analysis
+         on analysis.case_id = feedback.case_id
+        and analysis.analysis_version = feedback.analysis_version
+        and (
+          feedback.analysis_id = analysis.id
+          or (
+            feedback.analysis_id is null
+            and not exists (
+              select 1
+              from analyses duplicate_analysis
+              where duplicate_analysis.case_id = analysis.case_id
+                and duplicate_analysis.analysis_version = analysis.analysis_version
+                and duplicate_analysis.id <> analysis.id
+            )
+          )
+        )
+       where ($1::text is null or feedback.feedback_type = $1)
+         and ($2::text is null or feedback.result = $2)
+       order by feedback.updated_at desc
+       limit $3`,
+      [options.feedbackType ?? null, options.result ?? null, Math.max(0, options.limit)],
+    );
+    return result.rows.map((row) => toAiReviewFeedbackMemoryItem(mapAiReviewFeedback(row), {
+      caseId: row.case_id,
+      analysisId: row.matched_analysis_id,
+      analysisVersion: row.analysis_version,
+      summary: row.analysis_summary ?? undefined,
+      category: row.analysis_category ?? undefined,
+      rawJson: row.analysis_raw_json,
+    }));
   }
 
   async upsertCaseAiFeedback(input: Omit<CaseAiFeedback, "id" | "createdAt" | "updatedAt">): Promise<CaseAiFeedback> {
