@@ -170,6 +170,64 @@ describe("POST /webhooks/teams/actions", () => {
     expect((await store.getCaseDetail(supportCase.id))?.analyses.find((analysis) => analysis.analysisId === initialAnalysis.analysisId)?.confidence).toBe(75);
   });
 
+  test("re-analysis keeps the latest conflicting clarification in the AI context", async () => {
+    const supportCase = await createCase(75);
+    const initialInboxMessageId = `inbox-size-old-${sequence}`;
+    const initialMessage = await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "The upload fails for a file around 50 MB.",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+      metadata: { sourceInboxMessageId: initialInboxMessageId },
+    });
+    await store.createAnalysis({
+      caseId: supportCase.id,
+      messageId: initialMessage.id,
+      analysisType: "customer_message",
+      summary: "Upload size issue",
+      category: "SOFTWARE_APPLICATION",
+      confidence: 75,
+      rawJson: { sourceMessageIds: [initialInboxMessageId] },
+    });
+    const latestInboxMessageId = `inbox-size-latest-${sequence}`;
+    const latestMessage = await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "Latest clarification: the issue occurs with a 100 MB file.",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+      metadata: { sourceInboxMessageId: latestInboxMessageId },
+    });
+
+    const response = await postRefreshSolution(supportCase.id);
+    const body = await response.json() as {
+      data: { analyses: Array<{ analysisType: string; analysisVersion: number; rawJson: unknown }> };
+    };
+    const reanalysis = body.data.analyses
+      .filter((analysis) => analysis.analysisType === "customer_message")
+      .sort((left, right) => right.analysisVersion - left.analysisVersion)[0];
+    const rawJson = reanalysis?.rawJson as {
+      caseAnalysisContext?: { referenceMessages?: Array<{ messageId: string; content: string }> };
+      sourceMessageIds?: string[];
+    } | undefined;
+    const contextMessages = rawJson?.caseAnalysisContext?.referenceMessages ?? [];
+
+    expect(response.status).toBe(200);
+    expect(contextMessages.map((message) => message.messageId)).toContain(initialMessage.id);
+    expect(contextMessages.map((message) => message.messageId)).toContain(latestMessage.id);
+    expect(rawJson?.sourceMessageIds).toContain(initialInboxMessageId);
+    expect(rawJson?.sourceMessageIds).toContain(latestInboxMessageId);
+    expect(contextMessages.some((message) => message.content.includes("50 MB"))).toBe(true);
+    expect(contextMessages.some((message) => message.content.includes("100 MB"))).toBe(true);
+    expect(contextMessages.find((message) => message.messageId === latestMessage.id)?.content).toContain("100 MB");
+    expect(contextMessages.find((message) => message.messageId === latestMessage.id)?.messageId).toBe(latestMessage.id);
+  });
+
   test("normalizes legacy analysis message ids to the canonical Inbox identity", async () => {
     const supportCase = await createCase(85);
     const inboxMessage = await store.createInboxMessage({
@@ -260,6 +318,51 @@ describe("POST /webhooks/teams/actions", () => {
       analysisVersion: analysis.analysisVersion,
       createdAt: analysis.createdAt,
       sourceMessageIds: [sourceInboxMessageId],
+    });
+  });
+
+  test("case detail keeps customer-message analysis separate from solution analysis", async () => {
+    const supportCase = await createCase(75);
+    const message = await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "ปัญหาการอัปโหลดไฟล์",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+    });
+    const customerAnalysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      messageId: message.id,
+      analysisType: "customer_message",
+      summary: "สรุปปัญหาเดิม",
+      category: "SOFTWARE_APPLICATION",
+      confidence: 75,
+      rawJson: { sourceMessageIds: [message.id] },
+    });
+    const solutionAnalysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      messageId: message.id,
+      analysisType: "tech_solution",
+      summary: "วิธีแก้จากทีม Tech",
+      category: "SOFTWARE_APPLICATION",
+      confidence: 90,
+      rawJson: {},
+    });
+
+    const response = await getCase(supportCase.id);
+    const body = await response.json() as {
+      data: { currentAnalysis?: { id: string; analysisVersion: number; createdAt: string; sourceMessageIds?: string[] } };
+    };
+
+    expect(response.status).toBe(200);
+    expect(solutionAnalysis.analysisVersion).toBeGreaterThan(customerAnalysis.analysisVersion);
+    expect(body.data.currentAnalysis).toEqual({
+      id: customerAnalysis.analysisId,
+      analysisVersion: customerAnalysis.analysisVersion,
+      createdAt: customerAnalysis.createdAt,
+      sourceMessageIds: [message.id],
     });
   });
 

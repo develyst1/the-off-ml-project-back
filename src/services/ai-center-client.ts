@@ -90,6 +90,18 @@ export type InfoRequestRewrite = {
   usedFallback?: boolean;
 };
 
+export const CUSTOMER_ANALYSIS_INSTRUCTIONS = [
+  "Analyze the current case context as the primary source of truth. Do not analyze only the title or only the latest message.",
+  "Use positiveUnderstanding and positiveSolutionSelection only as guidance for the matching task.",
+  "Use negativeUnderstanding and negativeSolutionSelection only as mistakes to avoid for the matching task; never mix the two feedback types.",
+  "Never copy an old case answer. Do not invent troubleshooting steps; return an empty extractedSolution when the current context has no confirmed solution.",
+  "Read the current conversation in chronological order from oldest to newest.",
+  "The latestUserClarification is the highest-priority current-case fact when it corrects, adds to, confirms, or rejects earlier information.",
+  "When facts conflict, replace the older conflicting fact with the latest explicit clarification from the user. Do not state a corrected historical fact as the current issue.",
+  "caseAnalysisContext.detail may be an earlier summary and is reference-only when it conflicts with the current conversation.",
+  "Feedback examples and historical solution guidance are reference-only. Current conversation facts always take precedence and historical facts must never be copied into the current case.",
+] as const;
+
 export type MoreInfoRequestSuggestion = {
   suggestedMessage: string;
   requestedFields: string[];
@@ -875,6 +887,7 @@ export const aiCenterClient = {
     customerDisplayName?: string;
     conversationContext?: string[];
     caseAnalysisContext?: unknown;
+    latestUserClarification?: { content: string; createdAt: string };
     feedbackExamples?: Array<{
       feedbackType: "ISSUE_UNDERSTANDING" | "SOLUTION_SELECTION";
       value: "CORRECT" | "INCORRECT";
@@ -917,14 +930,14 @@ export const aiCenterClient = {
           },
           customerDisplayName: input.customerDisplayName,
           conversationContext: input.conversationContext,
+          latestUserClarification: input.latestUserClarification,
           caseAnalysisContext: input.caseAnalysisContext,
+          analysisPriority: {
+            primary: ["conversationContext", "latestUserClarification"],
+            referenceOnly: ["caseAnalysisContext.detail", "feedbackMemory"],
+          },
           feedbackMemory,
-          instructions: [
-            "Analyze the current case context as the primary source of truth. Do not analyze only the title or only the latest message.",
-            "Use positiveUnderstanding and positiveSolutionSelection only as guidance for the matching task.",
-            "Use negativeUnderstanding and negativeSolutionSelection only as mistakes to avoid for the matching task; never mix the two feedback types.",
-            "Never copy an old case answer. Do not invent troubleshooting steps; return an empty extractedSolution when the current context has no confirmed solution.",
-          ],
+          instructions: CUSTOMER_ANALYSIS_INSTRUCTIONS,
           text: input.text,
         }),
       },

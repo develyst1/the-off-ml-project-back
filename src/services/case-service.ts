@@ -2389,9 +2389,12 @@ export const caseService = {
     const conversationContext = messages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : message.senderType === "TECH" ? "ทีม Tech" : "ระบบ"}: ${message.originalText}`);
     const latestCustomerMessage = [...messages].reverse().find((message) => message.senderType === "CUSTOMER");
     const analysis = await aiCenterClient.analyzeCustomerMessage({
-      text: [context.subject, context.detail].filter(Boolean).join("\n") || latestCustomerMessage?.originalText || conversationContext.join("\n"),
+      text: conversationContext.join("\n") || [context.subject, context.detail].filter(Boolean).join("\n"),
       customerDisplayName: detail.customer.displayName,
       conversationContext,
+      latestUserClarification: latestCustomerMessage
+        ? { content: latestCustomerMessage.originalText, createdAt: contextTime(latestCustomerMessage) }
+        : undefined,
       caseAnalysisContext: context,
       feedbackExamples,
     });

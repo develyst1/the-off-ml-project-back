@@ -30,6 +30,7 @@ async function caseDetailResponse(detail: Awaited<ReturnType<typeof caseService.
   if (!detail) return undefined;
 
   const currentAnalysis = [...detail.analyses]
+    .filter((analysis) => analysis.analysisType === "customer_message")
     .sort((left, right) => right.analysisVersion - left.analysisVersion || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
   const feedback = currentAnalysis
     ? (await store.listAiReviewFeedback()).filter((item) => (
