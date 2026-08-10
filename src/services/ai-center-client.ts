@@ -102,6 +102,32 @@ export const CUSTOMER_ANALYSIS_INSTRUCTIONS = [
   "Feedback examples and historical solution guidance are reference-only. Current conversation facts always take precedence and historical facts must never be copied into the current case.",
 ] as const;
 
+export const CUSTOMER_ANALYSIS_SYSTEM_INSTRUCTIONS = [
+  "Determine current facts from the current conversation before using any historical context.",
+  "latestUserClarification has the highest factual priority.",
+  "If latestUserClarification corrects, negates, replaces, or narrows an earlier fact, mark the earlier fact as superseded and do not state it as the current problem.",
+  "Historical summaries and feedback examples cannot override current conversation facts.",
+] as const;
+
+type CustomerAnalysisFeedbackExample = {
+  feedbackType: "ISSUE_UNDERSTANDING" | "SOLUTION_SELECTION";
+  value: "CORRECT" | "INCORRECT";
+  aiCategory?: string;
+  aiSummary?: string;
+  aiSolution?: string;
+  aiOutput?: string;
+  reason?: string | null;
+  context: unknown;
+};
+
+export function feedbackGuidance(item: CustomerAnalysisFeedbackExample) {
+  return {
+    feedbackType: item.feedbackType,
+    value: item.value,
+    guidance: item.reason?.trim() || "Historical feedback is reasoning guidance only; do not copy its case facts.",
+  };
+}
+
 export type MoreInfoRequestSuggestion = {
   suggestedMessage: string;
   requestedFields: string[];
@@ -888,23 +914,14 @@ export const aiCenterClient = {
     conversationContext?: string[];
     caseAnalysisContext?: unknown;
     latestUserClarification?: { content: string; createdAt: string };
-    feedbackExamples?: Array<{
-      feedbackType: "ISSUE_UNDERSTANDING" | "SOLUTION_SELECTION";
-      value: "CORRECT" | "INCORRECT";
-      aiCategory?: string;
-      aiSummary?: string;
-      aiSolution?: string;
-      aiOutput?: string;
-      reason?: string | null;
-      context: unknown;
-    }>;
+    feedbackExamples?: CustomerAnalysisFeedbackExample[];
   }) {
     const fallback = fallbackCustomerAnalysis(input.text);
     const feedbackMemory = {
-      positiveUnderstanding: input.feedbackExamples?.filter((item) => item.feedbackType === "ISSUE_UNDERSTANDING" && item.value === "CORRECT") ?? [],
-      negativeUnderstanding: input.feedbackExamples?.filter((item) => item.feedbackType === "ISSUE_UNDERSTANDING" && item.value === "INCORRECT") ?? [],
-      positiveSolutionSelection: input.feedbackExamples?.filter((item) => item.feedbackType === "SOLUTION_SELECTION" && item.value === "CORRECT") ?? [],
-      negativeSolutionSelection: input.feedbackExamples?.filter((item) => item.feedbackType === "SOLUTION_SELECTION" && item.value === "INCORRECT") ?? [],
+      positiveUnderstanding: input.feedbackExamples?.filter((item) => item.feedbackType === "ISSUE_UNDERSTANDING" && item.value === "CORRECT").map(feedbackGuidance) ?? [],
+      negativeUnderstanding: input.feedbackExamples?.filter((item) => item.feedbackType === "ISSUE_UNDERSTANDING" && item.value === "INCORRECT").map(feedbackGuidance) ?? [],
+      positiveSolutionSelection: input.feedbackExamples?.filter((item) => item.feedbackType === "SOLUTION_SELECTION" && item.value === "CORRECT").map(feedbackGuidance) ?? [],
+      negativeSolutionSelection: input.feedbackExamples?.filter((item) => item.feedbackType === "SOLUTION_SELECTION" && item.value === "INCORRECT").map(feedbackGuidance) ?? [],
     };
     try {
       const content = await chatWithAiCenter([
@@ -912,6 +929,10 @@ export const aiCenterClient = {
         role: "system",
         content:
           "คุณคือ AI วิเคราะห์เคส Tech Support ของระบบ Off ML Project ตอบกลับเป็น JSON เท่านั้น ห้ามมี markdown หรือคำอธิบายเพิ่ม",
+      },
+      {
+        role: "system",
+        content: CUSTOMER_ANALYSIS_SYSTEM_INSTRUCTIONS.join(" "),
       },
       {
         role: "user",
@@ -930,13 +951,15 @@ export const aiCenterClient = {
           },
           customerDisplayName: input.customerDisplayName,
           conversationContext: input.conversationContext,
+          currentConversation: input.conversationContext,
           latestUserClarification: input.latestUserClarification,
           caseAnalysisContext: input.caseAnalysisContext,
           analysisPriority: {
-            primary: ["conversationContext", "latestUserClarification"],
-            referenceOnly: ["caseAnalysisContext.detail", "feedbackMemory"],
+            primary: ["currentConversation", "latestUserClarification"],
+            secondary: ["case title", "basic metadata"],
+            referenceOnly: ["historicalCaseSummary", "feedbackGuidance"],
           },
-          feedbackMemory,
+          feedbackGuidance: feedbackMemory,
           instructions: CUSTOMER_ANALYSIS_INSTRUCTIONS,
           text: input.text,
         }),

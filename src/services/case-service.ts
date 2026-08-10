@@ -2395,7 +2395,10 @@ export const caseService = {
       latestUserClarification: latestCustomerMessage
         ? { content: latestCustomerMessage.originalText, createdAt: contextTime(latestCustomerMessage) }
         : undefined,
-      caseAnalysisContext: context,
+      caseAnalysisContext: {
+        subject: context.subject,
+        referenceMessages: context.referenceMessages,
+      },
       feedbackExamples,
     });
     if (analysis.status === "AI_FAILED") throw new Error("AI วิเคราะห์ไม่สำเร็จ จึงยังไม่บันทึกผลวิเคราะห์ใหม่");
