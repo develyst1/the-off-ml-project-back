@@ -10,6 +10,7 @@ import { sanitizeCustomerFacingMessage } from "../lib/customer-facing-message";
 import { actionableSolutionSteps } from "../lib/solution-quality";
 import { isAutoAnswerAllowedForRelevance, isAutoAnswerAllowedForSolution } from "./automation-settings";
 import { createHash } from "node:crypto";
+import { analysisMessageIdentity } from "../repositories/case-message-normalizer";
 
 const CLOSED_CASE_STATUSES: CaseStatus[] = ["closed", "resolved", "sent_to_customer"];
 const CLOSED_INCOMING_CASE_STATUS_VALUES = new Set<string>([
@@ -2403,7 +2404,7 @@ export const caseService = {
         ...analysis,
         analysisMode: "CASE_REANALYSIS",
         caseAnalysisContext: context,
-        sourceMessageIds: messages.map((message) => message.id),
+        sourceMessageIds: messages.map(analysisMessageIdentity),
         feedbackExamples,
       },
     });

@@ -8,6 +8,19 @@ const stableMessageIdentityKeys = [
   "webhookEventId",
 ] as const;
 
+/**
+ * Returns the identity used by Analysis.sourceMessageIds. Case timeline rows
+ * may be copies of Inbox rows, so prefer the canonical Inbox identity when it
+ * is available and fall back to the case message id for legacy rows.
+ */
+export function analysisMessageIdentity(message: Pick<Message, "id" | "metadata">) {
+  for (const key of ["sourceInboxMessageId", "inboxMessageId"] as const) {
+    const value = message.metadata?.[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return message.id;
+}
+
 function stableMessageIdentity(message: Pick<Message, "metadata" | "externalMessageId" | "webhookEventId">) {
   for (const key of stableMessageIdentityKeys) {
     const value = key === "externalMessageId"

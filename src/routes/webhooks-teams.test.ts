@@ -77,6 +77,12 @@ function postRefreshSolution(caseId: string) {
   }));
 }
 
+function getCase(caseId: string) {
+  return app.fetch(new Request(`http://localhost/cases/${caseId}`, {
+    method: "GET",
+  }));
+}
+
 function patchAiFeedback(caseId: string, body: Record<string, unknown>) {
   return app.fetch(new Request(`http://localhost/cases/${caseId}/ai-feedback`, {
     method: "PATCH",
@@ -104,6 +110,7 @@ function postConfidenceReview(body: Record<string, unknown>, suggestionId: strin
 describe("POST /webhooks/teams/actions", () => {
   test("re-analysis creates a new customer analysis from the latest case messages", async () => {
     const supportCase = await createCase(75);
+    const initialInboxMessageId = `inbox-initial-${sequence}`;
     const initialMessage = await store.createMessage({
       caseId: supportCase.id,
       direction: "INBOUND",
@@ -112,6 +119,7 @@ describe("POST /webhooks/teams/actions", () => {
       senderType: "CUSTOMER",
       messageType: "CUSTOMER_MESSAGE",
       deliveryStatus: "RECEIVED",
+      metadata: { sourceInboxMessageId: initialInboxMessageId },
     });
     const initialAnalysis = await store.createAnalysis({
       caseId: supportCase.id,
@@ -120,7 +128,7 @@ describe("POST /webhooks/teams/actions", () => {
       summary: "ปัญหาไฟล์",
       category: "ปัญหาการอัปโหลด",
       confidence: 75,
-      rawJson: { sourceMessageIds: [initialMessage.id] },
+      rawJson: { sourceMessageIds: [initialInboxMessageId] },
     });
     await store.upsertAiReviewFeedback({
       caseId: supportCase.id,
@@ -130,6 +138,7 @@ describe("POST /webhooks/teams/actions", () => {
       result: "CORRECT",
       reviewSource: "CASE_DETAIL",
     });
+    const newInboxMessageId = `inbox-new-${sequence}`;
     const newMessage = await store.createMessage({
       caseId: supportCase.id,
       direction: "INBOUND",
@@ -138,6 +147,7 @@ describe("POST /webhooks/teams/actions", () => {
       senderType: "TECH",
       messageType: "TECH_REPLY",
       deliveryStatus: "SENT",
+      metadata: { sourceInboxMessageId: newInboxMessageId },
     });
 
     const response = await postRefreshSolution(supportCase.id);
@@ -150,14 +160,52 @@ describe("POST /webhooks/teams/actions", () => {
     expect(reanalysis?.analysisId).not.toBe(initialAnalysis.analysisId);
     expect(reanalysis?.analysisVersion).toBe(initialAnalysis.analysisVersion + 1);
     expect(reanalysis?.createdAt).not.toBe(initialAnalysis.createdAt);
-    expect(rawJson?.sourceMessageIds).toContain(initialMessage.id);
-    expect(rawJson?.sourceMessageIds).toContain(newMessage.id);
+    expect(rawJson?.sourceMessageIds).toContain(initialInboxMessageId);
+    expect(rawJson?.sourceMessageIds).toContain(newInboxMessageId);
     expect(body.data.currentAnalysis?.id).toBe(reanalysis?.analysisId);
     expect(body.data.currentAnalysis?.analysisVersion).toBe(reanalysis?.analysisVersion);
-    expect(body.data.currentAnalysis?.sourceMessageIds).toContain(initialMessage.id);
-    expect(body.data.currentAnalysis?.sourceMessageIds).toContain(newMessage.id);
+    expect(body.data.currentAnalysis?.sourceMessageIds).toContain(initialInboxMessageId);
+    expect(body.data.currentAnalysis?.sourceMessageIds).toContain(newInboxMessageId);
     expect(body.data.aiFeedback?.issueUnderstanding).toBeUndefined();
     expect((await store.getCaseDetail(supportCase.id))?.analyses.find((analysis) => analysis.analysisId === initialAnalysis.analysisId)?.confidence).toBe(75);
+  });
+
+  test("normalizes legacy analysis message ids to the canonical Inbox identity", async () => {
+    const supportCase = await createCase(85);
+    const inboxMessage = await store.createInboxMessage({
+      customerId: supportCase.customerId,
+      caseId: supportCase.id,
+      assignedCaseId: supportCase.id,
+      direction: "INBOUND",
+      senderType: "CUSTOMER",
+      text: "ข้อความอ้างอิงเดียวกัน",
+      deliveryStatus: "DELIVERED",
+    });
+    const caseMessage = await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: inboxMessage.text,
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+      metadata: { sourceInboxMessageId: inboxMessage.id },
+    });
+    await store.createAnalysis({
+      caseId: supportCase.id,
+      messageId: caseMessage.id,
+      analysisType: "customer_message",
+      summary: "สรุปจากข้อความอ้างอิง",
+      category: "category",
+      confidence: 85,
+      rawJson: { sourceMessageIds: [caseMessage.id] },
+    });
+
+    const response = await getCase(supportCase.id);
+    const body = await response.json() as { data: { currentAnalysis?: { sourceMessageIds?: string[] } } };
+
+    expect(response.status).toBe(200);
+    expect(body.data.currentAnalysis?.sourceMessageIds).toEqual([inboxMessage.id]);
   });
 
   test("AI failure does not create a partial re-analysis record", async () => {

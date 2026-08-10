@@ -5,6 +5,7 @@ import { caseService } from "../services/case-service";
 import { saveAiReviewFeedback } from "../services/ai-review-feedback-service";
 import { categoryKeyOf } from "../lib/category";
 import { store } from "../repositories/store";
+import { analysisMessageIdentity } from "../repositories/case-message-normalizer";
 
 const statuses: CaseStatus[] = [
   "new",
@@ -40,7 +41,14 @@ async function caseDetailResponse(detail: Awaited<ReturnType<typeof caseService.
   const rawJson = currentAnalysis?.rawJson;
   const sourceMessageIds = rawJson && typeof rawJson === "object" && !Array.isArray(rawJson)
     && Array.isArray((rawJson as { sourceMessageIds?: unknown }).sourceMessageIds)
-    ? (rawJson as { sourceMessageIds: unknown[] }).sourceMessageIds.filter((id): id is string => typeof id === "string")
+    ? [...new Set((rawJson as { sourceMessageIds: unknown[] }).sourceMessageIds
+      .filter((id): id is string => typeof id === "string")
+      .map((sourceId) => {
+        const matchingMessage = detail.messages.find((message) => (
+          message.id === sourceId || analysisMessageIdentity(message) === sourceId
+        ));
+        return matchingMessage ? analysisMessageIdentity(matchingMessage) : sourceId;
+      }))]
     : undefined;
 
   return {
