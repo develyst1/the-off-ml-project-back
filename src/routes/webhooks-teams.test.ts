@@ -5,6 +5,13 @@ const store = new InMemoryStore();
 let lineShouldFail = false;
 let lineSendCount = 0;
 let aiAnalysisShouldFail = false;
+type CapturedCustomerAnalysisInput = {
+  text: string;
+  conversationContext?: string[];
+  latestUserClarification?: { content: string; createdAt: string };
+  caseAnalysisContext?: unknown;
+};
+let lastCustomerAnalysisInput: CapturedCustomerAnalysisInput | undefined;
 
 mock.module("../repositories/store", () => ({ store }));
 mock.module("../services/line-client", () => ({
@@ -21,9 +28,12 @@ mock.module("../services/line-client", () => ({
 mock.module("../services/teams-client", () => ({ teamsClient: { notifyCase: async () => ({ delivered: true }) } }));
 mock.module("../services/ai-center-client", () => ({
   aiCenterClient: {
-    analyzeCustomerMessage: async () => aiAnalysisShouldFail
-      ? ({ status: "AI_FAILED", summary: "failed", caseTitle: "title", category: "category", urgency: "medium", confidence: 50, missingInformation: [] })
-      : ({ status: "AI_SUCCESS", summary: "summary", caseTitle: "title", category: "category", urgency: "medium", confidence: 85, missingInformation: [] }),
+    analyzeCustomerMessage: async (input: CapturedCustomerAnalysisInput) => {
+      lastCustomerAnalysisInput = input;
+      return aiAnalysisShouldFail
+        ? ({ status: "AI_FAILED", summary: "failed", caseTitle: "title", category: "category", urgency: "medium", confidence: 50, missingInformation: [] })
+        : ({ status: "AI_SUCCESS", summary: "summary", caseTitle: "title", category: "category", urgency: "medium", confidence: 85, missingInformation: [] });
+    },
     analyzeCaseRelation: async () => ({ related: true, confidence: 100, reason: "test" }),
     extractPendingInformation: async () => ({ values: {} }),
     generateLineContinuationReply: async () => "รับทราบค่ะ",
@@ -204,7 +214,9 @@ describe("POST /webhooks/teams/actions", () => {
       metadata: { sourceInboxMessageId: latestInboxMessageId },
     });
 
+    lastCustomerAnalysisInput = undefined;
     const response = await postRefreshSolution(supportCase.id);
+    const capturedInput = lastCustomerAnalysisInput as CapturedCustomerAnalysisInput | undefined;
     const body = await response.json() as {
       data: { analyses: Array<{ analysisType: string; analysisVersion: number; rawJson: unknown }> };
     };
@@ -226,6 +238,11 @@ describe("POST /webhooks/teams/actions", () => {
     expect(contextMessages.some((message) => message.content.includes("100 MB"))).toBe(true);
     expect(contextMessages.find((message) => message.messageId === latestMessage.id)?.content).toContain("100 MB");
     expect(contextMessages.find((message) => message.messageId === latestMessage.id)?.messageId).toBe(latestMessage.id);
+    expect(capturedInput?.caseAnalysisContext).toBeUndefined();
+    expect(capturedInput?.text).not.toContain("Upload size issue");
+    expect(capturedInput?.conversationContext?.join("\n")).toContain("50 MB");
+    expect(capturedInput?.conversationContext?.join("\n")).toContain("100 MB");
+    expect(capturedInput?.latestUserClarification?.content).toContain("100 MB");
   });
 
   test("normalizes legacy analysis message ids to the canonical Inbox identity", async () => {

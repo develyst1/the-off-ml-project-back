@@ -2389,16 +2389,12 @@ export const caseService = {
     const conversationContext = messages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : message.senderType === "TECH" ? "ทีม Tech" : "ระบบ"}: ${message.originalText}`);
     const latestCustomerMessage = [...messages].reverse().find((message) => message.senderType === "CUSTOMER");
     const analysis = await aiCenterClient.analyzeCustomerMessage({
-      text: conversationContext.join("\n") || [context.subject, context.detail].filter(Boolean).join("\n"),
+      text: conversationContext.join("\n"),
       customerDisplayName: detail.customer.displayName,
       conversationContext,
       latestUserClarification: latestCustomerMessage
         ? { content: latestCustomerMessage.originalText, createdAt: contextTime(latestCustomerMessage) }
         : undefined,
-      caseAnalysisContext: {
-        subject: context.subject,
-        referenceMessages: context.referenceMessages,
-      },
       feedbackExamples,
     });
     if (analysis.status === "AI_FAILED") throw new Error("AI วิเคราะห์ไม่สำเร็จ จึงยังไม่บันทึกผลวิเคราะห์ใหม่");
