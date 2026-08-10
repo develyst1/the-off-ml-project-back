@@ -211,11 +211,12 @@ caseRoutes.post("/:id/rewrite-reply", async (c) => {
 
 caseRoutes.post("/:id/reopen", async (c) => {
   const body = await readJsonObject(c);
-  return c.json({ data: await caseService.reopenCaseFromConsole(
+  const detail = await caseService.reopenCaseFromConsole(
     c.req.param("id"),
     typeof body.reopenedBy === "string" && body.reopenedBy.trim() ? body.reopenedBy.trim() : undefined,
     typeof body.reopenReason === "string" && body.reopenReason.trim() ? body.reopenReason.trim() : undefined,
-  ) });
+  );
+  return c.json({ data: await caseDetailResponse(detail) });
 });
 
 caseRoutes.patch("/:id/status", async (c) => {

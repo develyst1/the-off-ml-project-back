@@ -954,7 +954,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
           decision: "continue_existing_case",
         });
         if (["closed", "resolved", "sent_to_customer"].includes(matchedCase.status)) {
-          await store.updateCase(matchedCase.id, { status: "reopened" });
+          await store.updateCase(matchedCase.id, { status: "reopened", conversationEndedAt: undefined });
         }
         await store.setActiveCase(customer.id, matchedCase.id);
         const relatedResult = await caseService.appendLineMessageToCase({
@@ -1212,7 +1212,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
   if (caseNumberMatch) {
     const referencedCase = await caseService.getCaseByNumber(caseNumberMatch[0]);
     if (referencedCase && referencedCase.customerId === customer.id) {
-      await store.updateCase(referencedCase.id, { status: "reopened" });
+      await store.updateCase(referencedCase.id, { status: "reopened", conversationEndedAt: undefined });
       const relatedResult = await caseService.appendLineMessageToCase({
         caseId: referencedCase.id,
         text: input.text,

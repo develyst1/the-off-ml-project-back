@@ -208,6 +208,119 @@ describe("POST /webhooks/teams/actions", () => {
     expect(body.data.currentAnalysis?.sourceMessageIds).toEqual([inboxMessage.id]);
   });
 
+  test("reopen keeps the existing analysis in the API response", async () => {
+    const supportCase = await createCase(85);
+    const sourceInboxMessageId = `inbox-reopen-analysis-${sequence}`;
+    const message = await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "ข้อความอ้างอิงก่อนปิดเคส",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+      metadata: { sourceInboxMessageId },
+    });
+    const analysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      messageId: message.id,
+      analysisType: "customer_message",
+      summary: "สรุปเดิม",
+      category: "category",
+      confidence: 85,
+      rawJson: { sourceMessageIds: [sourceInboxMessageId] },
+    });
+    const endedAt = new Date(Date.now() - 60_000).toISOString();
+    await store.updateCase(supportCase.id, {
+      status: "closed",
+      closedAt: endedAt,
+      conversationEndedAt: endedAt,
+    });
+
+    const response = await app.fetch(new Request(`http://localhost/cases/${supportCase.id}/reopen`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    }));
+    const body = await response.json() as {
+      data: {
+        status: string;
+        conversationEndedAt?: string;
+        confidenceScore?: number;
+        currentAnalysis?: { id: string; analysisVersion: number; createdAt: string; sourceMessageIds?: string[] };
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.data.status).toBe("reopened");
+    expect(body.data.conversationEndedAt).toBeUndefined();
+    expect(body.data.confidenceScore).toBe(85);
+    expect(body.data.currentAnalysis).toEqual({
+      id: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      createdAt: analysis.createdAt,
+      sourceMessageIds: [sourceInboxMessageId],
+    });
+  });
+
+  test("re-analysis includes messages after reopening a previously closed case", async () => {
+    const supportCase = await createCase(85);
+    const beforeCloseInboxMessageId = `inbox-before-close-${sequence}`;
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "ข้อความก่อนปิดเคส",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+      metadata: { sourceInboxMessageId: beforeCloseInboxMessageId },
+    });
+    const endedAt = new Date(Date.now() - 60_000).toISOString();
+    await store.updateCase(supportCase.id, {
+      status: "closed",
+      closedAt: endedAt,
+      conversationEndedAt: endedAt,
+    });
+
+    const reopenResponse = await app.fetch(new Request(`http://localhost/cases/${supportCase.id}/reopen`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    }));
+    expect(reopenResponse.status).toBe(200);
+    const reopenedDetail = await store.getCaseDetail(supportCase.id);
+    expect(reopenedDetail?.status).toBe("reopened");
+    expect(reopenedDetail?.conversationEndedAt).toBeUndefined();
+
+    const afterReopenInboxMessageId = `inbox-after-reopen-${sequence}`;
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "OUTBOUND",
+      channel: "line",
+      originalText: "ทีม Tech ตรวจสอบและเริ่มประมวลผลใหม่แล้ว",
+      senderType: "TECH",
+      messageType: "TECH_REPLY",
+      deliveryStatus: "SENT",
+      metadata: { sourceInboxMessageId: afterReopenInboxMessageId },
+    });
+
+    const response = await postRefreshSolution(supportCase.id);
+    const body = await response.json() as {
+      data: {
+        currentAnalysis?: { sourceMessageIds?: string[] };
+        analyses: Array<{ analysisType: string; analysisVersion: number; rawJson: unknown }>;
+      };
+    };
+    const reanalysis = body.data.analyses.find((analysis) => analysis.analysisType === "customer_message");
+    const rawJson = reanalysis?.rawJson as { sourceMessageIds?: string[] } | undefined;
+
+    expect(response.status).toBe(200);
+    expect(rawJson?.sourceMessageIds).toContain(beforeCloseInboxMessageId);
+    expect(rawJson?.sourceMessageIds).toContain(afterReopenInboxMessageId);
+    expect(body.data.currentAnalysis?.sourceMessageIds).toContain(afterReopenInboxMessageId);
+  });
+
   test("AI failure does not create a partial re-analysis record", async () => {
     const supportCase = await createCase(75);
     const message = await store.createMessage({

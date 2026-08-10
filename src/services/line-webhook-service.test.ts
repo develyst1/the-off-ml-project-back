@@ -116,6 +116,47 @@ async function sendReply(input: { lineUserId: string; messageId: string; text: s
 }
 
 describe("Inbox LINE handoff", () => {
+  test("LINE reopen preserves the existing analysis and clears only the conversation end", async () => {
+    sequence += 1;
+    const customer = await store.upsertCustomer({ lineUserId: `U-reopen-analysis-${sequence}`, displayName: `Reopen customer ${sequence}` });
+    const supportCase = await store.createCase({ customerId: customer.id, status: "closed", confidenceScore: 82 });
+    const message = await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "ข้อความก่อนปิดเคส",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+    });
+    const analysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      messageId: message.id,
+      analysisType: "customer_message",
+      summary: "สรุปเดิม",
+      category: "category",
+      confidence: 82,
+      rawJson: { sourceMessageIds: [message.id] },
+    });
+    const endedAt = new Date(Date.now() - 60_000).toISOString();
+    await store.updateCase(supportCase.id, { conversationEndedAt: endedAt, closedAt: endedAt });
+
+    const reopened = await caseService.reopenCase(customer.id, supportCase.id);
+
+    expect(reopened).toBeDefined();
+    if (!reopened) throw new Error("Expected reopened case detail");
+    expect(reopened.status).toBe("reopened");
+    expect(reopened.conversationEndedAt).toBeUndefined();
+    expect(reopened.analyses).toHaveLength(1);
+    expect(reopened.analyses[0]).toMatchObject({
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      createdAt: analysis.createdAt,
+      confidence: analysis.confidence,
+      rawJson: analysis.rawJson,
+    });
+  });
+
   test("replies to a greeting once, then hands the issue to Tech without creating a case", async () => {
     const lineUserId = "U-inbox-greeting-1";
     const replyCountBefore = lineReplies.length;

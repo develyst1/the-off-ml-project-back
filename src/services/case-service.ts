@@ -921,7 +921,7 @@ export const caseService = {
   async reopenCase(customerId: string, caseId: string) {
     const detail = await store.getCaseDetail(caseId);
     if (!detail || detail.customerId !== customerId) throw new Error("Case not found");
-    await store.updateCase(caseId, { status: "reopened" });
+    await store.updateCase(caseId, { status: "reopened", conversationEndedAt: undefined });
     await store.setPendingCaseSelection(customerId);
     await store.setActiveCase(customerId, caseId);
     const text = `เปิดเคส ${detail.caseNumber} กลับมาแล้วค่ะ เดี๋ยวทีมงานช่วยตรวจสอบต่อให้นะคะ`;
@@ -1959,7 +1959,12 @@ export const caseService = {
     if (detail.status !== "closed") return detail;
 
     const reopenedAt = new Date().toISOString();
-    await store.updateCase(caseId, { status: "reopened", closedAt: undefined, closedBy: undefined });
+    await store.updateCase(caseId, {
+      status: "reopened",
+      closedAt: undefined,
+      closedBy: undefined,
+      conversationEndedAt: undefined,
+    });
     await store.setActiveCase(detail.customer.id, caseId);
     await store.createMessage({
       caseId,
