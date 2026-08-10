@@ -161,7 +161,7 @@ describe("POST /webhooks/teams/actions", () => {
     });
 
     const response = await postRefreshSolution(supportCase.id);
-    const body = await response.json() as { data: { currentAnalysis?: { id: string; analysisVersion: number; createdAt: string; sourceMessageIds?: string[] }; analyses: Array<{ analysisId: string; analysisVersion: number; analysisType: string; confidence: number; createdAt: string; rawJson: unknown }>; aiFeedback?: { issueUnderstanding?: string } } };
+    const body = await response.json() as { data: { currentAnalysis?: { id: string; analysisVersion: number; createdAt: string; summary?: string; sourceMessageIds?: string[] }; analyses: Array<{ analysisId: string; analysisVersion: number; analysisType: string; confidence: number; createdAt: string; summary?: string; rawJson: unknown }>; aiFeedback?: { issueUnderstanding?: string } } };
     const reanalysis = body.data.analyses.find((analysis) => analysis.analysisType === "customer_message" && analysis.analysisVersion > initialAnalysis.analysisVersion);
     const rawJson = reanalysis?.rawJson as { sourceMessageIds?: string[] } | undefined;
 
@@ -174,6 +174,7 @@ describe("POST /webhooks/teams/actions", () => {
     expect(rawJson?.sourceMessageIds).toContain(newInboxMessageId);
     expect(body.data.currentAnalysis?.id).toBe(reanalysis?.analysisId);
     expect(body.data.currentAnalysis?.analysisVersion).toBe(reanalysis?.analysisVersion);
+    expect(body.data.currentAnalysis?.summary).toBe(reanalysis?.summary);
     expect(body.data.currentAnalysis?.sourceMessageIds).toContain(initialInboxMessageId);
     expect(body.data.currentAnalysis?.sourceMessageIds).toContain(newInboxMessageId);
     expect(body.data.aiFeedback?.issueUnderstanding).toBeUndefined();
@@ -182,6 +183,8 @@ describe("POST /webhooks/teams/actions", () => {
 
   test("re-analysis keeps the latest conflicting clarification in the AI context", async () => {
     const supportCase = await createCase(75);
+    const initialCreatedAt = new Date(Date.now() + 1_000).toISOString();
+    const latestCreatedAt = new Date(Date.now() + 2_000).toISOString();
     const initialInboxMessageId = `inbox-size-old-${sequence}`;
     const initialMessage = await store.createMessage({
       caseId: supportCase.id,
@@ -191,6 +194,7 @@ describe("POST /webhooks/teams/actions", () => {
       senderType: "CUSTOMER",
       messageType: "CUSTOMER_MESSAGE",
       deliveryStatus: "RECEIVED",
+      receivedAt: initialCreatedAt,
       metadata: { sourceInboxMessageId: initialInboxMessageId },
     });
     await store.createAnalysis({
@@ -211,6 +215,7 @@ describe("POST /webhooks/teams/actions", () => {
       senderType: "CUSTOMER",
       messageType: "CUSTOMER_MESSAGE",
       deliveryStatus: "RECEIVED",
+      receivedAt: latestCreatedAt,
       metadata: { sourceInboxMessageId: latestInboxMessageId },
     });
 
@@ -243,6 +248,54 @@ describe("POST /webhooks/teams/actions", () => {
     expect(capturedInput?.conversationContext?.join("\n")).toContain("50 MB");
     expect(capturedInput?.conversationContext?.join("\n")).toContain("100 MB");
     expect(capturedInput?.latestUserClarification?.content).toContain("100 MB");
+  });
+
+  test("re-analysis uses the latest browser clarification without the initial case snapshot", async () => {
+    const supportCase = await createCase(75);
+    const initialCreatedAt = new Date(Date.now() + 1_000).toISOString();
+    const latestCreatedAt = new Date(Date.now() + 2_000).toISOString();
+    const initialMessage = await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "Chrome ใช้งานไม่ได้",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+      receivedAt: initialCreatedAt,
+      metadata: { sourceInboxMessageId: `inbox-chrome-${sequence}` },
+    });
+    await store.createAnalysis({
+      caseId: supportCase.id,
+      messageId: initialMessage.id,
+      analysisType: "customer_message",
+      summary: "ปัญหา Chrome",
+      category: "SOFTWARE_APPLICATION",
+      confidence: 75,
+      rawJson: { sourceMessageIds: [initialMessage.id] },
+    });
+    const latestMessage = await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "แก้ไขข้อมูลล่าสุดค่ะ Chrome ใช้งานได้ปกติ ปัญหาเกิดเฉพาะ Safari",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+      receivedAt: latestCreatedAt,
+      metadata: { sourceInboxMessageId: `inbox-safari-${sequence}` },
+    });
+
+    lastCustomerAnalysisInput = undefined;
+    const response = await postRefreshSolution(supportCase.id);
+    const capturedInput = lastCustomerAnalysisInput as CapturedCustomerAnalysisInput | undefined;
+
+    expect(response.status).toBe(200);
+    expect(capturedInput?.caseAnalysisContext).toBeUndefined();
+    expect(capturedInput?.conversationContext?.join("\n")).toContain("Chrome");
+    expect(capturedInput?.conversationContext?.join("\n")).toContain("Safari");
+    expect(capturedInput?.latestUserClarification?.content).toContain("Safari");
+    expect(capturedInput?.latestUserClarification?.content).toContain("Chrome ใช้งานได้ปกติ");
   });
 
   test("normalizes legacy analysis message ids to the canonical Inbox identity", async () => {
@@ -322,7 +375,7 @@ describe("POST /webhooks/teams/actions", () => {
         status: string;
         conversationEndedAt?: string;
         confidenceScore?: number;
-        currentAnalysis?: { id: string; analysisVersion: number; createdAt: string; sourceMessageIds?: string[] };
+        currentAnalysis?: { id: string; analysisVersion: number; createdAt: string; summary?: string; sourceMessageIds?: string[] };
       };
     };
 
@@ -334,6 +387,7 @@ describe("POST /webhooks/teams/actions", () => {
       id: analysis.analysisId,
       analysisVersion: analysis.analysisVersion,
       createdAt: analysis.createdAt,
+      summary: analysis.summary,
       sourceMessageIds: [sourceInboxMessageId],
     });
   });
@@ -370,7 +424,7 @@ describe("POST /webhooks/teams/actions", () => {
 
     const response = await getCase(supportCase.id);
     const body = await response.json() as {
-      data: { currentAnalysis?: { id: string; analysisVersion: number; createdAt: string; sourceMessageIds?: string[] } };
+      data: { currentAnalysis?: { id: string; analysisVersion: number; createdAt: string; summary?: string; sourceMessageIds?: string[] } };
     };
 
     expect(response.status).toBe(200);
@@ -379,6 +433,7 @@ describe("POST /webhooks/teams/actions", () => {
       id: customerAnalysis.analysisId,
       analysisVersion: customerAnalysis.analysisVersion,
       createdAt: customerAnalysis.createdAt,
+      summary: customerAnalysis.summary,
       sourceMessageIds: [message.id],
     });
   });
@@ -864,6 +919,10 @@ describe("POST /webhooks/teams/actions", () => {
     expect(referenceMessages[0]?.webhookEventId).toBeUndefined();
     expect(definition?.metadata?.caseSubject).toBe("หัวข้อจากทีม Tech");
     expect(definition?.metadata?.caseDetail).toBe("รายละเอียดจากทีม Tech");
+    expect(lastCustomerAnalysisInput?.caseAnalysisContext).toMatchObject({
+      subject: "หัวข้อจากทีม Tech",
+      detail: "รายละเอียดจากทีม Tech",
+    });
     expect(analysisContext?.caseAnalysisContext?.subject).toBe("หัวข้อจากทีม Tech");
     expect(analysisContext?.caseAnalysisContext?.detail).toBe("รายละเอียดจากทีม Tech");
     expect(analysisContext?.caseAnalysisContext?.referenceMessages?.map((message) => message.messageId)).toEqual([second.id]);

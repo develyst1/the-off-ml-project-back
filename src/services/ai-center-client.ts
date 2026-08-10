@@ -98,6 +98,7 @@ export const CUSTOMER_ANALYSIS_INSTRUCTIONS = [
   "Read the current conversation in chronological order from oldest to newest.",
   "The latestUserClarification is the highest-priority current-case fact when it corrects, adds to, confirms, or rejects earlier information.",
   "When facts conflict, replace the older conflicting fact with the latest explicit clarification from the user. Do not state a corrected historical fact as the current issue.",
+  "When the latest clarification explicitly says one value or condition now works and another still fails, the summary must state both current facts clearly, including the working value and the failing value. Do not summarize only the historical failure.",
   "caseAnalysisContext.detail may be an earlier summary and is reference-only when it conflicts with the current conversation.",
   "Feedback examples and historical solution guidance are reference-only. Current conversation facts always take precedence and historical facts must never be copied into the current case.",
 ] as const;

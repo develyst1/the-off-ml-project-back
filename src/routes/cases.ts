@@ -55,7 +55,13 @@ async function caseDetailResponse(detail: Awaited<ReturnType<typeof caseService.
   return {
     ...detail,
     currentAnalysis: currentAnalysis
-      ? { id: currentAnalysis.analysisId, analysisVersion: currentAnalysis.analysisVersion, createdAt: currentAnalysis.createdAt, sourceMessageIds }
+      ? {
+        id: currentAnalysis.analysisId,
+        analysisVersion: currentAnalysis.analysisVersion,
+        createdAt: currentAnalysis.createdAt,
+        summary: currentAnalysis.summary,
+        sourceMessageIds,
+      }
       : undefined,
     aiFeedback: {
       issueUnderstanding: feedback.find((item) => item.feedbackType === "ISSUE_UNDERSTANDING")?.result,
