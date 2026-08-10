@@ -34,6 +34,7 @@ export type CaseStore = {
   createAnalysis(input: Omit<Analysis, "id" | "analysisId" | "createdAt" | "analysisVersion">): Promise<Analysis>;
   upsertAiReviewFeedback(input: Omit<AiReviewFeedback, "id" | "createdAt" | "updatedAt">): Promise<AiReviewFeedback>;
   listAiReviewFeedback(): Promise<AiReviewFeedback[]>;
+  listAiReviewFeedbackForReliability(options?: { excludeCaseId?: string }): Promise<AiReviewFeedback[]>;
   listAiReviewFeedbackForMemory(options: { feedbackType?: AiReviewFeedback["feedbackType"]; result?: AiReviewFeedback["result"]; limit: number }): Promise<AiReviewFeedbackMemoryItem[]>;
   upsertCaseAiFeedback(input: Omit<CaseAiFeedback, "id" | "createdAt" | "updatedAt">): Promise<CaseAiFeedback>;
   deleteCaseAiFeedback(caseId: string, feedbackType: CaseAiFeedback["feedbackType"]): Promise<void>;

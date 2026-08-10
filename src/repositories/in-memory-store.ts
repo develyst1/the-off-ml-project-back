@@ -296,6 +296,18 @@ export class InMemoryStore implements CaseStore {
       .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
   }
 
+  async listAiReviewFeedbackForReliability(options: { excludeCaseId?: string } = {}): Promise<AiReviewFeedback[]> {
+    return [...this.aiReviewFeedback.values()]
+      .filter((feedback) => !options.excludeCaseId || feedback.caseId !== options.excludeCaseId)
+      .filter((feedback) => Boolean(feedback.analysisId))
+      .filter((feedback) => [...this.analyses.values()].some((analysis) => (
+        analysis.caseId === feedback.caseId
+        && analysis.analysisId === feedback.analysisId
+        && analysis.analysisVersion === feedback.analysisVersion
+      )))
+      .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+  }
+
   async listAiReviewFeedbackForMemory(options: { feedbackType?: AiReviewFeedback["feedbackType"]; result?: AiReviewFeedback["result"]; limit: number }) {
     const items = [...this.aiReviewFeedback.values()]
       .filter((feedback) => !options.feedbackType || feedback.feedbackType === options.feedbackType)

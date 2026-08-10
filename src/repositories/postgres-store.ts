@@ -876,6 +876,22 @@ export class PostgresStore implements CaseStore {
     return result.rows.map(mapAiReviewFeedback);
   }
 
+  async listAiReviewFeedbackForReliability(options: { excludeCaseId?: string } = {}): Promise<AiReviewFeedback[]> {
+    const result = await this.query<DbAiReviewFeedback>(
+      `select feedback.*
+       from ai_review_feedback feedback
+       inner join analyses analysis
+         on analysis.id = feedback.analysis_id
+        and analysis.case_id = feedback.case_id
+        and analysis.analysis_version = feedback.analysis_version
+       where feedback.analysis_id is not null
+         and ($1::text is null or feedback.case_id <> $1)
+       order by feedback.updated_at desc`,
+      [options.excludeCaseId ?? null],
+    );
+    return result.rows.map(mapAiReviewFeedback);
+  }
+
   async listAiReviewFeedbackForMemory(options: { feedbackType?: AiReviewFeedback["feedbackType"]; result?: AiReviewFeedback["result"]; limit: number }) {
     const result = await this.query<DbAiReviewFeedbackMemory>(
       `select feedback.*, analysis.summary as analysis_summary, analysis.category as analysis_category,
