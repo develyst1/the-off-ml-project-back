@@ -37,11 +37,16 @@ async function caseDetailResponse(detail: Awaited<ReturnType<typeof caseService.
       && item.analysisVersion === currentAnalysis.analysisVersion
     ))
     : [];
+  const rawJson = currentAnalysis?.rawJson;
+  const sourceMessageIds = rawJson && typeof rawJson === "object" && !Array.isArray(rawJson)
+    && Array.isArray((rawJson as { sourceMessageIds?: unknown }).sourceMessageIds)
+    ? (rawJson as { sourceMessageIds: unknown[] }).sourceMessageIds.filter((id): id is string => typeof id === "string")
+    : undefined;
 
   return {
     ...detail,
     currentAnalysis: currentAnalysis
-      ? { id: currentAnalysis.analysisId, analysisVersion: currentAnalysis.analysisVersion, createdAt: currentAnalysis.createdAt }
+      ? { id: currentAnalysis.analysisId, analysisVersion: currentAnalysis.analysisVersion, createdAt: currentAnalysis.createdAt, sourceMessageIds }
       : undefined,
     aiFeedback: {
       issueUnderstanding: feedback.find((item) => item.feedbackType === "ISSUE_UNDERSTANDING")?.result,

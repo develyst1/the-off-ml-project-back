@@ -141,7 +141,7 @@ describe("POST /webhooks/teams/actions", () => {
     });
 
     const response = await postRefreshSolution(supportCase.id);
-    const body = await response.json() as { data: { currentAnalysis?: { id: string; analysisVersion: number; createdAt: string }; analyses: Array<{ analysisId: string; analysisVersion: number; analysisType: string; confidence: number; createdAt: string; rawJson: unknown }>; aiFeedback?: { issueUnderstanding?: string } } };
+    const body = await response.json() as { data: { currentAnalysis?: { id: string; analysisVersion: number; createdAt: string; sourceMessageIds?: string[] }; analyses: Array<{ analysisId: string; analysisVersion: number; analysisType: string; confidence: number; createdAt: string; rawJson: unknown }>; aiFeedback?: { issueUnderstanding?: string } } };
     const reanalysis = body.data.analyses.find((analysis) => analysis.analysisType === "customer_message" && analysis.analysisVersion > initialAnalysis.analysisVersion);
     const rawJson = reanalysis?.rawJson as { sourceMessageIds?: string[] } | undefined;
 
@@ -154,6 +154,8 @@ describe("POST /webhooks/teams/actions", () => {
     expect(rawJson?.sourceMessageIds).toContain(newMessage.id);
     expect(body.data.currentAnalysis?.id).toBe(reanalysis?.analysisId);
     expect(body.data.currentAnalysis?.analysisVersion).toBe(reanalysis?.analysisVersion);
+    expect(body.data.currentAnalysis?.sourceMessageIds).toContain(initialMessage.id);
+    expect(body.data.currentAnalysis?.sourceMessageIds).toContain(newMessage.id);
     expect(body.data.aiFeedback?.issueUnderstanding).toBeUndefined();
     expect((await store.getCaseDetail(supportCase.id))?.analyses.find((analysis) => analysis.analysisId === initialAnalysis.analysisId)?.confidence).toBe(75);
   });
