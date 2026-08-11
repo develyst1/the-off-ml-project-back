@@ -1,7 +1,9 @@
 import type { AiReviewFeedback } from "../domain/types";
 import { store } from "../repositories/store";
 
-export type SaveAiReviewFeedbackInput = Omit<AiReviewFeedback, "id" | "createdAt" | "updatedAt">;
+export type SaveAiReviewFeedbackInput = Omit<AiReviewFeedback, "id" | "analysisId" | "createdAt" | "updatedAt"> & {
+  analysisId: string;
+};
 
 export async function listAiReviewFeedbackForAnalysis(input: {
   caseId: string;
@@ -25,12 +27,13 @@ export async function saveAiReviewFeedback(input: SaveAiReviewFeedbackInput): Pr
     throw new Error("Case not found");
   }
 
-  if (input.analysisId) {
-    const analysis = caseDetail.analyses.find((item) => item.analysisId === input.analysisId);
-    if (!analysis || analysis.analysisVersion !== input.analysisVersion) {
-      throw new Error("Analysis does not match the selected case version");
-    }
+  const analysis = caseDetail.analyses.find((item) => item.analysisId === input.analysisId);
+  if (!analysis || analysis.analysisVersion !== input.analysisVersion) {
+    throw new Error("Analysis does not match the selected case version");
   }
 
-  return store.upsertAiReviewFeedback(input);
+  return store.upsertAiReviewFeedback({
+    ...input,
+    reason: input.result === "INCORRECT" ? input.reason?.trim() || undefined : undefined,
+  });
 }

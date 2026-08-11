@@ -98,3 +98,35 @@ test("keeps feedback separate when a case is analyzed again", async () => {
   expect(firstFeedback.analysisVersion).toBe(firstAnalysis.analysisVersion);
   expect(secondFeedback.analysisVersion).toBe(secondAnalysis.analysisVersion);
 });
+
+test("clears an incorrect note when the same feedback is corrected", async () => {
+  const customer = await store.upsertCustomer({ lineUserId: "U-ai-review-note-clear" });
+  const supportCase = await store.createCase({ customerId: customer.id, status: "analyzing" });
+  const analysis = await store.createAnalysis({
+    caseId: supportCase.id,
+    analysisType: "customer_message",
+    confidence: 88,
+    rawJson: {},
+  });
+  const incorrect = await saveAiReviewFeedback({
+    caseId: supportCase.id,
+    analysisId: analysis.analysisId,
+    analysisVersion: analysis.analysisVersion,
+    feedbackType: "ISSUE_UNDERSTANDING",
+    result: "INCORRECT",
+    reviewSource: "CASE_DETAIL",
+    reason: "ใช้ข้อมูลคนละช่วงเวลา",
+  });
+  const corrected = await saveAiReviewFeedback({
+    caseId: supportCase.id,
+    analysisId: analysis.analysisId,
+    analysisVersion: analysis.analysisVersion,
+    feedbackType: "ISSUE_UNDERSTANDING",
+    result: "CORRECT",
+    reviewSource: "CASE_DETAIL",
+  });
+
+  expect(corrected.id).toBe(incorrect.id);
+  expect(corrected.reason).toBeUndefined();
+  expect((await store.getCaseDetail(supportCase.id))?.confidenceScore).toBeUndefined();
+});

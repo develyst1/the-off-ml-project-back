@@ -161,7 +161,7 @@ describe("POST /webhooks/teams/actions", () => {
     });
 
     const response = await postRefreshSolution(supportCase.id);
-    const body = await response.json() as { data: { currentAnalysis?: { id: string; analysisVersion: number; createdAt: string; summary?: string; sourceMessageIds?: string[] }; analyses: Array<{ analysisId: string; analysisVersion: number; analysisType: string; confidence: number; createdAt: string; summary?: string; rawJson: unknown }>; aiFeedback?: { issueUnderstanding?: string } } };
+    const body = await response.json() as { data: { currentAnalysis?: { id: string; analysisVersion: number; createdAt: string; summary?: string; sourceMessageIds?: string[] }; analyses: Array<{ analysisId: string; analysisVersion: number; analysisType: string; confidence: number; createdAt: string; summary?: string; rawJson: unknown }>; aiFeedback?: { analysisId?: string; analysisVersion?: number; issueUnderstanding?: string; issueUnderstandingReason?: string } } };
     const reanalysis = body.data.analyses.find((analysis) => analysis.analysisType === "customer_message" && analysis.analysisVersion > initialAnalysis.analysisVersion);
     const rawJson = reanalysis?.rawJson as { sourceMessageIds?: string[] } | undefined;
 
@@ -177,7 +177,10 @@ describe("POST /webhooks/teams/actions", () => {
     expect(body.data.currentAnalysis?.summary).toBe(reanalysis?.summary);
     expect(body.data.currentAnalysis?.sourceMessageIds).toContain(initialInboxMessageId);
     expect(body.data.currentAnalysis?.sourceMessageIds).toContain(newInboxMessageId);
+    expect(body.data.aiFeedback?.analysisId).toBe(reanalysis?.analysisId);
+    expect(body.data.aiFeedback?.analysisVersion).toBe(reanalysis?.analysisVersion);
     expect(body.data.aiFeedback?.issueUnderstanding).toBeUndefined();
+    expect(body.data.aiFeedback?.issueUnderstandingReason).toBeUndefined();
     expect((await store.getCaseDetail(supportCase.id))?.analyses.find((analysis) => analysis.analysisId === initialAnalysis.analysisId)?.confidence).toBe(75);
   });
 
@@ -655,43 +658,72 @@ describe("POST /webhooks/teams/actions", () => {
       rawJson: {},
     });
     const understandingResponse = await patchAiFeedback(supportCase.id, {
+      caseId: supportCase.id,
       analysisId: analysis.analysisId,
       analysisVersion: analysis.analysisVersion,
       feedbackType: "ISSUE_UNDERSTANDING",
-      result: "CORRECT",
+      value: "CORRECT",
     });
     const solutionResponse = await patchAiFeedback(supportCase.id, {
+      caseId: supportCase.id,
       analysisId: analysis.analysisId,
       analysisVersion: analysis.analysisVersion,
       feedbackType: "SOLUTION_SELECTION",
-      result: "INCORRECT",
+      value: "INCORRECT",
+      reason: "ขั้นตอนแก้ไขยังไม่ตรงกับอาการ",
     });
     const detail = await store.getCaseDetail(supportCase.id);
 
     expect(understandingResponse.status).toBe(200);
     expect(solutionResponse.status).toBe(200);
     const understanding = await understandingResponse.json() as { data?: { feedback?: { id?: string; analysisId?: string; analysisVersion?: number; result?: string } } };
-    const solution = await solutionResponse.json() as { data?: { feedback?: { analysisVersion?: number; result?: string } } };
+    const solution = await solutionResponse.json() as { data?: { feedback?: { analysisVersion?: number; result?: string; reason?: string }; aiFeedback?: { analysisId?: string; analysisVersion?: number; solutionSelection?: string; solutionSelectionReason?: string } } };
     expect(understanding.data?.feedback?.analysisId).toBe(analysis.analysisId);
     expect(understanding.data?.feedback?.analysisVersion).toBe(analysis.analysisVersion);
     expect(understanding.data?.feedback?.result).toBe("CORRECT");
     expect(solution.data?.feedback?.result).toBe("INCORRECT");
+    expect(solution.data?.feedback?.reason).toBe("ขั้นตอนแก้ไขยังไม่ตรงกับอาการ");
     expect(solution.data?.feedback?.analysisVersion).toBe(analysis.analysisVersion);
+    expect(solution.data?.aiFeedback).toEqual(expect.objectContaining({
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      solutionSelection: "INCORRECT",
+      solutionSelectionReason: "ขั้นตอนแก้ไขยังไม่ตรงกับอาการ",
+    }));
     expect(detail?.caseUnderstandingFeedback).toBeUndefined();
     expect(detail?.solutionSelectionFeedback).toBeUndefined();
     expect(detail?.confidenceScore).toBe(73);
     expect(detail?.analyses.find((item) => item.analysisId === analysis.analysisId)?.confidence).toBe(85);
 
     const updatedResponse = await patchAiFeedback(supportCase.id, {
+      caseId: supportCase.id,
       analysisId: analysis.analysisId,
       analysisVersion: analysis.analysisVersion,
       feedbackType: "ISSUE_UNDERSTANDING",
-      result: "INCORRECT",
+      value: "INCORRECT",
+      reason: "สรุปอาการไม่ตรงกับข้อมูลล่าสุด",
     });
-    const updated = await updatedResponse.json() as { data?: { feedback?: { id?: string; result?: string } } };
+    const updated = await updatedResponse.json() as { data?: { feedback?: { id?: string; result?: string; reason?: string } } };
     expect(updatedResponse.status).toBe(200);
     expect(updated.data?.feedback?.id).toBe(understanding.data?.feedback?.id);
     expect(updated.data?.feedback?.result).toBe("INCORRECT");
+    expect(updated.data?.feedback?.reason).toBe("สรุปอาการไม่ตรงกับข้อมูลล่าสุด");
+    const correctedResponse = await patchAiFeedback(supportCase.id, {
+      caseId: supportCase.id,
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      feedbackType: "ISSUE_UNDERSTANDING",
+      value: "CORRECT",
+    });
+    const corrected = await correctedResponse.json() as { data?: { feedback?: { id?: string; result?: string; reason?: string } } };
+    expect(corrected.data?.feedback?.id).toBe(understanding.data?.feedback?.id);
+    expect(corrected.data?.feedback?.result).toBe("CORRECT");
+    expect(corrected.data?.feedback?.reason).toBeUndefined();
+    expect((await store.listAiReviewFeedback()).filter((item) => (
+      item.caseId === supportCase.id
+      && item.analysisVersion === analysis.analysisVersion
+      && item.feedbackType === "ISSUE_UNDERSTANDING"
+    ))).toHaveLength(1);
     const afterFeedback = await store.getCaseDetail(supportCase.id);
     expect(afterFeedback?.confidenceScore).toBe(73);
     expect(afterFeedback?.analyses.find((item) => item.analysisId === analysis.analysisId)?.confidence).toBe(85);

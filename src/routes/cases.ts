@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono";
 import type { CaseStatus } from "../domain/types";
 import { readJsonObject, requiredString } from "../lib/request";
 import { caseService } from "../services/case-service";
-import { saveAiReviewFeedback } from "../services/ai-review-feedback-service";
+import { listAiReviewFeedbackForAnalysis, saveAiReviewFeedback } from "../services/ai-review-feedback-service";
 import { categoryKeyOf } from "../lib/category";
 import { store } from "../repositories/store";
 import { analysisMessageIdentity } from "../repositories/case-message-normalizer";
@@ -33,11 +33,11 @@ async function caseDetailResponse(detail: Awaited<ReturnType<typeof caseService.
     .filter((analysis) => analysis.analysisType === "customer_message")
     .sort((left, right) => right.analysisVersion - left.analysisVersion || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
   const feedback = currentAnalysis
-    ? (await store.listAiReviewFeedback()).filter((item) => (
-      item.caseId === detail.id
-      && item.analysisId === currentAnalysis.analysisId
-      && item.analysisVersion === currentAnalysis.analysisVersion
-    ))
+    ? await listAiReviewFeedbackForAnalysis({
+      caseId: detail.id,
+      analysisId: currentAnalysis.analysisId,
+      analysisVersion: currentAnalysis.analysisVersion,
+    })
     : [];
   const rawJson = currentAnalysis?.rawJson;
   const sourceMessageIds = rawJson && typeof rawJson === "object" && !Array.isArray(rawJson)
@@ -64,8 +64,12 @@ async function caseDetailResponse(detail: Awaited<ReturnType<typeof caseService.
       }
       : undefined,
     aiFeedback: {
+      analysisId: currentAnalysis?.analysisId,
+      analysisVersion: currentAnalysis?.analysisVersion,
       issueUnderstanding: feedback.find((item) => item.feedbackType === "ISSUE_UNDERSTANDING")?.result,
+      issueUnderstandingReason: feedback.find((item) => item.feedbackType === "ISSUE_UNDERSTANDING")?.reason,
       solutionSelection: feedback.find((item) => item.feedbackType === "SOLUTION_SELECTION")?.result,
+      solutionSelectionReason: feedback.find((item) => item.feedbackType === "SOLUTION_SELECTION")?.reason,
     },
   };
 }
@@ -253,6 +257,8 @@ const legacyAiFeedbackRoute = async (c: Context) => {
 
 caseRoutes.patch("/:id/ai-feedback", async (c) => {
   const body = await readJsonObject(c);
+  const caseId = c.req.param("id");
+  const bodyCaseId = typeof body.caseId === "string" && body.caseId.trim() ? body.caseId.trim() : undefined;
   const analysisId = typeof body.analysisId === "string" && body.analysisId.trim()
     ? body.analysisId.trim()
     : undefined;
@@ -262,14 +268,17 @@ caseRoutes.patch("/:id/ai-feedback", async (c) => {
   const feedbackType = body.feedbackType === "ISSUE_UNDERSTANDING" || body.feedbackType === "SOLUTION_SELECTION"
     ? body.feedbackType
     : undefined;
-  const result = body.result === "CORRECT" || body.result === "INCORRECT" ? body.result : undefined;
+  const value = body.value === "CORRECT" || body.value === "INCORRECT"
+    ? body.value
+    : body.result === "CORRECT" || body.result === "INCORRECT"
+      ? body.result
+      : undefined;
   const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : undefined;
 
-  if (!analysisVersion || !feedbackType || !result) {
-    return c.json({ error: "invalid_ai_feedback", message: "ต้องระบุ analysisVersion, feedbackType และ result ให้ถูกต้อง" }, 400);
+  if ((bodyCaseId && bodyCaseId !== caseId) || !analysisId || !analysisVersion || !feedbackType || !value) {
+    return c.json({ error: "invalid_ai_feedback", message: "ต้องระบุ caseId, analysisId, analysisVersion, feedbackType และ value ให้ถูกต้อง" }, 400);
   }
 
-  const caseId = c.req.param("id");
   if (!await caseService.getCase(caseId)) {
     return c.json({ error: "case_not_found", message: "ไม่พบเคส" }, 404);
   }
@@ -280,7 +289,7 @@ caseRoutes.patch("/:id/ai-feedback", async (c) => {
       analysisId,
       analysisVersion,
       feedbackType,
-      result,
+      result: value,
       reviewSource: "CASE_DETAIL",
       reason,
       reviewedBy: "TECH",
