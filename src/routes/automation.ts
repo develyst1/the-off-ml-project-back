@@ -3,6 +3,9 @@ import { readJsonObject } from "../lib/request";
 import { store } from "../repositories/store";
 import { caseService } from "../services/case-service";
 import { isSolutionReadyForAutoAnswer } from "../services/auto-answer-guardrail";
+import { getLearnedReliabilityForAutomation } from "../services/automation-settings";
+import { LEARNED_RELIABILITY_MINIMUM_SAMPLE, LEARNED_RELIABILITY_THRESHOLD } from "../services/learned-reliability-service";
+import type { AutomationSettings } from "../domain/types";
 
 const LOG_PAGE_SIZES = new Set([10, 20, 50, 100]);
 
@@ -29,7 +32,25 @@ function matchesLogStatus(actualStatus: string | undefined, requestedStatus: str
 
 export const automationRoutes = new Hono();
 
-automationRoutes.get("/settings", async (c) => c.json({ data: await store.getAutomationSettings() }));
+async function automationSettingsResponse(settings: AutomationSettings) {
+  const learnedGate = await getLearnedReliabilityForAutomation();
+
+  return {
+    ...settings,
+    learnedReliability: learnedGate.reliability
+      ? { threshold: LEARNED_RELIABILITY_THRESHOLD, minimumSample: LEARNED_RELIABILITY_MINIMUM_SAMPLE, ...learnedGate.reliability }
+      : null,
+    learnedReliabilityDecision: {
+      allowed: learnedGate.allowed,
+      reason: learnedGate.reason,
+    },
+  };
+}
+
+automationRoutes.get("/settings", async (c) => {
+  const settings = await store.getAutomationSettings();
+  return c.json({ data: await automationSettingsResponse(settings) });
+});
 
 automationRoutes.patch("/settings", async (c) => {
   const body = await readJsonObject(c);
@@ -42,7 +63,8 @@ automationRoutes.patch("/settings", async (c) => {
       ? { enabled: true, emergencyDisabledAt: undefined }
       : { enabled: false };
 
-  return c.json({ data: await store.updateAutomationSettings(patch) });
+  const updated = await store.updateAutomationSettings(patch);
+  return c.json({ data: await automationSettingsResponse(updated) });
 });
 
 automationRoutes.get("/solutions", async (c) => {

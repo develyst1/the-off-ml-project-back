@@ -2,6 +2,7 @@ import type { AiReviewFeedback } from "../domain/types";
 import * as storeModule from "../repositories/store";
 
 export const LEARNED_RELIABILITY_MINIMUM_SAMPLE = 5;
+export const LEARNED_RELIABILITY_THRESHOLD = 0.9;
 
 export type LearnedReliabilityStatus = "NO_DATA" | "INSUFFICIENT_DATA" | "READY";
 
@@ -16,6 +17,19 @@ export type LearnedReliabilityDimension = {
 export type LearnedReliability = {
   issueUnderstanding: LearnedReliabilityDimension;
   solutionSelection: LearnedReliabilityDimension;
+};
+
+export type LearnedReliabilityGateReason =
+  | "LEARNED_RELIABILITY_NO_DATA"
+  | "LEARNED_RELIABILITY_INSUFFICIENT_DATA"
+  | "UNDERSTANDING_RELIABILITY_BELOW_THRESHOLD"
+  | "SOLUTION_RELIABILITY_BELOW_THRESHOLD"
+  | "LEARNED_RELIABILITY_UNAVAILABLE";
+
+export type LearnedReliabilityGate = {
+  allowed: boolean;
+  reason?: LearnedReliabilityGateReason;
+  reliability: LearnedReliability | null;
 };
 
 function dimensionFromFeedback(feedback: AiReviewFeedback[]): LearnedReliabilityDimension {
@@ -45,4 +59,37 @@ export async function getLearnedReliability(options: { excludeCaseId?: string } 
     issueUnderstanding: dimensionFromFeedback(byType("ISSUE_UNDERSTANDING")),
     solutionSelection: dimensionFromFeedback(byType("SOLUTION_SELECTION")),
   };
+}
+
+export function evaluateLearnedReliabilitySnapshot(reliability: LearnedReliability): LearnedReliabilityGate {
+  const dimensions = [reliability.issueUnderstanding, reliability.solutionSelection];
+
+  if (dimensions.some((dimension) => dimension.status === "NO_DATA")) {
+    return { allowed: false, reason: "LEARNED_RELIABILITY_NO_DATA", reliability };
+  }
+  if (dimensions.some((dimension) => dimension.status === "INSUFFICIENT_DATA")) {
+    return { allowed: false, reason: "LEARNED_RELIABILITY_INSUFFICIENT_DATA", reliability };
+  }
+  if (reliability.issueUnderstanding.status !== "READY"
+    || reliability.issueUnderstanding.reliability === null
+    || !Number.isFinite(reliability.issueUnderstanding.reliability)
+    || reliability.issueUnderstanding.reliability < LEARNED_RELIABILITY_THRESHOLD) {
+    return { allowed: false, reason: "UNDERSTANDING_RELIABILITY_BELOW_THRESHOLD", reliability };
+  }
+  if (reliability.solutionSelection.status !== "READY"
+    || reliability.solutionSelection.reliability === null
+    || !Number.isFinite(reliability.solutionSelection.reliability)
+    || reliability.solutionSelection.reliability < LEARNED_RELIABILITY_THRESHOLD) {
+    return { allowed: false, reason: "SOLUTION_RELIABILITY_BELOW_THRESHOLD", reliability };
+  }
+
+  return { allowed: true, reliability };
+}
+
+export async function evaluateLearnedReliabilityGate(options: { excludeCaseId?: string } = {}): Promise<LearnedReliabilityGate> {
+  try {
+    return evaluateLearnedReliabilitySnapshot(await getLearnedReliability(options));
+  } catch {
+    return { allowed: false, reason: "LEARNED_RELIABILITY_UNAVAILABLE", reliability: null };
+  }
 }

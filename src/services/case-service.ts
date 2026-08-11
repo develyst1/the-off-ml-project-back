@@ -1166,10 +1166,10 @@ export const caseService = {
       .reverse()
       .find((message) => message.senderType === "BOT" && message.messageType === "REQUEST_MORE_INFO")?.originalText;
     const approvedSolution = (await Promise.all(
-      detail.solutions
-        .slice()
-        .reverse()
-        .map(async (solution) => ({ solution, allowed: await isAutoAnswerAllowedForSolution(detail.confidenceScore, solution) })),
+        detail.solutions
+          .slice()
+          .reverse()
+        .map(async (solution) => ({ solution, allowed: await isAutoAnswerAllowedForSolution(detail.confidenceScore, solution, { caseId: detail.id }) })),
     )).find((item) => item.allowed)?.solution;
     const solutionRelevance = approvedSolution
       ? await aiCenterClient.evaluateAutoAnswerSolutionRelevance({

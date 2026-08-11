@@ -105,7 +105,7 @@ const INTENT_CONFIDENCE_THRESHOLD = 0.7;
 const SHORT_FOLLOW_UP_RELATION_CONFIDENCE_THRESHOLD = 0.85;
 async function hasAutoAnswerReadySolution(caseDetail: CaseDetail) {
   const readiness = await Promise.all(
-    caseDetail.solutions.map((solution) => isAutoAnswerAllowedForSolution(caseDetail.confidenceScore, solution)),
+    caseDetail.solutions.map((solution) => isAutoAnswerAllowedForSolution(caseDetail.confidenceScore, solution, { caseId: caseDetail.id })),
   );
   return readiness.some(Boolean);
 }

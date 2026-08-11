@@ -10,7 +10,7 @@ const delegatedStore = new Proxy({} as InMemoryStore, {
 });
 mock.module("../repositories/store", () => ({ store: delegatedStore }));
 
-const { getLearnedReliability } = await import("./learned-reliability-service");
+const { evaluateLearnedReliabilityGate, evaluateLearnedReliabilitySnapshot, getLearnedReliability } = await import("./learned-reliability-service");
 
 type FeedbackType = "ISSUE_UNDERSTANDING" | "SOLUTION_SELECTION";
 type FeedbackResult = "CORRECT" | "INCORRECT";
@@ -134,4 +134,82 @@ test("preserves confidenceScore while calculating reliability", async () => {
   const after = (await activeStore.getCaseDetail(fixture.supportCase.id))?.confidenceScore;
   expect(before).toBe(85);
   expect(after).toBe(85);
+});
+
+function readyDimension(reliability: number) {
+  return {
+    correctCount: Math.round(reliability * 10),
+    incorrectCount: 10 - Math.round(reliability * 10),
+    sampleCount: 10,
+    reliability,
+    status: "READY" as const,
+  };
+}
+
+test("allows the learned gate only when both dimensions are at least 90%", () => {
+  expect(evaluateLearnedReliabilitySnapshot({
+    issueUnderstanding: readyDimension(0.9),
+    solutionSelection: readyDimension(0.9),
+  }).allowed).toBe(true);
+  expect(evaluateLearnedReliabilitySnapshot({
+    issueUnderstanding: readyDimension(1),
+    solutionSelection: readyDimension(0.9),
+  }).allowed).toBe(true);
+  expect(evaluateLearnedReliabilitySnapshot({
+    issueUnderstanding: readyDimension(0.89),
+    solutionSelection: readyDimension(1),
+  }).reason).toBe("UNDERSTANDING_RELIABILITY_BELOW_THRESHOLD");
+  expect(evaluateLearnedReliabilitySnapshot({
+    issueUnderstanding: readyDimension(1),
+    solutionSelection: readyDimension(0.89),
+  }).reason).toBe("SOLUTION_RELIABILITY_BELOW_THRESHOLD");
+});
+
+test("blocks NO_DATA, INSUFFICIENT_DATA, and invalid reliability states", () => {
+  const noData = { correctCount: 0, incorrectCount: 0, sampleCount: 0, reliability: null, status: "NO_DATA" as const };
+  const insufficient = { correctCount: 4, incorrectCount: 0, sampleCount: 4, reliability: null, status: "INSUFFICIENT_DATA" as const };
+  expect(evaluateLearnedReliabilitySnapshot({ issueUnderstanding: noData, solutionSelection: readyDimension(1) }).reason).toBe("LEARNED_RELIABILITY_NO_DATA");
+  expect(evaluateLearnedReliabilitySnapshot({ issueUnderstanding: readyDimension(1), solutionSelection: noData }).reason).toBe("LEARNED_RELIABILITY_NO_DATA");
+  expect(evaluateLearnedReliabilitySnapshot({ issueUnderstanding: insufficient, solutionSelection: readyDimension(1) }).reason).toBe("LEARNED_RELIABILITY_INSUFFICIENT_DATA");
+  expect(evaluateLearnedReliabilitySnapshot({ issueUnderstanding: readyDimension(1), solutionSelection: insufficient }).reason).toBe("LEARNED_RELIABILITY_INSUFFICIENT_DATA");
+  expect(evaluateLearnedReliabilitySnapshot({
+    issueUnderstanding: { ...readyDimension(Number.NaN), reliability: Number.NaN },
+    solutionSelection: readyDimension(1),
+  }).reason).toBe("UNDERSTANDING_RELIABILITY_BELOW_THRESHOLD");
+});
+
+test("fails closed when the reliability query throws", async () => {
+  resetStore();
+  const original = activeStore.listAiReviewFeedbackForReliability;
+  activeStore.listAiReviewFeedbackForReliability = async () => {
+    throw new Error("database unavailable");
+  };
+  const result = await evaluateLearnedReliabilityGate();
+  activeStore.listAiReviewFeedbackForReliability = original;
+  expect(result).toEqual({ allowed: false, reason: "LEARNED_RELIABILITY_UNAVAILABLE", reliability: null });
+});
+
+test("correct to incorrect changes the gate without mutating the model confidence", async () => {
+  resetStore();
+  const dimensions = ["ISSUE_UNDERSTANDING", "SOLUTION_SELECTION"] as const;
+  const fixtures = [];
+  for (const type of dimensions) {
+    for (let index = 0; index < 5; index += 1) {
+      fixtures.push(await addFeedback(type, "CORRECT", `gate-transition-${type}-${index}`));
+    }
+  }
+  expect((await evaluateLearnedReliabilityGate()).allowed).toBe(true);
+  const target = fixtures[0];
+  await activeStore.upsertAiReviewFeedback({
+    caseId: target.supportCase.id,
+    analysisId: target.analysis.analysisId,
+    analysisVersion: target.analysis.analysisVersion,
+    feedbackType: "ISSUE_UNDERSTANDING",
+    result: "INCORRECT",
+    reviewSource: "CASE_DETAIL",
+  });
+  const after = await evaluateLearnedReliabilityGate({ excludeCaseId: "case-that-is-not-current" });
+  expect(after.allowed).toBe(false);
+  expect(after.reason).toBe("UNDERSTANDING_RELIABILITY_BELOW_THRESHOLD");
+  expect((await activeStore.getCaseDetail(target.supportCase.id))?.confidenceScore).toBe(85);
 });
