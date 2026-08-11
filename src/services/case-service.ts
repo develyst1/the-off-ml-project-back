@@ -1268,11 +1268,9 @@ export const caseService = {
       reason: shouldNotifyTech ? "ACTIONABLE_CUSTOMER_UPDATE" : "ACKNOWLEDGEMENT_ONLY",
     });
 
-    let teamsNotified = false;
-    if (shouldNotifyTech) {
+    if (shouldNotifyTech && !canAutoAnswer) {
       try {
         await teamsClient.notifyCase(updatedDetail);
-        teamsNotified = true;
         await store.createMessage({
           caseId: input.caseId,
           direction: "outbound_tech",
@@ -1299,11 +1297,20 @@ export const caseService = {
       }
     }
 
+    const autoAnswerAnalysis = [...updatedDetail.analyses]
+      .filter((item) => item.analysisType === "customer_message")
+      .sort((left, right) => right.analysisVersion - left.analysisVersion)[0];
+
     return {
       detail: await store.getCaseDetail(input.caseId),
       continuationReply,
       autoAnswer: canAutoAnswer && approvedSolution
-        ? { solutionId: approvedSolution.id, teamsNotified }
+        ? {
+            solutionId: approvedSolution.id,
+            sourceMessageId: message.id,
+            analysisId: autoAnswerAnalysis?.analysisId,
+            analysisVersion: autoAnswerAnalysis?.analysisVersion,
+          }
         : undefined,
     };
   },

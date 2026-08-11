@@ -3,6 +3,10 @@ import { InMemoryStore } from "../repositories/in-memory-store";
 
 const store = new InMemoryStore();
 const lineReplies: string[] = [];
+const autoAnswerTeamsPayloads: Array<Record<string, unknown>> = [];
+const autoAnswerDeliveryEvents: string[] = [];
+let lineReplyShouldFail = false;
+let autoAnswerTeamsShouldFail = false;
 let classifierShouldFail = false;
 let initialReplyComposerCalls = 0;
 let caseRelationResult = { related: true, confidence: 100, reason: "pending question" };
@@ -13,12 +17,27 @@ mock.module("./line-client", () => ({
   lineClient: {
     getProfile: async () => undefined,
     reply: async () => ({ delivered: true }),
-    replyToToken: async (input: { text: string }) => { lineReplies.push(input.text); return { delivered: true }; },
+    replyToToken: async (input: { text: string }) => {
+      if (lineReplyShouldFail) throw new Error("LINE reply failed");
+      lineReplies.push(input.text);
+      autoAnswerDeliveryEvents.push("line");
+      return { delivered: true };
+    },
   },
 }));
 mock.module("./teams-client", () => ({
   teamsClient: {
     notifyCase: async () => ({ delivered: true }),
+    notifyAutoAnswer: async (input: Record<string, unknown>) => {
+      const detail = await store.getCaseDetail(input.caseId as string);
+      autoAnswerTeamsPayloads.push({
+        ...input,
+        auditExistsAtNotify: detail?.messages.some((message) => message.id === input.caseMessageId && message.messageType === "AUTO_ANSWER"),
+      });
+      autoAnswerDeliveryEvents.push("teams");
+      if (autoAnswerTeamsShouldFail) throw new Error("Teams delivery failed");
+      return { delivered: true };
+    },
     notifyOutOfScope: async () => ({ delivered: true }),
   },
 }));
@@ -697,5 +716,239 @@ describe("LINE contextual troubleshooting outcomes", () => {
     expect(detail?.messages.some((message) => message.originalText === "ยังไม่หาย")).toBe(false);
     expect(incomingMessage?.caseId).toBeUndefined();
     expect(refreshedCustomer.pendingCaseSelection?.mode).toBe("choose");
+  });
+});
+
+async function seedReadyReliability(label: string) {
+  for (const feedbackType of ["ISSUE_UNDERSTANDING", "SOLUTION_SELECTION"] as const) {
+    for (let index = 0; index < 5; index += 1) {
+      const caseId = `${label}-${feedbackType}-${index}`;
+      const analysis = await store.createAnalysis({
+        caseId,
+        analysisType: "customer_message",
+        confidence: 99,
+        rawJson: {},
+      });
+      await store.upsertAiReviewFeedback({
+        caseId,
+        analysisId: analysis.analysisId,
+        analysisVersion: analysis.analysisVersion,
+        feedbackType,
+        result: "CORRECT",
+        reviewSource: "CASE_DETAIL",
+      });
+    }
+  }
+}
+
+async function createAutoAnswerCase(confidenceScore = 99) {
+  sequence += 1;
+  const lineUserId = `U-auto-answer-${sequence}`;
+  const customer = await store.upsertCustomer({ lineUserId, displayName: `Auto customer ${sequence}` });
+  const supportCase = await store.createCase({
+    customerId: customer.id,
+    status: "assigned",
+    title: "Approved auto-answer case",
+    confidenceScore,
+  });
+  const initialMessage = await store.createMessage({
+    caseId: supportCase.id,
+    direction: "inbound_customer",
+    channel: "line",
+    originalText: "The application cannot connect",
+    senderType: "CUSTOMER",
+    messageType: "CUSTOMER_MESSAGE",
+  });
+  const originalAnalysis = await store.createAnalysis({
+    caseId: supportCase.id,
+    messageId: initialMessage.id,
+    analysisType: "customer_message",
+    summary: "Connection problem",
+    category: "NETWORK_CONNECTION",
+    confidence: confidenceScore,
+    rawJson: {},
+  });
+  const solution = await store.createSolution({
+    caseId: supportCase.id,
+    rawReplyText: "Restart the application and reconnect",
+    solutionSteps: ["Restart the application", "Reconnect to the service"],
+    rewrittenCustomerText: "Please restart the application and reconnect.",
+    confidence: 99,
+    validatedByTeam: true,
+    validatedAt: new Date().toISOString(),
+    validatedBy: "test",
+  });
+  await store.setActiveCase(customer.id, supportCase.id);
+  await store.setConversationState(customer.id, "ACTIVE_CASE_CONVERSATION");
+  return { customer, lineUserId, supportCase, solution, originalAnalysis };
+}
+
+async function sendAutoAnswerFollowup(input: { lineUserId: string; caseId: string; messageId: string }) {
+  forcedIntentClassification = {
+    intent: "FOLLOW_UP_EXISTING_CASE",
+    shouldCreateCase: false,
+    shouldAppendToCase: true,
+    nextAction: "CONTINUE_CASE",
+    targetCaseNumber: null,
+    matchedActiveCaseId: input.caseId,
+    confidence: 1,
+    reason: "test follow-up",
+  };
+  try {
+    return await sendReply({
+      lineUserId: input.lineUserId,
+      messageId: input.messageId,
+      text: "The connection problem is still happening after the last check",
+    });
+  } finally {
+    forcedIntentClassification = undefined;
+  }
+}
+
+describe("Phase 13 auto-answer Teams audit", () => {
+  test("records one delivered LINE auto-answer, notifies Teams, and preserves identities and confidence", async () => {
+    await seedReadyReliability(`ready-${sequence}`);
+    await store.updateAutomationSettings({ enabled: true, emergencyDisabledAt: undefined });
+    const setup = await createAutoAnswerCase();
+    const lineCountBefore = lineReplies.length;
+    const teamsCountBefore = autoAnswerTeamsPayloads.length;
+    const eventCountBefore = autoAnswerDeliveryEvents.length;
+
+    await sendAutoAnswerFollowup({
+      lineUserId: setup.lineUserId,
+      caseId: setup.supportCase.id,
+      messageId: `auto-success-${sequence}`,
+    });
+
+    const detail = await store.getCaseDetail(setup.supportCase.id);
+    const audits = detail?.messages.filter((message) => message.messageType === "AUTO_ANSWER") ?? [];
+    const audit = audits[0];
+    const payload = autoAnswerTeamsPayloads.at(-1);
+    expect(lineReplies.length - lineCountBefore).toBe(1);
+    expect(autoAnswerTeamsPayloads.length - teamsCountBefore).toBe(1);
+    expect(audits).toHaveLength(1);
+    expect(audit?.metadata).toMatchObject({
+      autoAnswerSolutionId: setup.solution.id,
+      autoAnswerTeamsNotified: true,
+      autoAnswerTeamsNotificationStatus: "SENT",
+    });
+    expect(payload).toMatchObject({
+      caseId: setup.supportCase.id,
+      caseMessageId: audit?.id,
+      solutionId: setup.solution.id,
+      answerText: audit?.originalText,
+      analysisId: audit?.metadata?.autoAnswerAnalysisId,
+      analysisVersion: audit?.metadata?.autoAnswerAnalysisVersion,
+      auditExistsAtNotify: true,
+    });
+    expect(autoAnswerDeliveryEvents.slice(eventCountBefore)).toEqual(["line", "teams"]);
+    expect(detail?.analyses.find((analysis) => analysis.analysisId === setup.originalAnalysis.analysisId)?.confidence).toBe(99);
+
+    const { recordAutoAnswerAndNotify } = await import("./auto-answer-notification-service");
+    await recordAutoAnswerAndNotify({
+      caseId: setup.supportCase.id,
+      answerText: audit?.originalText ?? "",
+      solutionId: setup.solution.id,
+      analysisId: audit?.metadata?.autoAnswerAnalysisId as string,
+      analysisVersion: audit?.metadata?.autoAnswerAnalysisVersion as number,
+      sourceMessageId: audit?.metadata?.autoAnswerSourceMessageId as string,
+      sentAt: audit?.sentAt ?? audit?.createdAt ?? new Date().toISOString(),
+    });
+    const afterRetry = await store.getCaseDetail(setup.supportCase.id);
+    expect(afterRetry?.messages.filter((message) => message.messageType === "AUTO_ANSWER")).toHaveLength(1);
+    expect(autoAnswerTeamsPayloads.length - teamsCountBefore).toBe(1);
+    await store.updateAutomationSettings({ enabled: false });
+  });
+
+  test("does not create an audit or notify API-016 when the existing guardrail blocks", async () => {
+    await seedReadyReliability(`blocked-${sequence}`);
+    await store.updateAutomationSettings({ enabled: true, emergencyDisabledAt: undefined });
+    const setup = await createAutoAnswerCase(97);
+    const teamsCountBefore = autoAnswerTeamsPayloads.length;
+
+    await sendAutoAnswerFollowup({
+      lineUserId: setup.lineUserId,
+      caseId: setup.supportCase.id,
+      messageId: `auto-blocked-${sequence}`,
+    });
+
+    const detail = await store.getCaseDetail(setup.supportCase.id);
+    expect(detail?.messages.some((message) => message.messageType === "AUTO_ANSWER")).toBe(false);
+    expect(autoAnswerTeamsPayloads.length).toBe(teamsCountBefore);
+    await store.updateAutomationSettings({ enabled: false });
+  });
+
+  test("does not create a success audit or call Teams when LINE fails", async () => {
+    await seedReadyReliability(`line-fail-${sequence}`);
+    await store.updateAutomationSettings({ enabled: true, emergencyDisabledAt: undefined });
+    const setup = await createAutoAnswerCase();
+    const teamsCountBefore = autoAnswerTeamsPayloads.length;
+    lineReplyShouldFail = true;
+    try {
+      await expect(sendAutoAnswerFollowup({
+        lineUserId: setup.lineUserId,
+        caseId: setup.supportCase.id,
+        messageId: `auto-line-fail-${sequence}`,
+      })).rejects.toThrow("LINE reply failed");
+    } finally {
+      lineReplyShouldFail = false;
+    }
+
+    const detail = await store.getCaseDetail(setup.supportCase.id);
+    expect(detail?.messages.some((message) => message.messageType === "AUTO_ANSWER")).toBe(false);
+    expect(autoAnswerTeamsPayloads.length).toBe(teamsCountBefore);
+    await store.updateAutomationSettings({ enabled: false });
+  });
+
+  test("keeps one audit with Teams false when Teams fails after LINE success", async () => {
+    await seedReadyReliability(`teams-fail-${sequence}`);
+    await store.updateAutomationSettings({ enabled: true, emergencyDisabledAt: undefined });
+    const setup = await createAutoAnswerCase();
+    const lineCountBefore = lineReplies.length;
+    autoAnswerTeamsShouldFail = true;
+    try {
+      await sendAutoAnswerFollowup({
+        lineUserId: setup.lineUserId,
+        caseId: setup.supportCase.id,
+        messageId: `auto-teams-fail-${sequence}`,
+      });
+    } finally {
+      autoAnswerTeamsShouldFail = false;
+    }
+
+    const detail = await store.getCaseDetail(setup.supportCase.id);
+    const audits = detail?.messages.filter((message) => message.messageType === "AUTO_ANSWER") ?? [];
+    expect(lineReplies.length - lineCountBefore).toBe(1);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.metadata).toMatchObject({
+      autoAnswerTeamsNotified: false,
+      autoAnswerTeamsNotificationStatus: "FAILED",
+      autoAnswerTeamsNotificationErrorCode: "TEAMS_DELIVERY_FAILED",
+    });
+    await store.updateAutomationSettings({ enabled: false });
+  });
+
+  test("fails closed on learned reliability and never treats a manual Tech reply as auto-answer", async () => {
+    await store.updateAutomationSettings({ enabled: true, emergencyDisabledAt: undefined });
+    const setup = await createAutoAnswerCase();
+    const originalReliabilityReader = store.listAiReviewFeedbackForReliability.bind(store);
+    store.listAiReviewFeedbackForReliability = async () => [];
+    const teamsCountBefore = autoAnswerTeamsPayloads.length;
+    try {
+      await sendAutoAnswerFollowup({
+        lineUserId: setup.lineUserId,
+        caseId: setup.supportCase.id,
+        messageId: `auto-reliability-blocked-${sequence}`,
+      });
+    } finally {
+      store.listAiReviewFeedbackForReliability = originalReliabilityReader;
+    }
+    await caseService.sendConsoleReply({ caseId: setup.supportCase.id, text: "Manual Tech reply" });
+
+    const detail = await store.getCaseDetail(setup.supportCase.id);
+    expect(detail?.messages.some((message) => message.messageType === "AUTO_ANSWER")).toBe(false);
+    expect(autoAnswerTeamsPayloads.length).toBe(teamsCountBefore);
+    expect(detail?.messages.some((message) => message.senderType === "TECH" && message.originalText.includes("Manual Tech reply"))).toBe(true);
+    await store.updateAutomationSettings({ enabled: false });
   });
 });

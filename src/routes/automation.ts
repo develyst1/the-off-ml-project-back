@@ -3,7 +3,7 @@ import { readJsonObject } from "../lib/request";
 import { store } from "../repositories/store";
 import { caseService } from "../services/case-service";
 import { isSolutionReadyForAutoAnswer } from "../services/auto-answer-guardrail";
-import { getLearnedReliabilityForAutomation } from "../services/automation-settings";
+import { emergencyDisableAutoAnswer, getLearnedReliabilityForAutomation } from "../services/automation-settings";
 import { LEARNED_RELIABILITY_MINIMUM_SAMPLE, LEARNED_RELIABILITY_THRESHOLD } from "../services/learned-reliability-service";
 import type { AutomationSettings } from "../domain/types";
 
@@ -57,13 +57,13 @@ automationRoutes.patch("/settings", async (c) => {
   const current = await store.getAutomationSettings();
   const enabled = typeof body.enabled === "boolean" ? body.enabled : current.enabled;
   const emergencyDisable = body.emergencyDisable === true;
-  const patch = emergencyDisable
-    ? { enabled: false, emergencyDisabledAt: new Date().toISOString() }
-    : enabled
+  const patch = enabled
       ? { enabled: true, emergencyDisabledAt: undefined }
       : { enabled: false };
 
-  const updated = await store.updateAutomationSettings(patch);
+  const updated = emergencyDisable
+    ? (await emergencyDisableAutoAnswer()).settings
+    : await store.updateAutomationSettings(patch);
   return c.json({ data: await automationSettingsResponse(updated) });
 });
 

@@ -2,10 +2,11 @@ import { Hono, type Context } from "hono";
 import { env } from "../config/env";
 import { readJsonObject, optionalString, requiredString } from "../lib/request";
 import { caseService } from "../services/case-service";
+import { emergencyDisableAutoAnswer } from "../services/automation-settings";
 
 export const teamsWebhookRoutes = new Hono();
 
-type TeamsAction = "REPLY_CUSTOMER" | "REQUEST_MORE_INFO" | "ACCEPT_CASE" | "CLOSE_CASE";
+type TeamsAction = "REPLY_CUSTOMER" | "REQUEST_MORE_INFO" | "ACCEPT_CASE" | "CLOSE_CASE" | "EMERGENCY_DISABLE_AUTO_ANSWER";
 
 function normalizeAction(value?: string): TeamsAction | undefined {
   const normalized = value?.trim().toUpperCase().replace(/-/g, "_");
@@ -13,6 +14,7 @@ function normalizeAction(value?: string): TeamsAction | undefined {
   if (normalized === "REQUEST_INFO" || normalized === "REQUEST_MORE_INFO") return "REQUEST_MORE_INFO";
   if (normalized === "ACCEPT" || normalized === "ACCEPT_CASE") return "ACCEPT_CASE";
   if (normalized === "CLOSE" || normalized === "CLOSE_CASE") return "CLOSE_CASE";
+  if (normalized === "EMERGENCY_DISABLE" || normalized === "EMERGENCY_DISABLE_AUTO_ANSWER") return "EMERGENCY_DISABLE_AUTO_ANSWER";
   return undefined;
 }
 
@@ -36,6 +38,7 @@ async function handleTeamsAction(c: Context) {
   const replyText = optionalString(body, "replyText");
   const additionalInfoRequest = optionalString(body, "additionalInfoRequest");
   const responderName = optionalString(body, "responderName");
+  const caseMessageId = optionalString(body, "caseMessageId");
   const requestId = optionalString(body, "requestId")
     ?? c.req.header("x-idempotency-key")
     ?? c.req.header("x-ms-workflow-run-id")
@@ -47,6 +50,18 @@ async function handleTeamsAction(c: Context) {
   const detail = await caseService.getCase(caseId);
   if (!detail) return c.json({ success: false, error: "case_not_found" }, 404);
   if (caseNumber && caseNumber !== detail.caseNumber) return c.json({ success: false, error: "case_number_mismatch" }, 400);
+
+  if (action === "EMERGENCY_DISABLE_AUTO_ANSWER") {
+    if (!caseMessageId) return c.json({ success: false, error: "caseMessageId_is_required" }, 400);
+    const audit = detail.messages.find((message) => message.id === caseMessageId && message.messageType === "AUTO_ANSWER");
+    if (!audit) return c.json({ success: false, error: "auto_answer_audit_not_found" }, 404);
+    const result = await emergencyDisableAutoAnswer();
+    return c.json({
+      success: true,
+      duplicate: result.duplicate,
+      message: result.duplicate ? "Auto-answer was already emergency disabled" : "Auto-answer disabled",
+    });
+  }
 
   console.info({
     event: "teams_action_received",

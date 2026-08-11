@@ -27,6 +27,18 @@ const cases = [
           autoAnswerTeamsNotified: true,
         },
       },
+      {
+        id: "auto-answer-teams-failed",
+        createdAt: "2026-07-22T08:02:00.000Z",
+        originalText: "Teams failed after this LINE auto-answer was sent",
+        messageType: "AUTO_ANSWER",
+        deliveryStatus: "SENT",
+        metadata: {
+          autoAnswerSolutionId: "solution-auto",
+          autoAnswerTeamsNotified: false,
+          autoAnswerTeamsNotificationStatus: "FAILED",
+        },
+      },
     ],
   },
 ];
@@ -142,11 +154,15 @@ describe("automation logs", () => {
     };
 
     expect(response.status).toBe(200);
-    expect(body.data.totalItems).toBe(1);
-    expect(body.data.items[0]).toMatchObject({
+    expect(body.data.totalItems).toBe(2);
+    expect(body.data.items.find((item) => item.id === "auto-answer")).toMatchObject({
       id: "auto-answer",
       solutionText: "ออกจากระบบ\nเข้าสู่ระบบใหม่",
       teamsNotified: true,
+    });
+    expect(body.data.items.find((item) => item.id === "auto-answer-teams-failed")).toMatchObject({
+      id: "auto-answer-teams-failed",
+      teamsNotified: false,
     });
   });
 });

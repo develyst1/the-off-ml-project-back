@@ -54,6 +54,18 @@ export async function getLearnedReliabilityForAutomation() {
   return evaluateLearnedReliabilityGate();
 }
 
+export async function emergencyDisableAutoAnswer() {
+  const current = await store.getAutomationSettings();
+  if (!current.enabled && current.emergencyDisabledAt) {
+    return { settings: current, duplicate: true };
+  }
+  const settings = await store.updateAutomationSettings({
+    enabled: false,
+    emergencyDisabledAt: new Date().toISOString(),
+  });
+  return { settings, duplicate: false };
+}
+
 /* Keep the existing relevance guardrail available for callers that use it directly. */
 export async function isAutoAnswerAllowedForRelevance(relevance: { relevant: boolean; confidence: number }) {
   try {

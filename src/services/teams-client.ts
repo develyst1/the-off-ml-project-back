@@ -153,6 +153,76 @@ export const teamsClient = {
     return { delivered: true };
   },
 
+  async notifyAutoAnswer(input: {
+    caseId: string;
+    caseNumber: string;
+    caseMessageId: string;
+    customerName: string;
+    lineUserId: string;
+    answerText: string;
+    solutionId: string;
+    solutionText: string;
+    analysisId?: string;
+    analysisVersion?: number;
+    sentAt: string;
+    lineDeliveryStatus: string;
+  }): Promise<{ delivered: boolean }> {
+    const card = {
+      $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
+      type: "AdaptiveCard",
+      version: "1.2",
+      body: [
+        { type: "TextBlock", size: "Large", weight: "Bolder", text: `Auto-answer sent - ${input.caseNumber}` },
+        { type: "FactSet", facts: [
+          { title: "Customer", value: input.customerName },
+          { title: "LINE user", value: input.lineUserId },
+          { title: "Case", value: `${input.caseNumber} (${input.caseId})` },
+          { title: "Audit message", value: input.caseMessageId },
+          { title: "Solution", value: input.solutionId },
+          { title: "Analysis", value: input.analysisId ? `${input.analysisId} v${input.analysisVersion ?? "-"}` : "-" },
+          { title: "LINE status", value: input.lineDeliveryStatus },
+          { title: "Sent at", value: input.sentAt },
+        ] },
+        { type: "TextBlock", weight: "Bolder", text: "Auto-answer" },
+        { type: "TextBlock", wrap: true, text: input.answerText },
+        { type: "TextBlock", weight: "Bolder", text: "Referenced solution" },
+        { type: "TextBlock", wrap: true, text: input.solutionText },
+      ],
+      actions: [
+        {
+          type: "Action.Submit",
+          title: "Emergency disable auto-answer",
+          data: {
+            action: "EMERGENCY_DISABLE_AUTO_ANSWER",
+            caseId: input.caseId,
+            caseNumber: input.caseNumber,
+            caseMessageId: input.caseMessageId,
+          },
+        },
+        {
+          type: "Action.OpenUrl",
+          title: "Open case",
+          url: `${env.FRONTEND_BASE_URL}/?caseId=${encodeURIComponent(input.caseId)}`,
+        },
+      ],
+    };
+
+    const webhookUrl = this.getWebhookUrl();
+    if (!webhookUrl) return { delivered: false };
+    const status = this.getStatus();
+    if (!status.valid) throw new Error(status.reason ?? "TEAMS_WEBHOOK_URL is invalid");
+
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(card),
+    });
+    if (!response.ok) {
+      throw new Error(`Teams auto-answer notification failed: ${response.status}`);
+    }
+    return { delivered: true };
+  },
+
   async notifyOutOfScope(input: {
     customerName: string;
     lineUserId: string;

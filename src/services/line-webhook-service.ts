@@ -15,6 +15,7 @@ import { aiCenterClient, type LineMessageIntentClassification, type LineMessageI
 import { caseService } from "./case-service";
 import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
+import { recordAutoAnswerAndNotify } from "./auto-answer-notification-service";
 import { realtimeEventHub } from "./realtime-event-hub";
 import { isAutoAnswerAllowedForSolution } from "./automation-settings";
 
@@ -66,6 +67,44 @@ export type LineTextMessageResult =
       processed: false;
       duplicate: true;
     };
+
+async function sendCaseContinuation(input: {
+  caseId: string;
+  replyToken?: string;
+  text: string;
+  autoAnswer?: {
+    solutionId: string;
+    sourceMessageId: string;
+    analysisId?: string;
+    analysisVersion?: number;
+  };
+}) {
+  const delivery = await lineClient.replyToToken({ replyToken: input.replyToken, text: input.text });
+  if (input.autoAnswer) {
+    if (!delivery.delivered) throw new Error("LINE_AUTO_ANSWER_NOT_DELIVERED");
+    const sentAt = new Date().toISOString();
+    await recordAutoAnswerAndNotify({
+      caseId: input.caseId,
+      answerText: input.text,
+      solutionId: input.autoAnswer.solutionId,
+      analysisId: input.autoAnswer.analysisId,
+      analysisVersion: input.autoAnswer.analysisVersion,
+      sourceMessageId: input.autoAnswer.sourceMessageId,
+      sentAt,
+    });
+    return;
+  }
+
+  await store.createMessage({
+    caseId: input.caseId,
+    direction: "outbound_customer",
+    channel: "line",
+    originalText: input.text,
+    senderType: "BOT",
+    messageType: "CASE_ACKNOWLEDGEMENT",
+    deliveryStatus: "sent",
+  });
+}
 
 function getPendingInformationFields(selection: PendingCaseSelection): PendingInformationField[] {
   const requested = selection.pendingRequestedFields?.filter((field): field is PendingInformationField =>
@@ -1060,21 +1099,11 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
         webhookEventId: pendingSplit.webhookEventId,
         receivedAt: pendingSplit.receivedAt,
       });
-      await lineClient.replyToToken({ replyToken: input.replyToken, text: relatedResult.continuationReply });
-      await store.createMessage({
+      await sendCaseContinuation({
         caseId: sourceCaseId,
-        direction: "outbound_customer",
-        channel: "line",
-        originalText: relatedResult.continuationReply,
-        senderType: "BOT",
-        messageType: relatedResult.autoAnswer ? "AUTO_ANSWER" : "CASE_ACKNOWLEDGEMENT",
-        metadata: relatedResult.autoAnswer
-          ? {
-              autoAnswerSolutionId: relatedResult.autoAnswer.solutionId,
-              autoAnswerTeamsNotified: relatedResult.autoAnswer.teamsNotified,
-            }
-          : undefined,
-        deliveryStatus: "sent",
+        replyToken: input.replyToken,
+        text: relatedResult.continuationReply,
+        autoAnswer: relatedResult.autoAnswer,
       });
       return { processed: true, duplicate: false, caseDetail: relatedResult.detail };
     } else if (!confirmsNewCaseSplit) {
@@ -1387,25 +1416,11 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       timestamp: input.timestamp,
     });
 
-    await lineClient.replyToToken({
+    await sendCaseContinuation({
+      caseId: relatedCase.id,
       replyToken: input.replyToken,
       text: continuationReply,
-    });
-
-    await store.createMessage({
-      caseId: relatedCase.id,
-      direction: "outbound_customer",
-      channel: "line",
-      originalText: continuationReply,
-      senderType: "BOT",
-      messageType: relatedResult.autoAnswer ? "AUTO_ANSWER" : "CASE_ACKNOWLEDGEMENT",
-      metadata: relatedResult.autoAnswer
-        ? {
-            autoAnswerSolutionId: relatedResult.autoAnswer.solutionId,
-            autoAnswerTeamsNotified: relatedResult.autoAnswer.teamsNotified,
-          }
-        : undefined,
-      deliveryStatus: "sent",
+      autoAnswer: relatedResult.autoAnswer,
     });
 
     return {

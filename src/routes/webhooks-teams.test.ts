@@ -25,7 +25,12 @@ mock.module("../services/line-client", () => ({
     replyToToken: async () => ({ delivered: true }),
   },
 }));
-mock.module("../services/teams-client", () => ({ teamsClient: { notifyCase: async () => ({ delivered: true }) } }));
+mock.module("../services/teams-client", () => ({
+  teamsClient: {
+    notifyCase: async () => ({ delivered: true }),
+    notifyAutoAnswer: async () => ({ delivered: true }),
+  },
+}));
 mock.module("../services/ai-center-client", () => ({
   aiCenterClient: {
     analyzeCustomerMessage: async (input: CapturedCustomerAnalysisInput) => {
@@ -1400,5 +1405,39 @@ describe("POST /webhooks/teams/actions", () => {
     expect(beforeBody.data.enabled).toBe(false);
     expect(enabledBody.data.enabled).toBe(true);
     expect(persistedBody.data.enabled).toBe(true);
+  });
+
+  test("emergency-disables auto-answer from a validated audit action idempotently", async () => {
+    const supportCase = await createCase(99);
+    const audit = await store.createMessage({
+      caseId: supportCase.id,
+      direction: "outbound_customer",
+      channel: "line",
+      originalText: "Auto-answer already sent",
+      senderType: "BOT",
+      messageType: "AUTO_ANSWER",
+      deliveryStatus: "sent",
+      metadata: { autoAnswerSolutionId: "solution-emergency", autoAnswerTeamsNotified: true },
+    });
+    await store.updateAutomationSettings({ enabled: true, emergencyDisabledAt: undefined });
+    const payload = {
+      action: "EMERGENCY_DISABLE_AUTO_ANSWER",
+      caseId: supportCase.id,
+      caseNumber: supportCase.caseNumber,
+      caseMessageId: audit.id,
+    };
+
+    const first = await postAction(payload);
+    const second = await postAction(payload);
+    const firstBody = await first.json() as { success: boolean; duplicate: boolean };
+    const secondBody = await second.json() as { success: boolean; duplicate: boolean };
+    const settings = await store.getAutomationSettings();
+
+    expect(first.status).toBe(200);
+    expect(firstBody).toMatchObject({ success: true, duplicate: false });
+    expect(second.status).toBe(200);
+    expect(secondBody).toMatchObject({ success: true, duplicate: true });
+    expect(settings.enabled).toBe(false);
+    expect(settings.emergencyDisabledAt).toBeDefined();
   });
 });
