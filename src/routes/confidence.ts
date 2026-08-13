@@ -43,7 +43,11 @@ confidenceRoutes.get("/suggestions", async (c) => {
       const understandingFeedback = currentFeedback.find((entry) => entry.feedbackType === "ISSUE_UNDERSTANDING");
       const solutionFeedback = currentFeedback.find((entry) => entry.feedbackType === "SOLUTION_SELECTION");
       const hasNegativeFeedback = understandingFeedback?.result === "INCORRECT" || solutionFeedback?.result === "INCORRECT";
-      const hasPositiveFeedback = understandingFeedback?.result === "CORRECT" && solutionFeedback?.result === "CORRECT";
+      const hasConfirmedUnderstanding = understandingFeedback?.reviewSource === "CONFIDENCE_REVIEW"
+        && understandingFeedback.result === "CORRECT";
+      const hasConfirmedSolution = solutionFeedback?.reviewSource === "CONFIDENCE_REVIEW"
+        && solutionFeedback.result === "CORRECT";
+      const hasPositiveFeedback = hasConfirmedUnderstanding && (!latestSolution || hasConfirmedSolution);
       const reviewStage = hasNegativeFeedback ? "QUALITY" : baseReviewStage;
       const reviewStatus: ReviewStatus = caseConfidence < REVIEW_THRESHOLD || solutionConfidence < REVIEW_THRESHOLD
         ? "LOW_CONFIDENCE"
@@ -94,12 +98,30 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
     const analysisId = typeof body.analysisId === "string" && body.analysisId.trim()
       ? body.analysisId.trim()
       : undefined;
+    const requestedStage = body.reviewStage === "QUALITY" || body.reviewStage === "AUTO_ANSWER"
+      ? body.reviewStage
+      : undefined;
+    const solutionId = typeof body.solutionId === "string" && body.solutionId.trim()
+      ? body.solutionId.trim()
+      : undefined;
+    const decision = body.decision === "APPROVED" || body.decision === "REJECTED"
+      ? body.decision
+      : undefined;
     const understandingResult = getFeedbackResult(body.understandingResult);
     const solutionResult = getFeedbackResult(body.solutionResult);
     const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : undefined;
 
     if (typeof analysisVersion !== "number" || !Number.isInteger(analysisVersion) || analysisVersion < 1) {
       return c.json({ error: "invalid_analysis_version" }, 400);
+    }
+    if (!analysisId) {
+      return c.json({ error: "analysis_id_is_required" }, 400);
+    }
+    if (body.reviewStage !== undefined && !requestedStage) {
+      return c.json({ error: "invalid_review_stage", allowed: ["QUALITY", "AUTO_ANSWER"] }, 400);
+    }
+    if (body.decision !== undefined && !decision) {
+      return c.json({ error: "invalid_review_decision", allowed: ["APPROVED", "REJECTED"] }, 400);
     }
     if (!understandingResult && !solutionResult) {
       return c.json({ error: "feedback_result_is_required" }, 400);
@@ -112,19 +134,51 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
     const detail = await caseService.getCase(caseId);
     if (!detail) return c.json({ error: "case_not_found" }, 404);
 
-    const matchingAnalysis = detail.analyses.find((analysis) => (
-      analysis.analysisVersion === analysisVersion
-      && (!analysisId || analysis.analysisId === analysisId)
-    ));
-    if (!matchingAnalysis) {
-      return c.json({ error: "analysis_not_found_for_case_version" }, 400);
+    const currentAnalysis = [...detail.analyses]
+      .sort((left, right) => right.analysisVersion - left.analysisVersion || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+    if (!currentAnalysis
+      || currentAnalysis.analysisId !== analysisId
+      || currentAnalysis.analysisVersion !== analysisVersion) {
+      return c.json({ error: "review_context_changed", message: "Analysis changed. Reload Confidence Review and try again." }, 409);
+    }
+
+    const latestSolution = [...detail.solutions].reverse().find((solution) => hasActionableSolutionSteps(solution.solutionSteps));
+    if (solutionId && latestSolution?.id !== solutionId) {
+      return c.json({ error: "review_context_changed", message: "Suggested solution changed. Reload Confidence Review and try again." }, 409);
+    }
+
+    const currentFeedback = await listAiReviewFeedbackForAnalysis({ caseId, analysisId, analysisVersion });
+    const hasNegativeFeedback = currentFeedback.some((entry) => entry.result === "INCORRECT");
+    const calculatedStage = hasNegativeFeedback
+      ? "QUALITY"
+      : getReviewStage(detail.confidenceScore ?? 0, latestSolution?.confidence, Boolean(latestSolution));
+    if (requestedStage && requestedStage !== calculatedStage) {
+      return c.json({ error: "review_stage_changed", message: "Review stage changed. Reload Confidence Review and try again." }, 409);
+    }
+
+    const reviewStage = requestedStage ?? "QUALITY";
+    if (reviewStage === "AUTO_ANSWER") {
+      if (!latestSolution || !solutionId || latestSolution.id !== solutionId) {
+        return c.json({ error: "review_context_changed", message: "Suggested solution changed. Reload Confidence Review and try again." }, 409);
+      }
+      if (!decision) {
+        return c.json({ error: "review_decision_is_required" }, 400);
+      }
+      if (decision === "APPROVED" && (understandingResult !== "CORRECT" || solutionResult !== "CORRECT")) {
+        return c.json({ error: "approved_feedback_must_be_correct" }, 400);
+      }
+      if (decision === "REJECTED"
+        && (understandingResult === "CORRECT" || solutionResult === "CORRECT"
+          || (understandingResult !== "INCORRECT" && solutionResult !== "INCORRECT"))) {
+        return c.json({ error: "rejected_feedback_must_identify_an_incorrect_dimension" }, 400);
+      }
     }
 
     const feedback = await Promise.all([
       understandingResult
         ? saveAiReviewFeedback({
           caseId,
-          analysisId: matchingAnalysis.analysisId,
+          analysisId: currentAnalysis.analysisId,
           analysisVersion,
           feedbackType: "ISSUE_UNDERSTANDING",
           result: understandingResult,
@@ -136,7 +190,7 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
       solutionResult
         ? saveAiReviewFeedback({
           caseId,
-          analysisId: matchingAnalysis.analysisId,
+          analysisId: currentAnalysis.analysisId,
           analysisVersion,
           feedbackType: "SOLUTION_SELECTION",
           result: solutionResult,
@@ -148,11 +202,23 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
     ]);
     const savedFeedback = feedback.filter((item): item is NonNullable<typeof item> => Boolean(item));
     const reviewedAt = new Date().toISOString();
-    const confidenceReviewStatus = understandingResult === "INCORRECT" || solutionResult === "INCORRECT"
-      ? "QUALITY_REJECTED"
-      : understandingResult === "CORRECT" && solutionResult === "CORRECT"
-        ? "QUALITY_APPROVED"
-        : "PENDING";
+    if (reviewStage === "AUTO_ANSWER" && latestSolution && decision) {
+      await store.updateSolution(latestSolution.id, {
+        validatedByTeam: decision === "APPROVED",
+        validatedAt: decision === "APPROVED" ? reviewedAt : undefined,
+        validatedBy: decision === "APPROVED" ? "Tech Support Console" : undefined,
+        autoAnswerReviewResult: decision,
+        autoAnswerReviewedAt: reviewedAt,
+        autoAnswerReviewedBy: "Tech Support Console",
+      });
+    }
+    const confidenceReviewStatus = reviewStage === "AUTO_ANSWER"
+      ? decision === "APPROVED" ? "AUTO_ANSWER_APPROVED" : "AUTO_ANSWER_REJECTED"
+      : understandingResult === "INCORRECT" || solutionResult === "INCORRECT"
+        ? "QUALITY_REJECTED"
+        : understandingResult === "CORRECT" && (!latestSolution || solutionResult === "CORRECT")
+          ? "QUALITY_APPROVED"
+          : "PENDING";
     const reviewed = await store.updateCase(caseId, {
       confidenceReviewStatus,
       confidenceReviewedAt: reviewedAt,
@@ -163,8 +229,11 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
       data: {
         id: c.req.param("id"),
         caseId,
-        analysisId: matchingAnalysis.analysisId,
+        analysisId: currentAnalysis.analysisId,
         analysisVersion,
+        reviewStage,
+        decision,
+        solutionId: latestSolution?.id,
         feedback: savedFeedback,
         case: reviewed,
       },
@@ -239,17 +308,6 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
   }
 
   if (result === "rejected" && suggestedSolution) {
-    if (rejectionReason === "SOLUTION_SELECTION") {
-      await store.updateSolution(suggestedSolution.id, {
-        confidence: Math.max(0, suggestedSolution.confidence - 10),
-        validatedByTeam: suggestedSolution.validatedByTeam,
-        validatedAt: suggestedSolution.validatedAt,
-        validatedBy: suggestedSolution.validatedBy,
-        autoAnswerReviewResult: suggestedSolution.autoAnswerReviewResult,
-        autoAnswerReviewedAt: suggestedSolution.autoAnswerReviewedAt,
-        autoAnswerReviewedBy: suggestedSolution.autoAnswerReviewedBy,
-      });
-    }
     if (correctedSolution) {
       await store.createSolution({
         caseId,

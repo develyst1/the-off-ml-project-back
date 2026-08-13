@@ -735,7 +735,7 @@ async function seedReadyReliability(label: string) {
         analysisVersion: analysis.analysisVersion,
         feedbackType,
         result: "CORRECT",
-        reviewSource: "CASE_DETAIL",
+        reviewSource: "CONFIDENCE_REVIEW",
       });
     }
   }

@@ -299,6 +299,7 @@ export class InMemoryStore implements CaseStore {
   async listAiReviewFeedbackForReliability(options: { excludeCaseId?: string } = {}): Promise<AiReviewFeedback[]> {
     return [...this.aiReviewFeedback.values()]
       .filter((feedback) => !options.excludeCaseId || feedback.caseId !== options.excludeCaseId)
+      .filter((feedback) => feedback.reviewSource === "CONFIDENCE_REVIEW")
       .filter((feedback) => Boolean(feedback.analysisId))
       .filter((feedback) => [...this.analyses.values()].some((analysis) => (
         analysis.caseId === feedback.caseId

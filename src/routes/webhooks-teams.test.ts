@@ -746,6 +746,7 @@ describe("POST /webhooks/teams/actions", () => {
       caseId: supportCase.id,
       analysisId: analysis.analysisId,
       analysisVersion: analysis.analysisVersion,
+      reviewStage: "QUALITY",
       understandingResult: "CORRECT",
       solutionResult: "CORRECT",
     }, `match_${supportCase.id}`);
@@ -767,6 +768,7 @@ describe("POST /webhooks/teams/actions", () => {
       caseId: supportCase.id,
       analysisId: analysis.analysisId,
       analysisVersion: analysis.analysisVersion,
+      reviewStage: "QUALITY",
       solutionResult: "INCORRECT",
       reason: "วิธีแก้ยังไม่ตรงกับข้อมูลที่ทีมตรวจสอบ",
     }, `match_${supportCase.id}`);
@@ -1358,9 +1360,174 @@ describe("POST /webhooks/teams/actions", () => {
     }));
   });
 
+  test("keeps Case Detail feedback in the queue until Confidence Review confirms it", async () => {
+    const supportCase = await createCase(95);
+    const analysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "customer_message",
+      confidence: 95,
+      rawJson: {},
+    });
+    const solution = await store.createSolution({
+      caseId: supportCase.id,
+      rawReplyText: "restart service",
+      solutionSteps: ["restart service"],
+      rewrittenCustomerText: "restart service",
+      confidence: 95,
+      validatedByTeam: false,
+    });
+    for (const feedbackType of ["ISSUE_UNDERSTANDING", "SOLUTION_SELECTION"] as const) {
+      await patchAiFeedback(supportCase.id, {
+        caseId: supportCase.id,
+        analysisId: analysis.analysisId,
+        analysisVersion: analysis.analysisVersion,
+        feedbackType,
+        value: "CORRECT",
+      });
+    }
+
+    const beforeResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const before = await beforeResponse.json() as { data: Array<{ id: string; caseId: string; reviewStage: string }> };
+    const suggestion = before.data.find((item) => item.caseId === supportCase.id);
+    expect(suggestion).toEqual(expect.objectContaining({ reviewStage: "QUALITY" }));
+
+    const payload = {
+      caseId: supportCase.id,
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      reviewStage: "QUALITY",
+      solutionId: solution.id,
+      understandingResult: "CORRECT",
+      solutionResult: "CORRECT",
+    };
+    expect((await postConfidenceReview(payload, suggestion?.id ?? "missing")).status).toBe(200);
+    expect((await postConfidenceReview(payload, suggestion?.id ?? "missing")).status).toBe(200);
+
+    const saved = (await store.listAiReviewFeedback()).filter((item) => item.caseId === supportCase.id);
+    expect(saved).toHaveLength(2);
+    expect(saved.every((item) => item.reviewSource === "CONFIDENCE_REVIEW")).toBe(true);
+    const afterResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const after = await afterResponse.json() as { data: Array<{ caseId: string }> };
+    expect(after.data.some((item) => item.caseId === supportCase.id)).toBe(false);
+
+    await patchAiFeedback(supportCase.id, {
+      caseId: supportCase.id,
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      feedbackType: "ISSUE_UNDERSTANDING",
+      value: "CORRECT",
+    });
+    const reopenedResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const reopened = await reopenedResponse.json() as { data: Array<{ caseId: string; reviewStage: string }> };
+    expect(reopened.data.find((item) => item.caseId === supportCase.id)).toEqual(expect.objectContaining({ reviewStage: "QUALITY" }));
+  });
+
+  test("rejects Auto-answer without mutating model or solution confidence", async () => {
+    const supportCase = await createCase(99);
+    const analysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "customer_message",
+      confidence: 98,
+      rawJson: {},
+    });
+    const solution = await store.createSolution({
+      caseId: supportCase.id,
+      rawReplyText: "restart service",
+      solutionSteps: ["restart service"],
+      rewrittenCustomerText: "restart service",
+      confidence: 99,
+      validatedByTeam: false,
+    });
+    const suggestionResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const suggestions = await suggestionResponse.json() as { data: Array<{ id: string; caseId: string }> };
+    const suggestion = suggestions.data.find((item) => item.caseId === supportCase.id);
+
+    const rejected = await postConfidenceReview({
+      caseId: supportCase.id,
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      reviewStage: "AUTO_ANSWER",
+      solutionId: solution.id,
+      decision: "REJECTED",
+      solutionResult: "INCORRECT",
+      reason: "solution does not match the reviewed case",
+    }, suggestion?.id ?? "missing");
+    const detail = await store.getCaseDetail(supportCase.id);
+    const feedback = (await store.listAiReviewFeedback()).find((item) => (
+      item.caseId === supportCase.id && item.feedbackType === "SOLUTION_SELECTION"
+    ));
+
+    expect(rejected.status).toBe(200);
+    expect(feedback).toEqual(expect.objectContaining({
+      result: "INCORRECT",
+      reason: "solution does not match the reviewed case",
+      reviewSource: "CONFIDENCE_REVIEW",
+    }));
+    expect(detail?.confidenceReviewStatus).toBe("AUTO_ANSWER_REJECTED");
+    expect(detail?.confidenceScore).toBe(99);
+    expect(detail?.analyses.find((item) => item.analysisId === analysis.analysisId)?.confidence).toBe(98);
+    expect(detail?.solutions.find((item) => item.id === solution.id)?.confidence).toBe(99);
+    expect(detail?.solutions.find((item) => item.id === solution.id)?.autoAnswerReviewResult).toBe("REJECTED");
+  });
+
+  test("rejects stale analysis, mismatched solution, and changed review stage", async () => {
+    const supportCase = await createCase(99);
+    const oldAnalysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "customer_message",
+      confidence: 99,
+      rawJson: {},
+    });
+    const solution = await store.createSolution({
+      caseId: supportCase.id,
+      rawReplyText: "restart service",
+      solutionSteps: ["restart service"],
+      rewrittenCustomerText: "restart service",
+      confidence: 99,
+      validatedByTeam: false,
+    });
+    const currentAnalysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "customer_message",
+      confidence: 99,
+      rawJson: {},
+    });
+    const basePayload = {
+      caseId: supportCase.id,
+      reviewStage: "AUTO_ANSWER",
+      solutionId: solution.id,
+      decision: "APPROVED",
+      understandingResult: "CORRECT",
+      solutionResult: "CORRECT",
+    };
+
+    const stale = await postConfidenceReview({
+      ...basePayload,
+      analysisId: oldAnalysis.analysisId,
+      analysisVersion: oldAnalysis.analysisVersion,
+    }, `match_${supportCase.id}`);
+    const wrongSolution = await postConfidenceReview({
+      ...basePayload,
+      analysisId: currentAnalysis.analysisId,
+      analysisVersion: currentAnalysis.analysisVersion,
+      solutionId: "wrong-solution",
+    }, `match_${supportCase.id}`);
+    const wrongStage = await postConfidenceReview({
+      ...basePayload,
+      analysisId: currentAnalysis.analysisId,
+      analysisVersion: currentAnalysis.analysisVersion,
+      reviewStage: "QUALITY",
+    }, `match_${supportCase.id}`);
+
+    expect(stale.status).toBe(409);
+    expect(wrongSolution.status).toBe(409);
+    expect(wrongStage.status).toBe(409);
+    expect((await store.listAiReviewFeedback()).filter((item) => item.caseId === supportCase.id)).toHaveLength(0);
+  });
+
   test("approves only a 98% solution for auto-answer and persists the automation switch", async () => {
     const supportCase = await createCase(99);
-    await store.createAnalysis({
+    const analysis = await store.createAnalysis({
       caseId: supportCase.id,
       analysisType: "customer_message",
       category: "NETWORK_CONNECTION",
@@ -1379,7 +1546,18 @@ describe("POST /webhooks/teams/actions", () => {
     const suggestions = await suggestionResponse.json() as { data: Array<{ id: string; caseId: string; reviewStage: string }> };
     const suggestion = suggestions.data.find((item) => item.caseId === supportCase.id);
 
-    const approved = await postConfidenceReview({ caseId: supportCase.id, solutionId: solution.id, reviewStage: "AUTO_ANSWER", result: "approved" }, suggestion?.id ?? "missing");
+    const approved = await postConfidenceReview({
+      caseId: supportCase.id,
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      solutionId: solution.id,
+      reviewStage: "AUTO_ANSWER",
+      decision: "APPROVED",
+      understandingResult: "CORRECT",
+      solutionResult: "CORRECT",
+    }, suggestion?.id ?? "missing");
+    const refreshedSuggestionsResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const refreshedSuggestions = await refreshedSuggestionsResponse.json() as { data: Array<{ caseId: string }> };
     const before = await app.fetch(new Request("http://localhost/automation/settings"));
     const beforeBody = await before.json() as { data: { enabled: boolean } };
     const enabled = await app.fetch(new Request("http://localhost/automation/settings", {
@@ -1402,6 +1580,7 @@ describe("POST /webhooks/teams/actions", () => {
     expect(detail?.confidenceReviewStatus).toBe("AUTO_ANSWER_APPROVED");
     expect(detail?.solutions.find((item) => item.id === solution.id)?.validatedByTeam).toBe(true);
     expect(detail?.solutions.find((item) => item.id === solution.id)?.autoAnswerReviewResult).toBe("APPROVED");
+    expect(refreshedSuggestions.data.some((item) => item.caseId === supportCase.id)).toBe(false);
     expect(beforeBody.data.enabled).toBe(false);
     expect(enabledBody.data.enabled).toBe(true);
     expect(persistedBody.data.enabled).toBe(true);

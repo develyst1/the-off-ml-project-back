@@ -15,7 +15,11 @@ const { evaluateLearnedReliabilityGate, evaluateLearnedReliabilitySnapshot, getL
 type FeedbackType = "ISSUE_UNDERSTANDING" | "SOLUTION_SELECTION";
 type FeedbackResult = "CORRECT" | "INCORRECT";
 
-async function addFeedback(type: FeedbackType, result: FeedbackResult, name: string, options: { analysisId?: string; analysisVersion?: number } = {}) {
+async function addFeedback(type: FeedbackType, result: FeedbackResult, name: string, options: {
+  analysisId?: string;
+  analysisVersion?: number;
+  reviewSource?: "CASE_DETAIL" | "CONFIDENCE_REVIEW";
+} = {}) {
   const customer = await activeStore.upsertCustomer({ lineUserId: `U-reliability-${name}` });
   const supportCase = await activeStore.createCase({ customerId: customer.id, confidenceScore: 85 });
   let analysis = await activeStore.createAnalysis({ caseId: supportCase.id, analysisType: "customer_message", confidence: 85, rawJson: {} });
@@ -28,7 +32,7 @@ async function addFeedback(type: FeedbackType, result: FeedbackResult, name: str
     analysisVersion: options.analysisVersion ?? analysis.analysisVersion,
     feedbackType: type,
     result,
-    reviewSource: "CASE_DETAIL",
+    reviewSource: options.reviewSource ?? "CONFIDENCE_REVIEW",
   });
   return { supportCase, analysis };
 }
@@ -66,6 +70,22 @@ test("returns NO_DATA without treating missing feedback as incorrect", async () 
   expect(result.solutionSelection).toEqual(result.issueUnderstanding);
 });
 
+test("does not count correct or incorrect Case Detail feedback", async () => {
+  resetStore();
+  await addFeedback("ISSUE_UNDERSTANDING", "CORRECT", "case-detail-correct", { reviewSource: "CASE_DETAIL" });
+  await addFeedback("ISSUE_UNDERSTANDING", "INCORRECT", "case-detail-incorrect", { reviewSource: "CASE_DETAIL" });
+  const result = await getLearnedReliability();
+  expect(result.issueUnderstanding).toEqual({ correctCount: 0, incorrectCount: 0, sampleCount: 0, reliability: null, status: "NO_DATA" });
+});
+
+test("counts only Confidence Review feedback when sources are mixed", async () => {
+  resetStore();
+  await addFeedback("ISSUE_UNDERSTANDING", "CORRECT", "mixed-case-detail", { reviewSource: "CASE_DETAIL" });
+  await addFeedback("ISSUE_UNDERSTANDING", "INCORRECT", "mixed-confidence-review");
+  const result = await getLearnedReliability();
+  expect(result.issueUnderstanding).toEqual({ correctCount: 0, incorrectCount: 1, sampleCount: 1, reliability: null, status: "INSUFFICIENT_DATA" });
+});
+
 test("keeps one to four samples as INSUFFICIENT_DATA and fifth as READY", async () => {
   resetStore();
   for (let index = 0; index < 4; index += 1) await addFeedback("ISSUE_UNDERSTANDING", "CORRECT", `understanding-low-${index}`);
@@ -86,9 +106,9 @@ test("keeps understanding and solution dimensions separate", async () => {
   expect(result.solutionSelection.reliability).toBe(0);
 });
 
-test("counts the latest upsert state once when CORRECT changes to INCORRECT", async () => {
+test("starts counting once Case Detail feedback is confirmed in Confidence Review", async () => {
   resetStore();
-  const fixture = await addFeedback("ISSUE_UNDERSTANDING", "CORRECT", "update-state");
+  const fixture = await addFeedback("ISSUE_UNDERSTANDING", "CORRECT", "update-state", { reviewSource: "CASE_DETAIL" });
   await activeStore.upsertAiReviewFeedback({
     caseId: fixture.supportCase.id,
     analysisId: fixture.analysis.analysisId,
@@ -101,7 +121,7 @@ test("counts the latest upsert state once when CORRECT changes to INCORRECT", as
   expect(result.issueUnderstanding).toEqual({ correctCount: 0, incorrectCount: 1, sampleCount: 1, reliability: null, status: "INSUFFICIENT_DATA" });
 });
 
-test("does not count duplicate upserts as multiple samples", async () => {
+test("stops counting when Confidence Review feedback is updated from Case Detail", async () => {
   resetStore();
   const fixture = await addFeedback("ISSUE_UNDERSTANDING", "CORRECT", "duplicate");
   await activeStore.upsertAiReviewFeedback({
@@ -113,7 +133,7 @@ test("does not count duplicate upserts as multiple samples", async () => {
     reviewSource: "CASE_DETAIL",
   });
   const result = await getLearnedReliability();
-  expect(result.issueUnderstanding.sampleCount).toBe(1);
+  expect(result.issueUnderstanding.sampleCount).toBe(0);
 });
 
 test("rejects analysisId mismatch and excludes the current case", async () => {
@@ -189,7 +209,7 @@ test("fails closed when the reliability query throws", async () => {
   expect(result).toEqual({ allowed: false, reason: "LEARNED_RELIABILITY_UNAVAILABLE", reliability: null });
 });
 
-test("correct to incorrect changes the gate without mutating the model confidence", async () => {
+test("a Case Detail update removes the prior Confidence Review sample without mutating model confidence", async () => {
   resetStore();
   const dimensions = ["ISSUE_UNDERSTANDING", "SOLUTION_SELECTION"] as const;
   const fixtures = [];
@@ -210,6 +230,6 @@ test("correct to incorrect changes the gate without mutating the model confidenc
   });
   const after = await evaluateLearnedReliabilityGate({ excludeCaseId: "case-that-is-not-current" });
   expect(after.allowed).toBe(false);
-  expect(after.reason).toBe("UNDERSTANDING_RELIABILITY_BELOW_THRESHOLD");
+  expect(after.reason).toBe("LEARNED_RELIABILITY_INSUFFICIENT_DATA");
   expect((await activeStore.getCaseDetail(target.supportCase.id))?.confidenceScore).toBe(85);
 });
