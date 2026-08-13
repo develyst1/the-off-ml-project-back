@@ -884,9 +884,18 @@ export class PostgresStore implements CaseStore {
          on analysis.id = feedback.analysis_id
         and analysis.case_id = feedback.case_id
         and analysis.analysis_version = feedback.analysis_version
+       inner join lateral (
+         select latest.id, latest.analysis_version
+         from analyses latest
+         where latest.case_id = feedback.case_id
+           and latest.analysis_type = 'customer_message'
+         order by latest.analysis_version desc, latest.created_at desc
+         limit 1
+       ) latest_customer_analysis
+         on latest_customer_analysis.id = analysis.id
+        and latest_customer_analysis.analysis_version = analysis.analysis_version
        where feedback.analysis_id is not null
          and feedback.review_source = 'CONFIDENCE_REVIEW'
-         and analysis.analysis_type = 'customer_message'
          and ($1::text is null or feedback.case_id <> $1)
        order by feedback.updated_at desc`,
       [options.excludeCaseId ?? null],

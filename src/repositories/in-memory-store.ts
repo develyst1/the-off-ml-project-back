@@ -1,4 +1,5 @@
 import type { AiReviewFeedback, Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import { getLatestCustomerMessageAnalysis } from "../lib/analysis";
 import { toAiReviewFeedbackMemoryItem } from "../lib/ai-review-feedback-memory";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore, ChatRetentionCleanupResult } from "./case-store";
@@ -297,16 +298,26 @@ export class InMemoryStore implements CaseStore {
   }
 
   async listAiReviewFeedbackForReliability(options: { excludeCaseId?: string } = {}): Promise<AiReviewFeedback[]> {
+    const analysesByCase = new Map<string, Analysis[]>();
+    for (const analysis of this.analyses.values()) {
+      const caseAnalyses = analysesByCase.get(analysis.caseId) ?? [];
+      caseAnalyses.push(analysis);
+      analysesByCase.set(analysis.caseId, caseAnalyses);
+    }
+    const latestCustomerAnalysisByCase = new Map([...analysesByCase.entries()].map(([caseId, analyses]) => (
+      [caseId, getLatestCustomerMessageAnalysis(analyses)]
+    )));
+
     return [...this.aiReviewFeedback.values()]
       .filter((feedback) => !options.excludeCaseId || feedback.caseId !== options.excludeCaseId)
       .filter((feedback) => feedback.reviewSource === "CONFIDENCE_REVIEW")
       .filter((feedback) => Boolean(feedback.analysisId))
-      .filter((feedback) => [...this.analyses.values()].some((analysis) => (
-        analysis.caseId === feedback.caseId
-        && analysis.analysisId === feedback.analysisId
-        && analysis.analysisVersion === feedback.analysisVersion
-        && analysis.analysisType === "customer_message"
-      )))
+      .filter((feedback) => {
+        const latestCustomerAnalysis = latestCustomerAnalysisByCase.get(feedback.caseId);
+        return Boolean(latestCustomerAnalysis
+          && latestCustomerAnalysis.analysisId === feedback.analysisId
+          && latestCustomerAnalysis.analysisVersion === feedback.analysisVersion);
+      })
       .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
   }
 

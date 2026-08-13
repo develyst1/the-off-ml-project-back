@@ -42,6 +42,33 @@ function resetStore() {
   activeStore = new InMemoryStore();
 }
 
+async function createAnalysisSequence(name: string, analysisTypes: Array<"customer_message" | "tech_solution">) {
+  const customer = await activeStore.upsertCustomer({ lineUserId: `U-reliability-sequence-${name}` });
+  const supportCase = await activeStore.createCase({ customerId: customer.id, confidenceScore: 85 });
+  const analyses = [];
+  for (const analysisType of analysisTypes) {
+    analyses.push(await activeStore.createAnalysis({ caseId: supportCase.id, analysisType, confidence: 85, rawJson: {} }));
+  }
+  return { supportCase, analyses };
+}
+
+function saveAnalysisFeedback(input: {
+  caseId: string;
+  analysis: Awaited<ReturnType<InMemoryStore["createAnalysis"]>>;
+  result: FeedbackResult;
+  reviewSource?: "CASE_DETAIL" | "CONFIDENCE_REVIEW";
+  feedbackType?: FeedbackType;
+}) {
+  return activeStore.upsertAiReviewFeedback({
+    caseId: input.caseId,
+    analysisId: input.analysis.analysisId,
+    analysisVersion: input.analysis.analysisVersion,
+    feedbackType: input.feedbackType ?? "ISSUE_UNDERSTANDING",
+    result: input.result,
+    reviewSource: input.reviewSource ?? "CONFIDENCE_REVIEW",
+  });
+}
+
 test("returns READY and 1.0 for five correct understanding reviews", async () => {
   resetStore();
   for (let index = 0; index < 5; index += 1) await addFeedback("ISSUE_UNDERSTANDING", "CORRECT", `understanding-correct-${index}`);
@@ -140,6 +167,102 @@ test("does not count Case Detail customer feedback or Confidence Review tech fee
 
   expect(result.issueUnderstanding.sampleCount).toBe(0);
   expect(result.solutionSelection.sampleCount).toBe(0);
+});
+
+test("counts a formally reviewed customer analysis when no newer customer version exists", async () => {
+  resetStore();
+  const fixture = await createAnalysisSequence("current-v1", ["customer_message"]);
+  await saveAnalysisFeedback({ caseId: fixture.supportCase.id, analysis: fixture.analyses[0], result: "CORRECT" });
+
+  const result = await getLearnedReliability();
+
+  expect(result.issueUnderstanding).toEqual({ correctCount: 1, incorrectCount: 0, sampleCount: 1, reliability: null, status: "INSUFFICIENT_DATA" });
+});
+
+test("stops counting historical customer feedback after an unreviewed customer re-analysis", async () => {
+  resetStore();
+  const fixture = await createAnalysisSequence("historical-v1", ["customer_message"]);
+  await saveAnalysisFeedback({ caseId: fixture.supportCase.id, analysis: fixture.analyses[0], result: "CORRECT" });
+  await activeStore.createAnalysis({ caseId: fixture.supportCase.id, analysisType: "customer_message", confidence: 85, rawJson: {} });
+
+  const result = await getLearnedReliability();
+
+  expect(result.issueUnderstanding.sampleCount).toBe(0);
+});
+
+test("counts only the current formally reviewed customer analysis", async () => {
+  resetStore();
+  const fixture = await createAnalysisSequence("current-v2", ["customer_message", "customer_message"]);
+  await saveAnalysisFeedback({ caseId: fixture.supportCase.id, analysis: fixture.analyses[0], result: "INCORRECT" });
+  await saveAnalysisFeedback({ caseId: fixture.supportCase.id, analysis: fixture.analyses[1], result: "CORRECT" });
+
+  const result = await getLearnedReliability();
+
+  expect(result.issueUnderstanding).toEqual({ correctCount: 1, incorrectCount: 0, sampleCount: 1, reliability: null, status: "INSUFFICIENT_DATA" });
+});
+
+test("resolves latest customer across interleaved tech analysis versions", async () => {
+  resetStore();
+  const fixture = await createAnalysisSequence("interleaved", ["customer_message", "tech_solution", "customer_message"]);
+  await saveAnalysisFeedback({ caseId: fixture.supportCase.id, analysis: fixture.analyses[0], result: "INCORRECT" });
+  await saveAnalysisFeedback({ caseId: fixture.supportCase.id, analysis: fixture.analyses[1], result: "INCORRECT" });
+  await saveAnalysisFeedback({ caseId: fixture.supportCase.id, analysis: fixture.analyses[2], result: "CORRECT" });
+
+  const result = await getLearnedReliability();
+
+  expect(fixture.analyses[2].analysisVersion).toBe(3);
+  expect(result.issueUnderstanding).toEqual({ correctCount: 1, incorrectCount: 0, sampleCount: 1, reliability: null, status: "INSUFFICIENT_DATA" });
+});
+
+test("counts neither historical formal feedback nor current Case Detail feedback", async () => {
+  resetStore();
+  const fixture = await createAnalysisSequence("current-case-detail", ["customer_message", "customer_message"]);
+  await saveAnalysisFeedback({ caseId: fixture.supportCase.id, analysis: fixture.analyses[0], result: "CORRECT" });
+  await saveAnalysisFeedback({ caseId: fixture.supportCase.id, analysis: fixture.analyses[1], result: "CORRECT", reviewSource: "CASE_DETAIL" });
+
+  const result = await getLearnedReliability();
+
+  expect(result.issueUnderstanding.sampleCount).toBe(0);
+});
+
+test("replaces a historical formal sample with one current formal sample", async () => {
+  resetStore();
+  const fixture = await createAnalysisSequence("formal-replacement", ["customer_message", "customer_message"]);
+  await saveAnalysisFeedback({ caseId: fixture.supportCase.id, analysis: fixture.analyses[0], result: "INCORRECT" });
+  await saveAnalysisFeedback({ caseId: fixture.supportCase.id, analysis: fixture.analyses[1], result: "CORRECT" });
+
+  const result = await getLearnedReliability();
+
+  expect(result.issueUnderstanding.correctCount).toBe(1);
+  expect(result.issueUnderstanding.incorrectCount).toBe(0);
+  expect(result.issueUnderstanding.sampleCount).toBe(1);
+});
+
+test("excludeCaseId excludes feedback on the latest customer identity", async () => {
+  resetStore();
+  const excluded = await createAnalysisSequence("excluded-latest", ["customer_message", "customer_message"]);
+  const included = await createAnalysisSequence("included-latest", ["customer_message"]);
+  await saveAnalysisFeedback({ caseId: excluded.supportCase.id, analysis: excluded.analyses[1], result: "INCORRECT" });
+  await saveAnalysisFeedback({ caseId: included.supportCase.id, analysis: included.analyses[0], result: "CORRECT" });
+
+  const result = await getLearnedReliability({ excludeCaseId: excluded.supportCase.id });
+
+  expect(result.issueUnderstanding).toEqual({ correctCount: 1, incorrectCount: 0, sampleCount: 1, reliability: null, status: "INSUFFICIENT_DATA" });
+});
+
+test("does not count OFF-00056-equivalent V3 feedback after unreviewed customer V12", async () => {
+  resetStore();
+  const types = Array.from({ length: 12 }, (_, index) => (
+    index === 2 || index === 11 ? "customer_message" as const : "tech_solution" as const
+  ));
+  const fixture = await createAnalysisSequence("off-00056", types);
+  await saveAnalysisFeedback({ caseId: fixture.supportCase.id, analysis: fixture.analyses[2], result: "INCORRECT" });
+
+  const result = await getLearnedReliability();
+
+  expect(fixture.analyses[2].analysisVersion).toBe(3);
+  expect(fixture.analyses[11].analysisVersion).toBe(12);
+  expect(result.issueUnderstanding.sampleCount).toBe(0);
 });
 
 test("keeps one to four samples as INSUFFICIENT_DATA and fifth as READY", async () => {
