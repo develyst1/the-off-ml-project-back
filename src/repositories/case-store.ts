@@ -11,6 +11,19 @@ export type ChatRetentionCleanupResult = {
   durationMs: number;
 };
 
+export type QualityReviewPersistenceInput = {
+  caseId: string;
+  feedback: Array<Omit<AiReviewFeedback, "id" | "createdAt" | "updatedAt">>;
+  status: "QUALITY_APPROVED" | "QUALITY_REJECTED";
+  reviewedAt: string;
+  reviewedBy: string;
+};
+
+export type QualityReviewPersistenceResult = {
+  feedback: AiReviewFeedback[];
+  supportCase: SupportCase;
+};
+
 export type CaseStore = {
   upsertCustomer(input: { lineUserId: string; displayName?: string }): Promise<Customer>;
   setActiveCase(customerId: string, caseId?: string): Promise<Customer>;
@@ -33,6 +46,7 @@ export type CaseStore = {
   getMessageByWebhookEventId(webhookEventId: string): Promise<Message | undefined>;
   createAnalysis(input: Omit<Analysis, "id" | "analysisId" | "createdAt" | "analysisVersion">): Promise<Analysis>;
   upsertAiReviewFeedback(input: Omit<AiReviewFeedback, "id" | "createdAt" | "updatedAt">): Promise<AiReviewFeedback>;
+  persistQualityReview(input: QualityReviewPersistenceInput): Promise<QualityReviewPersistenceResult>;
   listAiReviewFeedback(): Promise<AiReviewFeedback[]>;
   listAiReviewFeedbackForReliability(options?: { excludeCaseId?: string }): Promise<AiReviewFeedback[]>;
   listAiReviewFeedbackForMemory(options: { feedbackType?: AiReviewFeedback["feedbackType"]; result?: AiReviewFeedback["result"]; limit: number }): Promise<AiReviewFeedbackMemoryItem[]>;

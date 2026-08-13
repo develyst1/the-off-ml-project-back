@@ -3,7 +3,7 @@ import { readJsonObject, requiredString } from "../lib/request";
 import { store } from "../repositories/store";
 import { caseService } from "../services/case-service";
 import { hasActionableSolutionSteps } from "../lib/solution-quality";
-import { listAiReviewFeedbackForAnalysis, saveAiReviewFeedback } from "../services/ai-review-feedback-service";
+import { listAiReviewFeedbackForAnalysis, saveAiReviewFeedback, saveQualityReview } from "../services/ai-review-feedback-service";
 import { getLatestCustomerMessageAnalysis } from "../lib/analysis";
 
 export const confidenceRoutes = new Hono();
@@ -43,18 +43,16 @@ confidenceRoutes.get("/suggestions", async (c) => {
       const understandingFeedback = currentFeedback.find((entry) => entry.feedbackType === "ISSUE_UNDERSTANDING");
       const solutionFeedback = currentFeedback.find((entry) => entry.feedbackType === "SOLUTION_SELECTION");
       const hasNegativeFeedback = understandingFeedback?.result === "INCORRECT" || solutionFeedback?.result === "INCORRECT";
-      const hasConfirmedUnderstanding = understandingFeedback?.reviewSource === "CONFIDENCE_REVIEW"
-        && understandingFeedback.result === "CORRECT";
-      const hasConfirmedSolution = solutionFeedback?.reviewSource === "CONFIDENCE_REVIEW"
-        && solutionFeedback.result === "CORRECT";
-      const hasPositiveFeedback = hasConfirmedUnderstanding && (!latestSolution || hasConfirmedSolution);
+      const hasReviewedUnderstanding = understandingFeedback?.reviewSource === "CONFIDENCE_REVIEW";
+      const hasReviewedSolution = solutionFeedback?.reviewSource === "CONFIDENCE_REVIEW";
+      const hasCompletedQualityReview = hasReviewedUnderstanding && (!latestSolution || hasReviewedSolution);
       const reviewStage = hasNegativeFeedback ? "QUALITY" : baseReviewStage;
       const reviewStatus: ReviewStatus = caseConfidence < REVIEW_THRESHOLD || solutionConfidence < REVIEW_THRESHOLD
         ? "LOW_CONFIDENCE"
         : hasNegativeFeedback
           ? "NEGATIVE_FEEDBACK"
           : "NOT_REVIEWED";
-      const needsQualityReview = reviewStage === "QUALITY" && !hasPositiveFeedback;
+      const needsQualityReview = reviewStage === "QUALITY" && !hasCompletedQualityReview;
       const needsAutoAnswerReview = reviewStage === "AUTO_ANSWER"
         && latestSolution?.autoAnswerReviewResult === undefined;
 
@@ -74,6 +72,13 @@ confidenceRoutes.get("/suggestions", async (c) => {
         analysisId: currentAnalysis?.analysisId,
         analysisVersion: currentAnalysis?.analysisVersion,
         hasSuggestedSolution: Boolean(latestSolution),
+        understandingResult: hasReviewedUnderstanding ? understandingFeedback.result : undefined,
+        solutionResult: hasReviewedSolution ? solutionFeedback.result : undefined,
+        reviewReason: hasReviewedUnderstanding && understandingFeedback.result === "INCORRECT"
+          ? understandingFeedback.reason
+          : hasReviewedSolution && solutionFeedback.result === "INCORRECT"
+            ? solutionFeedback.reason
+            : undefined,
         reviewStage,
         reviewStatus,
         reviewHint: reviewStage === "AUTO_ANSWER"
@@ -173,6 +178,45 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
       }
     }
 
+    if (reviewStage === "QUALITY") {
+      if (!understandingResult) {
+        return c.json({ error: "quality_understanding_result_is_required" }, 400);
+      }
+      if (latestSolution && !solutionId) {
+        return c.json({ error: "solution_id_is_required" }, 400);
+      }
+      if (latestSolution && !solutionResult) {
+        return c.json({ error: "quality_solution_result_is_required" }, 400);
+      }
+      if (!latestSolution && solutionResult) {
+        return c.json({ error: "quality_solution_result_is_not_applicable" }, 400);
+      }
+
+      const reviewedAt = new Date().toISOString();
+      const persisted = await saveQualityReview({
+        caseId,
+        analysisId: currentAnalysis.analysisId,
+        analysisVersion,
+        understandingResult,
+        solutionResult,
+        reason,
+        reviewedAt,
+        reviewedBy: "Tech Support Console",
+      });
+      return c.json({
+        data: {
+          id: c.req.param("id"),
+          caseId,
+          analysisId: currentAnalysis.analysisId,
+          analysisVersion,
+          reviewStage,
+          solutionId: latestSolution?.id,
+          feedback: persisted.feedback,
+          case: persisted.supportCase,
+        },
+      });
+    }
+
     const feedback = await Promise.all([
       understandingResult
         ? saveAiReviewFeedback({
@@ -211,15 +255,8 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
         autoAnswerReviewedBy: "Tech Support Console",
       });
     }
-    const confidenceReviewStatus = reviewStage === "AUTO_ANSWER"
-      ? decision === "APPROVED" ? "AUTO_ANSWER_APPROVED" : "AUTO_ANSWER_REJECTED"
-      : understandingResult === "INCORRECT" || solutionResult === "INCORRECT"
-        ? "QUALITY_REJECTED"
-        : understandingResult === "CORRECT" && (!latestSolution || solutionResult === "CORRECT")
-          ? "QUALITY_APPROVED"
-          : "PENDING";
     const reviewed = await store.updateCase(caseId, {
-      confidenceReviewStatus,
+      confidenceReviewStatus: decision === "APPROVED" ? "AUTO_ANSWER_APPROVED" : "AUTO_ANSWER_REJECTED",
       confidenceReviewedAt: reviewedAt,
       confidenceReviewedBy: "Tech Support Console",
     });

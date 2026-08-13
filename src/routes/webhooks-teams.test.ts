@@ -798,11 +798,20 @@ describe("POST /webhooks/teams/actions", () => {
       confidence: 91,
       rawJson: {},
     });
+    const solution = await store.createSolution({
+      caseId: supportCase.id,
+      rawReplyText: "restart service",
+      solutionSteps: ["restart service"],
+      rewrittenCustomerText: "restart service",
+      confidence: 91,
+      validatedByTeam: false,
+    });
     const confirmed = await postConfidenceReview({
       caseId: supportCase.id,
       analysisId: analysis.analysisId,
       analysisVersion: analysis.analysisVersion,
       reviewStage: "QUALITY",
+      solutionId: solution.id,
       understandingResult: "CORRECT",
       solutionResult: "CORRECT",
     }, `match_${supportCase.id}`);
@@ -825,6 +834,8 @@ describe("POST /webhooks/teams/actions", () => {
       analysisId: analysis.analysisId,
       analysisVersion: analysis.analysisVersion,
       reviewStage: "QUALITY",
+      solutionId: solution.id,
+      understandingResult: "CORRECT",
       solutionResult: "INCORRECT",
       reason: "วิธีแก้ยังไม่ตรงกับข้อมูลที่ทีมตรวจสอบ",
     }, `match_${supportCase.id}`);
@@ -833,13 +844,119 @@ describe("POST /webhooks/teams/actions", () => {
     };
 
     expect(rejected.status).toBe(200);
-    expect(rejectionBody.data?.feedback).toEqual([
+    expect(rejectionBody.data?.feedback).toEqual(expect.arrayContaining([
+      expect.objectContaining({ feedbackType: "ISSUE_UNDERSTANDING", result: "CORRECT" }),
       expect.objectContaining({ feedbackType: "SOLUTION_SELECTION", result: "INCORRECT" }),
-    ]);
+    ]));
     expect(rejectionBody.data?.case?.confidenceReviewStatus).toBe("QUALITY_REJECTED");
     const afterRejection = await store.getCaseDetail(supportCase.id);
+    const suggestionsAfterRejection = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const suggestionsBody = await suggestionsAfterRejection.json() as { data: Array<{ caseId: string }> };
     expect(afterRejection?.confidenceScore).toBe(94);
     expect(afterRejection?.analyses.find((item) => item.analysisId === analysis.analysisId)?.confidence).toBe(91);
+    expect(suggestionsBody.data.some((item) => item.caseId === supportCase.id)).toBe(false);
+  });
+
+  test("keeps a partial formal review in QUALITY until every applicable dimension is reviewed", async () => {
+    const supportCase = await createCase(85);
+    const analysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "customer_message",
+      confidence: 85,
+      rawJson: {},
+    });
+    const solution = await store.createSolution({
+      caseId: supportCase.id,
+      rawReplyText: "restart service",
+      solutionSteps: ["restart service"],
+      rewrittenCustomerText: "restart service",
+      confidence: 85,
+      validatedByTeam: false,
+    });
+    await store.upsertAiReviewFeedback({
+      caseId: supportCase.id,
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      feedbackType: "SOLUTION_SELECTION",
+      result: "INCORRECT",
+      reviewSource: "CONFIDENCE_REVIEW",
+      reason: "wrong solution",
+      reviewedBy: "Tech Support Console",
+    });
+
+    const beforeResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const before = await beforeResponse.json() as { data: Array<{
+      id: string;
+      caseId: string;
+      understandingResult?: string;
+      solutionResult?: string;
+      reviewReason?: string;
+    }> };
+    const suggestion = before.data.find((item) => item.caseId === supportCase.id);
+
+    expect(suggestion).toEqual(expect.objectContaining({
+      solutionResult: "INCORRECT",
+      reviewReason: "wrong solution",
+    }));
+    expect(suggestion?.understandingResult).toBeUndefined();
+
+    const incomplete = await postConfidenceReview({
+      caseId: supportCase.id,
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      reviewStage: "QUALITY",
+      solutionId: solution.id,
+      solutionResult: "INCORRECT",
+    }, suggestion?.id ?? "missing");
+    expect(incomplete.status).toBe(400);
+
+    const completed = await postConfidenceReview({
+      caseId: supportCase.id,
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      reviewStage: "QUALITY",
+      solutionId: solution.id,
+      understandingResult: "CORRECT",
+      solutionResult: "INCORRECT",
+      reason: "wrong solution",
+    }, suggestion?.id ?? "missing");
+    expect(completed.status).toBe(200);
+
+    const afterResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const after = await afterResponse.json() as { data: Array<{ caseId: string }> };
+    expect(after.data.some((item) => item.caseId === supportCase.id)).toBe(false);
+  });
+
+  test("reviews understanding only when the current case has no actionable solution", async () => {
+    const supportCase = await createCase(85);
+    const analysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "customer_message",
+      confidence: 85,
+      rawJson: {},
+    });
+    const suggestionsResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const suggestions = await suggestionsResponse.json() as { data: Array<{ id: string; caseId: string; hasSuggestedSolution: boolean }> };
+    const suggestion = suggestions.data.find((item) => item.caseId === supportCase.id);
+    expect(suggestion?.hasSuggestedSolution).toBe(false);
+
+    const response = await postConfidenceReview({
+      caseId: supportCase.id,
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      reviewStage: "QUALITY",
+      understandingResult: "INCORRECT",
+      reason: "understanding is incomplete",
+    }, suggestion?.id ?? "missing");
+    const body = await response.json() as { data?: { feedback?: Array<{ feedbackType: string; result: string }> } };
+
+    expect(response.status).toBe(200);
+    expect(body.data?.feedback).toEqual([
+      expect.objectContaining({ feedbackType: "ISSUE_UNDERSTANDING", result: "INCORRECT" }),
+    ]);
+    const afterResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const after = await afterResponse.json() as { data: Array<{ caseId: string }> };
+    expect(after.data.some((item) => item.caseId === supportCase.id)).toBe(false);
   });
 
   test("calculates Analytics accuracy from current analysis-version feedback only", async () => {

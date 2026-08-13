@@ -2,7 +2,7 @@ import pg from "pg";
 import { env } from "../config/env";
 import type { AiReviewFeedback, Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
-import type { CaseStore, ChatRetentionCleanupResult } from "./case-store";
+import type { CaseStore, ChatRetentionCleanupResult, QualityReviewPersistenceInput, QualityReviewPersistenceResult } from "./case-store";
 import { dedupeCaseMessages, normalizeCaseMessage } from "./case-message-normalizer";
 import { schemaSql } from "./schema";
 import { toAiReviewFeedbackMemoryItem } from "../lib/ai-review-feedback-memory";
@@ -869,6 +869,64 @@ export class PostgresStore implements CaseStore {
       ],
     );
     return mapAiReviewFeedback(result.rows[0]);
+  }
+
+  async persistQualityReview(input: QualityReviewPersistenceInput): Promise<QualityReviewPersistenceResult> {
+    await this.ready();
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const feedback: AiReviewFeedback[] = [];
+      for (const item of input.feedback) {
+        const result = await client.query<DbAiReviewFeedback>(
+          `insert into ai_review_feedback (
+            id, case_id, analysis_id, analysis_version, feedback_type, result,
+            review_source, reason, reviewed_by, created_at, updated_at
+          ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+          on conflict (case_id, analysis_version, feedback_type) do update set
+            analysis_id = excluded.analysis_id,
+            result = excluded.result,
+            review_source = excluded.review_source,
+            reason = excluded.reason,
+            reviewed_by = excluded.reviewed_by,
+            updated_at = excluded.updated_at
+          returning *`,
+          [
+            createId("review"),
+            item.caseId,
+            item.analysisId ?? null,
+            item.analysisVersion,
+            item.feedbackType,
+            item.result,
+            item.reviewSource,
+            item.reason ?? null,
+            item.reviewedBy ?? null,
+            input.reviewedAt,
+          ],
+        );
+        feedback.push(mapAiReviewFeedback(result.rows[0]));
+      }
+
+      const caseResult = await client.query<DbCase>(
+        `update support_cases
+         set confidence_review_status = $2,
+             confidence_reviewed_at = $3,
+             confidence_reviewed_by = $4,
+             updated_at = $3
+         where id = $1
+         returning *`,
+        [input.caseId, input.status, input.reviewedAt, input.reviewedBy],
+      );
+      if (!caseResult.rows[0]) throw new Error("Case not found");
+
+      await client.query("commit");
+      return { feedback, supportCase: mapCase(caseResult.rows[0]) };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async listAiReviewFeedback(): Promise<AiReviewFeedback[]> {

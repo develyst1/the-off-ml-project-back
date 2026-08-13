@@ -2,7 +2,7 @@ import type { AiReviewFeedback, Analysis, AutomationSettings, CaseAiFeedback, Ca
 import { getLatestCustomerMessageAnalysis } from "../lib/analysis";
 import { toAiReviewFeedbackMemoryItem } from "../lib/ai-review-feedback-memory";
 import { createId, nowIso } from "../lib/ids";
-import type { CaseStore, ChatRetentionCleanupResult } from "./case-store";
+import type { CaseStore, ChatRetentionCleanupResult, QualityReviewPersistenceInput, QualityReviewPersistenceResult } from "./case-store";
 import { dedupeCaseMessages, normalizeCaseMessage } from "./case-message-normalizer";
 
 export class InMemoryStore implements CaseStore {
@@ -290,6 +290,42 @@ export class InMemoryStore implements CaseStore {
       : { ...input, id: createId("review"), createdAt: timestamp, updatedAt: timestamp };
     this.aiReviewFeedback.set(feedback.id, feedback);
     return feedback;
+  }
+
+  async persistQualityReview(input: QualityReviewPersistenceInput): Promise<QualityReviewPersistenceResult> {
+    const supportCase = this.cases.get(input.caseId);
+    if (!supportCase) throw new Error("Case not found");
+
+    const feedbackSnapshot = new Map(this.aiReviewFeedback);
+    try {
+      const feedback: AiReviewFeedback[] = [];
+      for (const item of input.feedback) {
+        const existing = [...this.aiReviewFeedback.values()].find((candidate) => (
+          candidate.caseId === item.caseId
+          && candidate.analysisVersion === item.analysisVersion
+          && candidate.feedbackType === item.feedbackType
+        ));
+        const saved: AiReviewFeedback = existing
+          ? { ...existing, ...item, updatedAt: input.reviewedAt }
+          : { ...item, id: createId("review"), createdAt: input.reviewedAt, updatedAt: input.reviewedAt };
+        this.aiReviewFeedback.set(saved.id, saved);
+        feedback.push(saved);
+      }
+
+      const reviewed = {
+        ...supportCase,
+        confidenceReviewStatus: input.status,
+        confidenceReviewedAt: input.reviewedAt,
+        confidenceReviewedBy: input.reviewedBy,
+        updatedAt: input.reviewedAt,
+      };
+      this.cases.set(input.caseId, reviewed);
+      return { feedback, supportCase: reviewed };
+    } catch (error) {
+      this.aiReviewFeedback = feedbackSnapshot;
+      this.cases.set(input.caseId, supportCase);
+      throw error;
+    }
   }
 
   async listAiReviewFeedback(): Promise<AiReviewFeedback[]> {
