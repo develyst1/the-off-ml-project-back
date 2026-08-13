@@ -18,13 +18,14 @@ type FeedbackResult = "CORRECT" | "INCORRECT";
 async function addFeedback(type: FeedbackType, result: FeedbackResult, name: string, options: {
   analysisId?: string;
   analysisVersion?: number;
+  analysisType?: "customer_message" | "tech_solution";
   reviewSource?: "CASE_DETAIL" | "CONFIDENCE_REVIEW";
 } = {}) {
   const customer = await activeStore.upsertCustomer({ lineUserId: `U-reliability-${name}` });
   const supportCase = await activeStore.createCase({ customerId: customer.id, confidenceScore: 85 });
-  let analysis = await activeStore.createAnalysis({ caseId: supportCase.id, analysisType: "customer_message", confidence: 85, rawJson: {} });
+  let analysis = await activeStore.createAnalysis({ caseId: supportCase.id, analysisType: options.analysisType ?? "customer_message", confidence: 85, rawJson: {} });
   while ((options.analysisVersion ?? 1) > analysis.analysisVersion) {
-    analysis = await activeStore.createAnalysis({ caseId: supportCase.id, analysisType: "customer_message", confidence: 85, rawJson: {} });
+    analysis = await activeStore.createAnalysis({ caseId: supportCase.id, analysisType: options.analysisType ?? "customer_message", confidence: 85, rawJson: {} });
   }
   await activeStore.upsertAiReviewFeedback({
     caseId: supportCase.id,
@@ -84,6 +85,61 @@ test("counts only Confidence Review feedback when sources are mixed", async () =
   await addFeedback("ISSUE_UNDERSTANDING", "INCORRECT", "mixed-confidence-review");
   const result = await getLearnedReliability();
   expect(result.issueUnderstanding).toEqual({ correctCount: 0, incorrectCount: 1, sampleCount: 1, reliability: null, status: "INSUFFICIENT_DATA" });
+});
+
+test("counts Confidence Review feedback only from customer analyses", async () => {
+  resetStore();
+  await addFeedback("ISSUE_UNDERSTANDING", "CORRECT", "customer-understanding");
+  await addFeedback("SOLUTION_SELECTION", "CORRECT", "customer-solution");
+  await addFeedback("ISSUE_UNDERSTANDING", "INCORRECT", "tech-understanding", { analysisType: "tech_solution" });
+  await addFeedback("SOLUTION_SELECTION", "INCORRECT", "tech-solution", { analysisType: "tech_solution" });
+
+  const result = await getLearnedReliability();
+
+  expect(result.issueUnderstanding).toEqual({ correctCount: 1, incorrectCount: 0, sampleCount: 1, reliability: null, status: "INSUFFICIENT_DATA" });
+  expect(result.solutionSelection).toEqual({ correctCount: 1, incorrectCount: 0, sampleCount: 1, reliability: null, status: "INSUFFICIENT_DATA" });
+});
+
+test("returns NO_DATA when only tech analysis has Confidence Review feedback", async () => {
+  resetStore();
+  await addFeedback("ISSUE_UNDERSTANDING", "CORRECT", "only-tech-understanding", { analysisType: "tech_solution" });
+  await addFeedback("SOLUTION_SELECTION", "CORRECT", "only-tech-solution", { analysisType: "tech_solution" });
+
+  const result = await getLearnedReliability();
+
+  expect(result.issueUnderstanding).toEqual({ correctCount: 0, incorrectCount: 0, sampleCount: 0, reliability: null, status: "NO_DATA" });
+  expect(result.solutionSelection).toEqual(result.issueUnderstanding);
+});
+
+test("does not count Case Detail customer feedback or Confidence Review tech feedback", async () => {
+  resetStore();
+  const customer = await activeStore.upsertCustomer({ lineUserId: "U-reliability-cross-type" });
+  const supportCase = await activeStore.createCase({ customerId: customer.id, confidenceScore: 85 });
+  const customerAnalysis = await activeStore.createAnalysis({ caseId: supportCase.id, analysisType: "customer_message", confidence: 85, rawJson: {} });
+  const techAnalysis = await activeStore.createAnalysis({ caseId: supportCase.id, analysisType: "tech_solution", confidence: 85, rawJson: {} });
+  for (const feedbackType of ["ISSUE_UNDERSTANDING", "SOLUTION_SELECTION"] as const) {
+    await activeStore.upsertAiReviewFeedback({
+      caseId: supportCase.id,
+      analysisId: customerAnalysis.analysisId,
+      analysisVersion: customerAnalysis.analysisVersion,
+      feedbackType,
+      result: "CORRECT",
+      reviewSource: "CASE_DETAIL",
+    });
+    await activeStore.upsertAiReviewFeedback({
+      caseId: supportCase.id,
+      analysisId: techAnalysis.analysisId,
+      analysisVersion: techAnalysis.analysisVersion,
+      feedbackType,
+      result: "CORRECT",
+      reviewSource: "CONFIDENCE_REVIEW",
+    });
+  }
+
+  const result = await getLearnedReliability();
+
+  expect(result.issueUnderstanding.sampleCount).toBe(0);
+  expect(result.solutionSelection.sampleCount).toBe(0);
 });
 
 test("keeps one to four samples as INSUFFICIENT_DATA and fifth as READY", async () => {

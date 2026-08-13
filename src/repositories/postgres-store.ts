@@ -886,6 +886,7 @@ export class PostgresStore implements CaseStore {
         and analysis.analysis_version = feedback.analysis_version
        where feedback.analysis_id is not null
          and feedback.review_source = 'CONFIDENCE_REVIEW'
+         and analysis.analysis_type = 'customer_message'
          and ($1::text is null or feedback.case_id <> $1)
        order by feedback.updated_at desc`,
       [options.excludeCaseId ?? null],

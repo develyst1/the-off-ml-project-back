@@ -122,6 +122,62 @@ function postConfidenceReview(body: Record<string, unknown>, suggestionId: strin
   }));
 }
 
+async function createMixedAnalysisReviewFixture(options: { customerFeedbackSource?: "CASE_DETAIL" | "CONFIDENCE_REVIEW" } = {}) {
+  const supportCase = await createCase(85);
+  const customerAnalysis = await store.createAnalysis({
+    caseId: supportCase.id,
+    analysisType: "customer_message",
+    confidence: 85,
+    rawJson: {},
+  });
+  const solution = await store.createSolution({
+    caseId: supportCase.id,
+    rawReplyText: "restart service",
+    solutionSteps: ["restart service"],
+    rewrittenCustomerText: "restart service",
+    confidence: 95,
+    validatedByTeam: false,
+  });
+  await store.createAnalysis({
+    caseId: supportCase.id,
+    analysisType: "tech_solution",
+    confidence: 95,
+    rawJson: {},
+  });
+  const latestTechAnalysis = await store.createAnalysis({
+    caseId: supportCase.id,
+    analysisType: "tech_solution",
+    confidence: 95,
+    rawJson: {},
+  });
+
+  if (options.customerFeedbackSource) {
+    for (const feedbackType of ["ISSUE_UNDERSTANDING", "SOLUTION_SELECTION"] as const) {
+      await store.upsertAiReviewFeedback({
+        caseId: supportCase.id,
+        analysisId: customerAnalysis.analysisId,
+        analysisVersion: customerAnalysis.analysisVersion,
+        feedbackType,
+        result: feedbackType === "SOLUTION_SELECTION" && options.customerFeedbackSource === "CASE_DETAIL" ? "INCORRECT" : "CORRECT",
+        reviewSource: options.customerFeedbackSource,
+      });
+    }
+  }
+
+  for (const feedbackType of ["ISSUE_UNDERSTANDING", "SOLUTION_SELECTION"] as const) {
+    await store.upsertAiReviewFeedback({
+      caseId: supportCase.id,
+      analysisId: latestTechAnalysis.analysisId,
+      analysisVersion: latestTechAnalysis.analysisVersion,
+      feedbackType,
+      result: "CORRECT",
+      reviewSource: "CONFIDENCE_REVIEW",
+    });
+  }
+
+  return { supportCase, customerAnalysis, latestTechAnalysis, solution };
+}
+
 describe("POST /webhooks/teams/actions", () => {
   test("re-analysis creates a new customer analysis from the latest case messages", async () => {
     const supportCase = await createCase(75);
@@ -1234,6 +1290,160 @@ describe("POST /webhooks/teams/actions", () => {
     expect(response.status).toBe(502);
     expect(detail?.status).toBe("assigned");
     expect(detail?.messages.some((message) => message.deliveryStatus === "FAILED")).toBe(true);
+  });
+
+  test("keeps customer analysis in QUALITY queue when newer tech analysis has formal feedback", async () => {
+    const fixture = await createMixedAnalysisReviewFixture({ customerFeedbackSource: "CASE_DETAIL" });
+
+    const response = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const body = await response.json() as { data: Array<{ caseId: string; analysisId?: string; analysisVersion?: number; reviewStage: string }> };
+    const suggestion = body.data.find((item) => item.caseId === fixture.supportCase.id);
+
+    expect(response.status).toBe(200);
+    expect(suggestion).toEqual(expect.objectContaining({
+      analysisId: fixture.customerAnalysis.analysisId,
+      analysisVersion: fixture.customerAnalysis.analysisVersion,
+      reviewStage: "QUALITY",
+    }));
+    expect(fixture.latestTechAnalysis.analysisVersion).toBeGreaterThan(fixture.customerAnalysis.analysisVersion);
+  });
+
+  test("removes QUALITY item only after the current customer analysis is formally confirmed", async () => {
+    const fixture = await createMixedAnalysisReviewFixture({ customerFeedbackSource: "CONFIDENCE_REVIEW" });
+
+    const response = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const body = await response.json() as { data: Array<{ caseId: string }> };
+
+    expect(response.status).toBe(200);
+    expect(body.data.some((item) => item.caseId === fixture.supportCase.id)).toBe(false);
+  });
+
+  test("accepts review of latest customer analysis when a newer tech analysis exists", async () => {
+    const supportCase = await createCase(85);
+    for (let version = 1; version < 10; version += 1) {
+      await store.createAnalysis({ caseId: supportCase.id, analysisType: "tech_solution", confidence: 85, rawJson: {} });
+    }
+    const customerAnalysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "customer_message",
+      confidence: 85,
+      rawJson: {},
+    });
+    const techAnalysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "tech_solution",
+      confidence: 85,
+      rawJson: {},
+    });
+    const solution = await store.createSolution({
+      caseId: supportCase.id,
+      rawReplyText: "restart service",
+      solutionSteps: ["restart service"],
+      rewrittenCustomerText: "restart service",
+      confidence: 85,
+      validatedByTeam: false,
+    });
+
+    const response = await postConfidenceReview({
+      caseId: supportCase.id,
+      analysisId: customerAnalysis.analysisId,
+      analysisVersion: customerAnalysis.analysisVersion,
+      solutionId: solution.id,
+      reviewStage: "QUALITY",
+      understandingResult: "CORRECT",
+      solutionResult: "CORRECT",
+    }, `match_${supportCase.id}`);
+    const feedback = (await store.listAiReviewFeedback()).filter((item) => item.caseId === supportCase.id);
+
+    expect(customerAnalysis.analysisVersion).toBe(10);
+    expect(techAnalysis.analysisVersion).toBe(11);
+    expect(response.status).toBe(200);
+    expect(feedback).toHaveLength(2);
+    expect(feedback.every((item) => item.analysisId === customerAnalysis.analysisId && item.reviewSource === "CONFIDENCE_REVIEW")).toBe(true);
+  });
+
+  test("rejects stale customer review only when a newer customer analysis exists", async () => {
+    const supportCase = await createCase(85);
+    for (let version = 1; version < 10; version += 1) {
+      await store.createAnalysis({ caseId: supportCase.id, analysisType: "tech_solution", confidence: 85, rawJson: {} });
+    }
+    const oldCustomerAnalysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "customer_message",
+      confidence: 85,
+      rawJson: {},
+    });
+    await store.createAnalysis({ caseId: supportCase.id, analysisType: "tech_solution", confidence: 85, rawJson: {} });
+    const currentCustomerAnalysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "customer_message",
+      confidence: 85,
+      rawJson: {},
+    });
+
+    const response = await postConfidenceReview({
+      caseId: supportCase.id,
+      analysisId: oldCustomerAnalysis.analysisId,
+      analysisVersion: oldCustomerAnalysis.analysisVersion,
+      reviewStage: "QUALITY",
+      understandingResult: "CORRECT",
+    }, `match_${supportCase.id}`);
+
+    expect(currentCustomerAnalysis.analysisVersion).toBeGreaterThan(oldCustomerAnalysis.analysisVersion);
+    expect(oldCustomerAnalysis.analysisVersion).toBe(10);
+    expect(currentCustomerAnalysis.analysisVersion).toBe(12);
+    expect(response.status).toBe(409);
+    expect((await store.listAiReviewFeedback()).some((item) => item.caseId === supportCase.id)).toBe(false);
+  });
+
+  test("legacy QUALITY review writes feedback to latest customer analysis", async () => {
+    const supportCase = await createCase(85);
+    const customerAnalysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "customer_message",
+      confidence: 85,
+      rawJson: {},
+    });
+    await store.createAnalysis({ caseId: supportCase.id, analysisType: "tech_solution", confidence: 95, rawJson: {} });
+    const latestTechAnalysis = await store.createAnalysis({ caseId: supportCase.id, analysisType: "tech_solution", confidence: 95, rawJson: {} });
+    const solution = await store.createSolution({
+      caseId: supportCase.id,
+      rawReplyText: "restart service",
+      solutionSteps: ["restart service"],
+      rewrittenCustomerText: "restart service",
+      confidence: 95,
+      validatedByTeam: false,
+    });
+
+    const response = await postConfidenceReview({
+      caseId: supportCase.id,
+      solutionId: solution.id,
+      reviewStage: "QUALITY",
+      result: "approved",
+    }, `match_${supportCase.id}`);
+    const feedback = (await store.listAiReviewFeedback()).filter((item) => item.caseId === supportCase.id);
+
+    expect(response.status).toBe(200);
+    expect(feedback).toHaveLength(2);
+    expect(feedback.every((item) => item.analysisId === customerAnalysis.analysisId)).toBe(true);
+    expect(feedback.every((item) => item.analysisId !== latestTechAnalysis.analysisId)).toBe(true);
+  });
+
+  test("keeps production-equivalent mixed-analysis cases in QUALITY queue", async () => {
+    const fixtures = await Promise.all(Array.from({ length: 18 }, () => (
+      createMixedAnalysisReviewFixture({ customerFeedbackSource: "CASE_DETAIL" })
+    )));
+
+    const response = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const body = await response.json() as { data: Array<{ caseId: string; analysisId?: string; reviewStage: string }> };
+
+    expect(response.status).toBe(200);
+    for (const fixture of fixtures) {
+      expect(body.data.find((item) => item.caseId === fixture.supportCase.id)).toEqual(expect.objectContaining({
+        analysisId: fixture.customerAnalysis.analysisId,
+        reviewStage: "QUALITY",
+      }));
+    }
   });
 
   test("records 90-97% confirmation as quality review without enabling auto-answer", async () => {

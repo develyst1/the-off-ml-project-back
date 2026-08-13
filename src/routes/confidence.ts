@@ -4,6 +4,7 @@ import { store } from "../repositories/store";
 import { caseService } from "../services/case-service";
 import { hasActionableSolutionSteps } from "../lib/solution-quality";
 import { listAiReviewFeedbackForAnalysis, saveAiReviewFeedback } from "../services/ai-review-feedback-service";
+import { getLatestCustomerMessageAnalysis } from "../lib/analysis";
 
 export const confidenceRoutes = new Hono();
 
@@ -29,8 +30,7 @@ confidenceRoutes.get("/suggestions", async (c) => {
     .map(async (item) => {
       const customerMessage = item.messages.find((message) => message.senderType === "CUSTOMER");
       const latestSolution = [...item.solutions].reverse().find((solution) => hasActionableSolutionSteps(solution.solutionSteps));
-      const currentAnalysis = [...item.analyses]
-        .sort((left, right) => right.analysisVersion - left.analysisVersion || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+      const currentAnalysis = getLatestCustomerMessageAnalysis(item.analyses);
       if (!currentAnalysis) return [];
       const caseConfidence = item.confidenceScore ?? 0;
       const solutionConfidence = latestSolution?.confidence ?? caseConfidence;
@@ -134,8 +134,7 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
     const detail = await caseService.getCase(caseId);
     if (!detail) return c.json({ error: "case_not_found" }, 404);
 
-    const currentAnalysis = [...detail.analyses]
-      .sort((left, right) => right.analysisVersion - left.analysisVersion || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+    const currentAnalysis = getLatestCustomerMessageAnalysis(detail.analyses);
     if (!currentAnalysis
       || currentAnalysis.analysisId !== analysisId
       || currentAnalysis.analysisVersion !== analysisVersion) {
@@ -272,8 +271,7 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
   }
 
   const reviewedAt = new Date().toISOString();
-  const currentAnalysis = [...detail.analyses]
-    .sort((left, right) => right.analysisVersion - left.analysisVersion || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+  const currentAnalysis = getLatestCustomerMessageAnalysis(detail.analyses);
 
   if (currentAnalysis && reviewStage === "QUALITY") {
     const feedbackType = result === "approved"

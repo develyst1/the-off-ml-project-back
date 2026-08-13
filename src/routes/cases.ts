@@ -6,6 +6,7 @@ import { listAiReviewFeedbackForAnalysis, saveAiReviewFeedback } from "../servic
 import { categoryKeyOf } from "../lib/category";
 import { store } from "../repositories/store";
 import { analysisMessageIdentity } from "../repositories/case-message-normalizer";
+import { getLatestCustomerMessageAnalysis } from "../lib/analysis";
 
 const statuses: CaseStatus[] = [
   "new",
@@ -29,9 +30,7 @@ export const caseRoutes = new Hono();
 async function caseDetailResponse(detail: Awaited<ReturnType<typeof caseService.getCase>>) {
   if (!detail) return undefined;
 
-  const currentAnalysis = [...detail.analyses]
-    .filter((analysis) => analysis.analysisType === "customer_message")
-    .sort((left, right) => right.analysisVersion - left.analysisVersion || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+  const currentAnalysis = getLatestCustomerMessageAnalysis(detail.analyses);
   const feedback = currentAnalysis
     ? await listAiReviewFeedbackForAnalysis({
       caseId: detail.id,

@@ -305,6 +305,7 @@ export class InMemoryStore implements CaseStore {
         analysis.caseId === feedback.caseId
         && analysis.analysisId === feedback.analysisId
         && analysis.analysisVersion === feedback.analysisVersion
+        && analysis.analysisType === "customer_message"
       )))
       .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
   }
