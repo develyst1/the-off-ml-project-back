@@ -1010,6 +1010,21 @@ describe("POST /webhooks/teams/actions", () => {
       feedbackType: "SOLUTION_SELECTION",
       result: "CORRECT",
     });
+    const newerTechAnalysis = await store.createAnalysis({
+      caseId: supportCases[0].id,
+      analysisType: "tech_solution",
+      category: "UNMAPPED_TECH_SOLUTION_CATEGORY",
+      confidence: 99,
+      rawJson: {},
+    });
+    await store.upsertAiReviewFeedback({
+      caseId: supportCases[0].id,
+      analysisId: newerTechAnalysis.analysisId,
+      analysisVersion: newerTechAnalysis.analysisVersion,
+      feedbackType: "ISSUE_UNDERSTANDING",
+      result: "CORRECT",
+      reviewSource: "CONFIDENCE_REVIEW",
+    });
 
     for (const [index, supportCase] of supportCases.slice(1).entries()) {
       const analysis = await store.createAnalysis({

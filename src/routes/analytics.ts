@@ -1,10 +1,23 @@
 import { Hono } from "hono";
+import type { CaseStatus } from "../domain/types";
+import { getLatestCustomerMessageAnalysis } from "../lib/analysis";
 import { caseService } from "../services/case-service";
 import { isSolutionReadyForAutoAnswer } from "../services/auto-answer-guardrail";
 import { categoryKeyOf, categoryLabelOf } from "../lib/category";
 import { store } from "../repositories/store";
 
 export const analyticsRoutes = new Hono();
+
+const SLA_MONITORED_STATUSES = new Set<CaseStatus>([
+  "new",
+  "analyzing",
+  "awaiting_tech",
+  "assigned",
+  "in_progress",
+  "analyzing_solution",
+  "awaiting_tech_review",
+  "reopened",
+]);
 
 function bucketConfidence(value: number) {
   if (value < 60) return "0-59%";
@@ -25,6 +38,16 @@ function analyticsStartAt(range?: string) {
   return Date.now() - days * 24 * 60 * 60 * 1000;
 }
 
+function isSlaBreached(item: Awaited<ReturnType<typeof caseService.listCases>>[number]) {
+  if (!SLA_MONITORED_STATUSES.has(item.status)) return false;
+  const latestCustomerMessage = [...item.messages]
+    .filter((message) => message.senderType === "CUSTOMER")
+    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+  const activityAt = latestCustomerMessage?.receivedAt ?? latestCustomerMessage?.createdAt ?? item.updatedAt;
+  const activityTime = new Date(activityAt).getTime();
+  return Number.isFinite(activityTime) && Date.now() - activityTime >= 4 * 60 * 60 * 1000;
+}
+
 analyticsRoutes.get("/summary", async (c) => {
   const allCases = await caseService.listCases();
   const cases = allCases.filter((item) => {
@@ -34,15 +57,23 @@ analyticsRoutes.get("/summary", async (c) => {
   const feedback = await store.listAiReviewFeedback();
   const total = cases.length;
   const solved = cases.filter((item) => item.status === "resolved" || item.status === "sent_to_customer" || item.status === "closed").length;
-  const overSla = 0;
-  const readyForAutoAnswer = cases.filter((item) =>
-    item.solutions.some((solution) => isSolutionReadyForAutoAnswer(
-      item.confidenceScore,
+  const overSla = cases.filter(isSlaBreached).length;
+  const latestAnalysisByCase = new Map(cases.map((item) => (
+    [item.id, getLatestCustomerMessageAnalysis(item.analyses)] as const
+  )));
+  const automationSettings = await store.getAutomationSettings().catch(() => ({
+    caseUnderstandingThreshold: 98,
+    caseDiscriminationThreshold: 98,
+  }));
+  const readyForAutoAnswer = cases.filter((item) => {
+    const currentAnalysis = latestAnalysisByCase.get(item.id);
+    return item.solutions.some((solution) => isSolutionReadyForAutoAnswer(
+      currentAnalysis?.confidence ?? item.confidenceScore,
       solution,
-      { caseUnderstandingThreshold: 98, caseDiscriminationThreshold: 98 },
-    )),
-  ).length;
-  const solvedFromExistingSolutionPct = total ? Math.round((solved / total) * 100) : 0;
+      automationSettings,
+    ));
+  }).length;
+  const resolvedCasePct = total ? Math.round((solved / total) * 100) : 0;
 
   const categoryCounts = new Map<string, {
     count: number;
@@ -52,13 +83,6 @@ analyticsRoutes.get("/summary", async (c) => {
     solutionSelectionReviewed: number;
   }>();
   const confidenceCounts = new Map<string, number>();
-  const latestAnalysisByCase = new Map(cases.map((item) => {
-    const latest = [...item.analyses].sort((left, right) => (
-      right.analysisVersion - left.analysisVersion
-      || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
-    ))[0];
-    return [item.id, latest] as const;
-  }));
   const currentFeedback = new Map<string, typeof feedback[number]>();
   for (const item of feedback) {
     const analysis = latestAnalysisByCase.get(item.caseId);
@@ -103,7 +127,8 @@ analyticsRoutes.get("/summary", async (c) => {
       if (solutionSelection.result === "CORRECT") current.solutionSelectionCorrect += 1;
     }
     categoryCounts.set(category, current);
-    confidenceCounts.set(bucketConfidence(item.confidenceScore ?? 0), (confidenceCounts.get(bucketConfidence(item.confidenceScore ?? 0)) ?? 0) + 1);
+    const confidenceBucket = bucketConfidence(analysis?.confidence ?? item.confidenceScore ?? 0);
+    confidenceCounts.set(confidenceBucket, (confidenceCounts.get(confidenceBucket) ?? 0) + 1);
   }
 
   const categories = [...categoryCounts.entries()].map(([key, statistics]) => ({
@@ -129,7 +154,10 @@ analyticsRoutes.get("/summary", async (c) => {
   return c.json({
     data: {
       total,
-      solvedFromExistingSolutionPct,
+      resolvedCasePct,
+      // Backward-compatible alias for existing clients. The value has always
+      // represented resolved/closed cases, not verified solution reuse.
+      solvedFromExistingSolutionPct: resolvedCasePct,
       overSla,
       readyForAutoAnswer,
       categories,
