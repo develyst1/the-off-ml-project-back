@@ -12,6 +12,8 @@ type CapturedCustomerAnalysisInput = {
   caseAnalysisContext?: unknown;
 };
 let lastCustomerAnalysisInput: CapturedCustomerAnalysisInput | undefined;
+type CapturedTechSolutionInput = { techReplyText: string; originalCustomerText?: string };
+let lastTechSolutionInput: CapturedTechSolutionInput | undefined;
 
 mock.module("../repositories/store", () => ({ store }));
 mock.module("../services/line-client", () => ({
@@ -51,11 +53,14 @@ mock.module("../services/ai-center-client", () => ({
       missingInformation: [],
       reason: "ใช้ข้อความล่าสุดของลูกค้าและประวัติเคส",
     }),
-    analyzeTechSolution: async () => ({
-      solutionSteps: [],
-      teamActions: ["รีเซ็ตข้อมูลในระบบแล้ว"],
-      rewrittenCustomerText: "",
-    }),
+    analyzeTechSolution: async (input: CapturedTechSolutionInput) => {
+      lastTechSolutionInput = input;
+      return {
+        solutionSteps: [],
+        teamActions: ["รีเซ็ตข้อมูลในระบบแล้ว"],
+        rewrittenCustomerText: "",
+      };
+    },
     reviewTechMessageForCustomer: async () => ({ shouldSendToCustomer: false, reviewFailed: false }),
   },
 }));
@@ -620,6 +625,46 @@ describe("POST /webhooks/teams/actions", () => {
     expect(detail?.analyses.some((analysis) => analysis.analysisType === "tech_solution")).toBe(true);
     const techSolutionAnalysis = detail?.analyses.find((analysis) => analysis.analysisType === "tech_solution");
     expect((techSolutionAnalysis?.rawJson as { teamActions?: string[] }).teamActions).toEqual(["รีเซ็ตข้อมูลในระบบแล้ว"]);
+  });
+
+  test("excludes unselected Inbox history from Tech Solution analysis context", async () => {
+    const supportCase = await createCase();
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "เคสเก่าอัปโหลดไฟล์ไม่ได้",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+      metadata: { isCaseReference: false, sourceInboxMessageId: "inbox-history-upload" },
+    });
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "เข้าสู่ระบบไม่ได้เพราะรหัสผ่านหมดอายุ",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+      metadata: { isCaseReference: true, sourceInboxMessageId: "inbox-current-password" },
+    });
+    lastTechSolutionInput = undefined;
+
+    const response = await postAction({
+      action: "REPLY_CUSTOMER",
+      caseId: supportCase.id,
+      caseNumber: supportCase.caseNumber,
+      replyText: "เปลี่ยนรหัสผ่านแล้วเข้าสู่ระบบใหม่ครับ",
+      requestId: `scoped-solution-${sequence}`,
+    });
+    const capturedTechSolutionInput = lastTechSolutionInput as CapturedTechSolutionInput | undefined;
+
+    expect(response.status).toBe(200);
+    expect(capturedTechSolutionInput?.originalCustomerText).toBe("เข้าสู่ระบบไม่ได้เพราะรหัสผ่านหมดอายุ");
+    expect(capturedTechSolutionInput?.techReplyText).toContain("เข้าสู่ระบบไม่ได้เพราะรหัสผ่านหมดอายุ");
+    expect(capturedTechSolutionInput?.techReplyText).toContain("เปลี่ยนรหัสผ่านแล้วเข้าสู่ระบบใหม่ครับ");
+    expect(capturedTechSolutionInput?.techReplyText).not.toContain("เคสเก่าอัปโหลดไฟล์ไม่ได้");
   });
 
   test("rejects a missing reply and a mismatched case number", async () => {
@@ -1718,6 +1763,59 @@ describe("POST /webhooks/teams/actions", () => {
       analysisVersion: newAnalysis.analysisVersion,
       technicalTopic: "บัญชีถูกล็อก",
     }));
+  });
+
+  test("uses the current analysis message and omits Solution confidence when no Solution exists", async () => {
+    const supportCase = await createCase(90);
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "ข้อความเก่าเรื่องอัปโหลดไฟล์",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+      metadata: { isCaseReference: false, sourceInboxMessageId: "inbox-confidence-history" },
+    });
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "ข้อความปัจจุบันเรื่องรหัสผ่านหมดอายุ",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_MESSAGE",
+      deliveryStatus: "RECEIVED",
+      metadata: { isCaseReference: true, sourceInboxMessageId: "inbox-confidence-current" },
+    });
+    const analysis = await store.createAnalysis({
+      caseId: supportCase.id,
+      analysisType: "customer_message",
+      category: "LOGIN_ACCESS",
+      confidence: 90,
+      rawJson: { sourceMessageIds: ["inbox-confidence-current"] },
+    });
+
+    const response = await app.fetch(new Request("http://localhost/confidence/suggestions"));
+    const body = await response.json() as { data: Array<{
+      caseId: string;
+      originalText: string;
+      analysisId?: string;
+      suggestedSolutionId: string;
+      solutionText: string;
+      hasSuggestedSolution?: boolean;
+      caseDiscriminationConfidence?: number;
+    }> };
+    const suggestion = body.data.find((item) => item.caseId === supportCase.id);
+
+    expect(response.status).toBe(200);
+    expect(suggestion).toEqual(expect.objectContaining({
+      originalText: "ข้อความปัจจุบันเรื่องรหัสผ่านหมดอายุ",
+      analysisId: analysis.analysisId,
+      suggestedSolutionId: "",
+      solutionText: "—",
+      hasSuggestedSolution: false,
+    }));
+    expect(suggestion?.caseDiscriminationConfidence).toBeUndefined();
   });
 
   test("keeps Case Detail feedback in the queue until Confidence Review confirms it", async () => {

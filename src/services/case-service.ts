@@ -100,6 +100,7 @@ function buildConversationCaseAnalysisContext(detail: CaseDetail): {
         && message.direction !== "INTERNAL"
         && message.messageType !== "SYSTEM_EVENT"
         && message.deliveryStatus?.toUpperCase() !== "FAILED"
+        && message.metadata?.isCaseReference !== false
         && occurredAt >= startedAt
         && occurredAt <= endedAt;
     })
@@ -363,17 +364,13 @@ async function extractAndStoreTechSolution(input: {
   techReplyText: string;
   rewrittenCustomerText: string;
 }) {
-  const startedAt = new Date(input.detail.conversationStartedAt ?? input.detail.createdAt).getTime();
-  const endedAt = input.detail.conversationEndedAt ? new Date(input.detail.conversationEndedAt).getTime() : Number.POSITIVE_INFINITY;
-  const conversationTranscript = input.detail.messages
-    .filter((message) => message.channel === "line")
-    .filter((message) => {
-      const occurredAt = new Date(message.receivedAt ?? message.sentAt ?? message.deliveredAt ?? message.createdAt).getTime();
-      return occurredAt >= startedAt && occurredAt <= endedAt;
-    })
+  const caseConversationMessages = buildConversationCaseAnalysisContext(input.detail).messages;
+  const conversationTranscript = caseConversationMessages
     .map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : message.senderType === "TECH" ? "ทีม Tech" : "ระบบ"}: ${message.originalText}`);
   conversationTranscript.push(`ทีม Tech: ${input.techReplyText}`);
-  const originalCustomerText = input.detail.messages.find((item) => item.senderType === "CUSTOMER")?.originalText;
+  const originalCustomerText = caseConversationMessages.find((item) => item.senderType === "CUSTOMER")?.originalText
+    ?? input.detail.problemSummary
+    ?? input.detail.title;
   const solutionAnalysis = await aiCenterClient.analyzeTechSolution({
     techReplyText: conversationTranscript.join("\n"),
     originalCustomerText,

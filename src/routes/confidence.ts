@@ -4,8 +4,9 @@ import { store } from "../repositories/store";
 import { caseService } from "../services/case-service";
 import { hasActionableSolutionSteps } from "../lib/solution-quality";
 import { listAiReviewFeedbackForAnalysis, saveAiReviewFeedback, saveQualityReview } from "../services/ai-review-feedback-service";
-import { getAnalysisTechnicalTopic, getLatestCustomerMessageAnalysis } from "../lib/analysis";
+import { getAnalysisSourceMessageIds, getAnalysisTechnicalTopic, getLatestCustomerMessageAnalysis } from "../lib/analysis";
 import { categoryLabelOf } from "../lib/category";
+import { analysisMessageIdentity } from "../repositories/case-message-normalizer";
 
 export const confidenceRoutes = new Hono();
 
@@ -34,16 +35,41 @@ function getLatestActionableSolution<T extends { createdAt: string; solutionStep
     : undefined;
 }
 
+function getCustomerMessageForAnalysis<T extends {
+  id: string;
+  initialCustomerMessageId?: string;
+  latestCustomerMessageId?: string;
+  messages: Array<{ id: string; senderType?: string; originalText: string; metadata?: Record<string, unknown> }>;
+}>(item: T, analysis: Parameters<typeof getAnalysisSourceMessageIds>[0]) {
+  const customerMessages = item.messages.filter((message) => message.senderType === "CUSTOMER");
+  const sourceMessageIds = getAnalysisSourceMessageIds(analysis);
+  for (const sourceId of [...sourceMessageIds].reverse()) {
+    const match = customerMessages.find((message) => (
+      message.id === sourceId || analysisMessageIdentity(message) === sourceId
+    ));
+    if (match) return match;
+  }
+
+  const currentMessageId = item.latestCustomerMessageId ?? item.initialCustomerMessageId;
+  const currentMessage = currentMessageId
+    ? customerMessages.find((message) => message.id === currentMessageId || analysisMessageIdentity(message) === currentMessageId)
+    : undefined;
+  if (currentMessage) return currentMessage;
+
+  return customerMessages.filter((message) => message.metadata?.isCaseReference === true).at(-1)
+    ?? customerMessages.at(-1);
+}
+
 confidenceRoutes.get("/suggestions", async (c) => {
   const cases = await caseService.listCases();
   const suggestions = (await Promise.all(cases
     .map(async (item) => {
-      const customerMessage = item.messages.find((message) => message.senderType === "CUSTOMER");
       const latestSolution = getLatestActionableSolution(item.solutions);
       const currentAnalysis = getLatestCustomerMessageAnalysis(item.analyses);
       if (!currentAnalysis) return [];
+      const customerMessage = getCustomerMessageForAnalysis(item, currentAnalysis);
       const caseConfidence = item.confidenceScore ?? 0;
-      const solutionConfidence = latestSolution?.confidence ?? caseConfidence;
+      const solutionConfidence = latestSolution?.confidence;
       const baseReviewStage = getReviewStage(caseConfidence, latestSolution?.confidence, Boolean(latestSolution));
       const currentFeedback = await listAiReviewFeedbackForAnalysis({
         caseId: item.id,
@@ -57,7 +83,8 @@ confidenceRoutes.get("/suggestions", async (c) => {
       const hasReviewedSolution = solutionFeedback?.reviewSource === "CONFIDENCE_REVIEW";
       const hasCompletedQualityReview = Boolean(latestSolution) && hasReviewedUnderstanding && hasReviewedSolution;
       const reviewStage = hasNegativeFeedback ? "QUALITY" : baseReviewStage;
-      const reviewStatus: ReviewStatus = caseConfidence < REVIEW_THRESHOLD || solutionConfidence < REVIEW_THRESHOLD
+      const reviewStatus: ReviewStatus = caseConfidence < REVIEW_THRESHOLD
+        || (solutionConfidence !== undefined && solutionConfidence < REVIEW_THRESHOLD)
         ? "LOW_CONFIDENCE"
         : hasNegativeFeedback
           ? "NEGATIVE_FEEDBACK"
