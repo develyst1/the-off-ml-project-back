@@ -24,12 +24,21 @@ function getFeedbackResult(value: unknown): FeedbackResult | undefined {
   return value === "CORRECT" || value === "INCORRECT" ? value : undefined;
 }
 
+function getLatestActionableSolution<T extends { createdAt: string; solutionSteps: string[] }>(solutions: T[]) {
+  const latestSolution = [...solutions]
+    .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime())
+    .at(-1);
+  return latestSolution && hasActionableSolutionSteps(latestSolution.solutionSteps)
+    ? latestSolution
+    : undefined;
+}
+
 confidenceRoutes.get("/suggestions", async (c) => {
   const cases = await caseService.listCases();
   const suggestions = (await Promise.all(cases
     .map(async (item) => {
       const customerMessage = item.messages.find((message) => message.senderType === "CUSTOMER");
-      const latestSolution = [...item.solutions].reverse().find((solution) => hasActionableSolutionSteps(solution.solutionSteps));
+      const latestSolution = getLatestActionableSolution(item.solutions);
       const currentAnalysis = getLatestCustomerMessageAnalysis(item.analyses);
       if (!currentAnalysis) return [];
       const caseConfidence = item.confidenceScore ?? 0;
@@ -45,7 +54,7 @@ confidenceRoutes.get("/suggestions", async (c) => {
       const hasNegativeFeedback = understandingFeedback?.result === "INCORRECT" || solutionFeedback?.result === "INCORRECT";
       const hasReviewedUnderstanding = understandingFeedback?.reviewSource === "CONFIDENCE_REVIEW";
       const hasReviewedSolution = solutionFeedback?.reviewSource === "CONFIDENCE_REVIEW";
-      const hasCompletedQualityReview = hasReviewedUnderstanding && (!latestSolution || hasReviewedSolution);
+      const hasCompletedQualityReview = Boolean(latestSolution) && hasReviewedUnderstanding && hasReviewedSolution;
       const reviewStage = hasNegativeFeedback ? "QUALITY" : baseReviewStage;
       const reviewStatus: ReviewStatus = caseConfidence < REVIEW_THRESHOLD || solutionConfidence < REVIEW_THRESHOLD
         ? "LOW_CONFIDENCE"
@@ -146,7 +155,7 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
       return c.json({ error: "review_context_changed", message: "Analysis changed. Reload Confidence Review and try again." }, 409);
     }
 
-    const latestSolution = [...detail.solutions].reverse().find((solution) => hasActionableSolutionSteps(solution.solutionSteps));
+    const latestSolution = getLatestActionableSolution(detail.solutions);
     if (solutionId && latestSolution?.id !== solutionId) {
       return c.json({ error: "review_context_changed", message: "Suggested solution changed. Reload Confidence Review and try again." }, 409);
     }
@@ -179,17 +188,17 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
     }
 
     if (reviewStage === "QUALITY") {
+      if (!latestSolution) {
+        return c.json({ error: "quality_solution_is_required" }, 400);
+      }
       if (!understandingResult) {
         return c.json({ error: "quality_understanding_result_is_required" }, 400);
       }
-      if (latestSolution && !solutionId) {
+      if (!solutionId) {
         return c.json({ error: "solution_id_is_required" }, 400);
       }
-      if (latestSolution && !solutionResult) {
+      if (!solutionResult) {
         return c.json({ error: "quality_solution_result_is_required" }, 400);
-      }
-      if (!latestSolution && solutionResult) {
-        return c.json({ error: "quality_solution_result_is_not_applicable" }, 400);
       }
 
       const reviewedAt = new Date().toISOString();

@@ -927,13 +927,29 @@ describe("POST /webhooks/teams/actions", () => {
     expect(after.data.some((item) => item.caseId === supportCase.id)).toBe(false);
   });
 
-  test("reviews understanding only when the current case has no actionable solution", async () => {
+  test("keeps quality review pending when the latest solution is incomplete", async () => {
     const supportCase = await createCase(85);
     const analysis = await store.createAnalysis({
       caseId: supportCase.id,
       analysisType: "customer_message",
       confidence: 85,
       rawJson: {},
+    });
+    await store.createSolution({
+      caseId: supportCase.id,
+      rawReplyText: "restart service",
+      solutionSteps: ["restart service"],
+      rewrittenCustomerText: "restart service",
+      confidence: 95,
+      validatedByTeam: false,
+    });
+    await store.createSolution({
+      caseId: supportCase.id,
+      rawReplyText: "incomplete latest solution",
+      solutionSteps: [],
+      rewrittenCustomerText: "",
+      confidence: 95,
+      validatedByTeam: false,
     });
     const suggestionsResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
     const suggestions = await suggestionsResponse.json() as { data: Array<{ id: string; caseId: string; hasSuggestedSolution: boolean }> };
@@ -948,15 +964,14 @@ describe("POST /webhooks/teams/actions", () => {
       understandingResult: "INCORRECT",
       reason: "understanding is incomplete",
     }, suggestion?.id ?? "missing");
-    const body = await response.json() as { data?: { feedback?: Array<{ feedbackType: string; result: string }> } };
+    const body = await response.json() as { error?: string };
 
-    expect(response.status).toBe(200);
-    expect(body.data?.feedback).toEqual([
-      expect.objectContaining({ feedbackType: "ISSUE_UNDERSTANDING", result: "INCORRECT" }),
-    ]);
+    expect(response.status).toBe(400);
+    expect(body.error).toBe("quality_solution_is_required");
+    expect((await store.listAiReviewFeedback()).some((item) => item.caseId === supportCase.id)).toBe(false);
     const afterResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
     const after = await afterResponse.json() as { data: Array<{ caseId: string }> };
-    expect(after.data.some((item) => item.caseId === supportCase.id)).toBe(false);
+    expect(after.data.some((item) => item.caseId === supportCase.id)).toBe(true);
   });
 
   test("calculates Analytics accuracy from current analysis-version feedback only", async () => {
