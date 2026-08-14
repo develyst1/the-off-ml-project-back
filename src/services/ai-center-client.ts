@@ -1,5 +1,6 @@
 import { env } from "../config/env";
-import { normalizeCategory } from "../lib/category";
+import { customerAnalysisCategoryKeyOf, normalizeCategory } from "../lib/category";
+import { normalizeTechnicalTopic } from "../lib/analysis";
 import {
   PENDING_INFORMATION_FIELDS,
   type PendingInformationField,
@@ -47,6 +48,7 @@ export type CustomerMessageAnalysis = {
   summary: string;
   caseTitle: string;
   category: string;
+  technicalTopic?: string;
   urgency: "low" | "medium" | "high" | "critical";
   sentiment: string;
   missingInformation: string[];
@@ -101,6 +103,8 @@ export const CUSTOMER_ANALYSIS_INSTRUCTIONS = [
   "When the latest clarification explicitly says one value or condition now works and another still fails, the summary must state both current facts clearly, including the working value and the failing value. Do not summarize only the historical failure.",
   "caseAnalysisContext.detail may be an earlier summary and is reference-only when it conflicts with the current conversation.",
   "Feedback examples and historical solution guidance are reference-only. Current conversation facts always take precedence and historical facts must never be copied into the current case.",
+  "Choose category from the fixed Tech Support main-category list only. Select the closest main category and use อื่นๆ only when none of the fixed categories reasonably fits.",
+  "Return technicalTopic as a concise, specific Thai problem topic derived from the current case, separate from the broad main category. Do not return an internal code or repeat the main-category name.",
 ] as const;
 
 export const CUSTOMER_ANALYSIS_SYSTEM_INSTRUCTIONS = [
@@ -943,6 +947,7 @@ export const aiCenterClient = {
             summary: "string",
             caseTitle: "หัวข้อภาษาไทยสั้น 30-50 ตัวอักษร อิงข้อความผู้ใช้งานเท่านั้น",
             category: "เลือกเพียงหนึ่งหมวดหมู่ภาษาไทยที่ใกล้ที่สุดจาก: ปัญหาการเชื่อมต่อเครือข่าย | ปัญหาการเข้าสู่ระบบ | ปัญหาการอัปเดตสถานะ | ปัญหาฮาร์ดแวร์ | ปัญหาซอฟต์แวร์ | ปัญหาการแสดงข้อมูล | อื่นๆ",
+            technicalTopic: "หัวข้อปัญหาทางเทคนิคภาษาไทยแบบเฉพาะเจาะจงและกระชับ เช่น รหัสผ่านหมดอายุ หรือ ขนาดไฟล์เกินกำหนด; ห้ามใช้รหัสภายใน ห้ามซ้ำชื่อหมวดหลัก และใช้ค่าว่างเมื่อข้อมูลไม่พอ",
             urgency: "low | medium | high | critical",
             sentiment: "string",
             missingInformation: ["string"],
@@ -972,7 +977,8 @@ export const aiCenterClient = {
       return {
         ...parsed,
         caseTitle: shortenCaseTitle(parsed.caseTitle || parsed.summary || input.text),
-        category: normalizeCategory(parsed.category),
+        category: customerAnalysisCategoryKeyOf(parsed.category),
+        technicalTopic: normalizeTechnicalTopic(parsed.technicalTopic),
         status: parsed.confidence < 70 ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS",
       };
     } catch (error) {

@@ -1,6 +1,7 @@
 import { env } from "../config/env";
 import type { CaseDetail } from "../domain/types";
 import { categoryLabelOf } from "../lib/category";
+import { getAnalysisTechnicalTopic } from "../lib/analysis";
 
 export const teamsClient = {
   getWebhookUrl() {
@@ -38,6 +39,7 @@ export const teamsClient = {
     const latestAnalysis = [...caseDetail.analyses]
       .filter((analysis) => analysis.analysisType === "customer_message")
       .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+    const technicalTopic = getAnalysisTechnicalTopic(latestAnalysis);
 
     if (!latestCustomerMessage?.originalText?.trim()) {
       throw new Error("DATA_INCOMPLETE: customer message is missing");
@@ -51,6 +53,7 @@ export const teamsClient = {
       `Original: ${latestCustomerMessage?.originalText ?? "-"}`,
       `Summary: ${caseDetail.aiStatus === "AI_FAILED" ? "AI วิเคราะห์ไม่สำเร็จ" : latestAnalysis?.summary ?? "-"}`,
       `หมวดหมู่: ${categoryLabelOf(latestAnalysis?.category)}`,
+      ...(technicalTopic ? [`หัวข้อปัญหา: ${technicalTopic}`] : []),
       `Confidence: ${caseDetail.aiStatus === "AI_FAILED" ? "ไม่พร้อมใช้งาน" : `${latestAnalysis?.confidence ?? 0}%`}`,
     ].join("\n");
 
@@ -62,6 +65,7 @@ export const teamsClient = {
       originalText: latestCustomerMessage?.originalText ?? "-",
       summary: caseDetail.aiStatus === "AI_FAILED" ? "AI วิเคราะห์ไม่สำเร็จ" : latestAnalysis?.summary ?? "-",
       category: categoryLabelOf(latestAnalysis?.category),
+      technicalTopic,
       confidence: latestAnalysis?.confidence ?? 0,
       aiStatus: caseDetail.aiStatus ?? "AI_SUCCESS",
     };
@@ -77,6 +81,7 @@ export const teamsClient = {
           { title: "Case ID", value: data.caseId },
           { title: "Case title", value: data.caseTitle },
           { title: "หมวดหมู่", value: data.category },
+          ...(data.technicalTopic ? [{ title: "หัวข้อปัญหา", value: data.technicalTopic }] : []),
           { title: "AI confidence", value: `${data.confidence}%` },
         ] },
         { type: "TextBlock", wrap: true, text: `Customer message: ${data.originalText}` },

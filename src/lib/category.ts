@@ -66,3 +66,8 @@ export function categoryLabelOf(category?: string | null) {
 export function normalizeCategory(category?: string) {
   return categoryKeyOf(category);
 }
+
+export function customerAnalysisCategoryKeyOf(category?: string | null) {
+  const key = categoryKeyOf(category);
+  return key.startsWith("AI_") ? "OTHER" : key;
+}

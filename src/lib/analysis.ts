@@ -8,3 +8,15 @@ export function getLatestCustomerMessageAnalysis(analyses: readonly Analysis[]) 
       || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
     ))[0];
 }
+
+export function normalizeTechnicalTopic(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().replace(/\s+/g, " ");
+  if (!normalized || !/[\u0E01-\u0E5B]/u.test(normalized)) return undefined;
+  return normalized.slice(0, 100).trimEnd();
+}
+
+export function getAnalysisTechnicalTopic(analysis?: Pick<Analysis, "rawJson">) {
+  if (!analysis?.rawJson || typeof analysis.rawJson !== "object" || Array.isArray(analysis.rawJson)) return undefined;
+  return normalizeTechnicalTopic((analysis.rawJson as { technicalTopic?: unknown }).technicalTopic);
+}

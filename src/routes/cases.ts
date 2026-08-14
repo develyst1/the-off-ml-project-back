@@ -6,7 +6,7 @@ import { listAiReviewFeedbackForAnalysis, saveAiReviewFeedback } from "../servic
 import { categoryKeyOf } from "../lib/category";
 import { store } from "../repositories/store";
 import { analysisMessageIdentity } from "../repositories/case-message-normalizer";
-import { getLatestCustomerMessageAnalysis } from "../lib/analysis";
+import { getAnalysisTechnicalTopic, getLatestCustomerMessageAnalysis } from "../lib/analysis";
 
 const statuses: CaseStatus[] = [
   "new",
@@ -59,6 +59,7 @@ async function caseDetailResponse(detail: Awaited<ReturnType<typeof caseService.
         analysisVersion: currentAnalysis.analysisVersion,
         createdAt: currentAnalysis.createdAt,
         summary: currentAnalysis.summary,
+        technicalTopic: getAnalysisTechnicalTopic(currentAnalysis),
         sourceMessageIds,
       }
       : undefined,

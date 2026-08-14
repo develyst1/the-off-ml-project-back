@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { categoryKeyOf, categoryLabelOf } from "./category";
+import { categoryKeyOf, categoryLabelOf, customerAnalysisCategoryKeyOf } from "./category";
 
 test("renders canonical and legacy category keys as Thai labels", () => {
   expect(categoryLabelOf("SOFTWARE_APPLICATION")).toBe("ปัญหาซอฟต์แวร์");
@@ -13,4 +13,10 @@ test("keeps unknown internal identity but never exposes it as a display label", 
   expect(categoryLabelOf("UNMAPPED_FUTURE_CATEGORY")).toBe("อื่นๆ");
   expect(categoryLabelOf("AI_UNMAPPED_FUTURE_CATEGORY")).toBe("อื่นๆ");
   expect(categoryLabelOf(undefined)).toBe("อื่นๆ");
+});
+
+test("limits customer analysis to the fixed main categories", () => {
+  expect(customerAnalysisCategoryKeyOf("ปัญหาซอฟต์แวร์")).toBe("SOFTWARE_APPLICATION");
+  expect(customerAnalysisCategoryKeyOf("ปัญหาการอัปโหลดไฟล์เฉพาะระบบ")).toBe("OTHER");
+  expect(customerAnalysisCategoryKeyOf("AI_UNMAPPED_FUTURE_CATEGORY")).toBe("OTHER");
 });

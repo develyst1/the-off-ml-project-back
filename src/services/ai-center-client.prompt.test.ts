@@ -16,6 +16,8 @@ describe("customer analysis latest clarification prompt", () => {
     expect(latestUserMessage?.content).not.toContain("Chrome has the issue");
     expect(instructions).toContain("latestUserClarification");
     expect(instructions).toContain("Current conversation facts always take precedence");
+    expect(instructions).toContain("fixed Tech Support main-category list only");
+    expect(instructions).toContain("technicalTopic");
     expect(systemInstructions).toContain("latestUserClarification has the highest factual priority");
     expect(instructions).not.toContain("50 MB");
     expect(instructions).not.toContain("100 MB");

@@ -93,7 +93,7 @@ test("case notification shows a Thai category label instead of the internal key"
         summary: "ผู้ใช้งานเปิดโปรแกรมไม่ได้",
         category: "SOFTWARE_APPLICATION",
         confidence: 90,
-        rawJson: {},
+        rawJson: { technicalTopic: "โปรแกรมเปิดไม่สำเร็จ" },
         createdAt: "2026-08-14T08:00:01.000Z",
       }],
       solutions: [],
@@ -102,6 +102,8 @@ test("case notification shows a Thai category label instead of the internal key"
     const serialized = JSON.stringify(postedBody);
     expect(serialized).toContain("หมวดหมู่");
     expect(serialized).toContain("ปัญหาซอฟต์แวร์");
+    expect(serialized).toContain("หัวข้อปัญหา");
+    expect(serialized).toContain("โปรแกรมเปิดไม่สำเร็จ");
     expect(serialized).not.toContain("SOFTWARE_APPLICATION");
   } finally {
     globalThis.fetch = originalFetch;

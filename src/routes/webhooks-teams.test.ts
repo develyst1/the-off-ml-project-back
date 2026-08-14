@@ -1699,11 +1699,11 @@ describe("POST /webhooks/teams/actions", () => {
       analysisType: "customer_message",
       category: "LOGIN_ACCESS",
       confidence: 99,
-      rawJson: {},
+      rawJson: { technicalTopic: "บัญชีถูกล็อก" },
     });
 
     const response = await app.fetch(new Request("http://localhost/confidence/suggestions"));
-    const body = await response.json() as { data: Array<{ caseId: string; reviewStage: string; reviewStatus: string; analysisId?: string; analysisVersion?: number }> };
+    const body = await response.json() as { data: Array<{ caseId: string; reviewStage: string; reviewStatus: string; analysisId?: string; analysisVersion?: number; technicalTopic?: string }> };
     const lowConfidenceSuggestion = body.data.find((item) => item.caseId === lowConfidenceCase.id);
     const negativeSuggestion = body.data.find((item) => item.caseId === negativeCase.id);
     const oldFeedbackSuggestion = body.data.find((item) => item.caseId === oldFeedbackCase.id);
@@ -1716,6 +1716,7 @@ describe("POST /webhooks/teams/actions", () => {
       reviewStatus: "NOT_REVIEWED",
       analysisId: newAnalysis.analysisId,
       analysisVersion: newAnalysis.analysisVersion,
+      technicalTopic: "บัญชีถูกล็อก",
     }));
   });
 
