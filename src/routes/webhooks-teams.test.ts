@@ -698,6 +698,7 @@ describe("POST /webhooks/teams/actions", () => {
 
   test("formats a close message, records SENT, and closes after LINE accepts it", async () => {
     const supportCase = await createCase();
+    lastTechSolutionInput = undefined;
     const response = await postAction({
       action: "CLOSE_CASE",
       caseId: supportCase.id,
@@ -720,9 +721,42 @@ describe("POST /webhooks/teams/actions", () => {
     expect(closedMessage?.sentAt).toBeDefined();
     expect(systemEvent?.isVisibleToCustomer).toBe(false);
     expect(systemEvent?.metadata?.eventType).toBe("CASE_CLOSED");
-    // Closing with a concrete resolution also refreshes the extracted solution.
-    expect(detail?.solutions).toHaveLength(1);
-    expect(detail?.analyses.some((analysis) => analysis.analysisType === "tech_solution")).toBe(true);
+    expect(lastTechSolutionInput).toBeUndefined();
+    expect(detail?.solutions).toHaveLength(0);
+    expect(detail?.analyses.some((analysis) => analysis.analysisType === "tech_solution")).toBe(false);
+  });
+
+  test("keeps the latest extracted solution unchanged when a closing message is sent", async () => {
+    const supportCase = await createCase();
+    await postAction({
+      action: "REPLY_CUSTOMER",
+      caseId: supportCase.id,
+      caseNumber: supportCase.caseNumber,
+      replyText: "รีเซ็ตข้อมูลในระบบแล้ว กรุณาลองใช้งานใหม่ค่ะ",
+      requestId: `reply-before-close-${sequence}`,
+    });
+    const beforeClose = await store.getCaseDetail(supportCase.id);
+    const solutionId = beforeClose?.solutions[0]?.id;
+    const solutionAnalysisIds = beforeClose?.analyses
+      .filter((analysis) => analysis.analysisType === "tech_solution")
+      .map((analysis) => analysis.analysisId);
+    lastTechSolutionInput = undefined;
+
+    await postAction({
+      action: "CLOSE_CASE",
+      caseId: supportCase.id,
+      caseNumber: supportCase.caseNumber,
+      replyText: `ปิดเคส ${supportCase.caseNumber} ขอบคุณค่ะ`,
+      requestId: `close-after-reply-${sequence}`,
+    });
+    const afterClose = await store.getCaseDetail(supportCase.id);
+
+    expect(lastTechSolutionInput).toBeUndefined();
+    expect(afterClose?.solutions).toHaveLength(1);
+    expect(afterClose?.solutions[0]?.id).toBe(solutionId);
+    expect(afterClose?.analyses
+      .filter((analysis) => analysis.analysisType === "tech_solution")
+      .map((analysis) => analysis.analysisId)).toEqual(solutionAnalysisIds);
   });
 
   test("composes customer reply and more-info drafts without sending LINE", async () => {

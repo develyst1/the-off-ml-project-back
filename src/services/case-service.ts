@@ -1822,18 +1822,8 @@ export const caseService = {
           direction: inboxMessage.direction,
         },
       });
-      // Capture the final operator summary before the case is closed. A failed
-      // AI refresh never rolls back a LINE delivery that has already succeeded.
-      try {
-        await extractAndStoreTechSolution({
-          detail,
-          messageId: rawMessage.id,
-          techReplyText: supportText,
-          rewrittenCustomerText: outboundText,
-        });
-      } catch (error) {
-        console.warn({ event: "case_close_solution_refresh_failed", caseId: input.caseId, error: String(error) });
-      }
+      // Closing text is workflow communication, not new troubleshooting evidence.
+      // Keep the latest solution extracted from an actual Tech reply unchanged.
       await store.updateCase(input.caseId, {
         status: "closed",
         closedAt: sentAt,
@@ -2249,8 +2239,7 @@ export const caseService = {
       deliveryStatus: "sent",
     });
 
-    const shouldExtractSolution = ["CUSTOMER_REPLY", "RESOLUTION", "CLOSE_CASE"].includes(messageReview.messageType)
-      || input.closeAfterReply;
+    const shouldExtractSolution = ["CUSTOMER_REPLY", "RESOLUTION"].includes(messageReview.messageType);
     let solutionAnalysis;
     if (shouldExtractSolution) {
       await store.updateCase(input.caseId, { status: "analyzing_solution" });
