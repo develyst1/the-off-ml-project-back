@@ -932,6 +932,7 @@ describe("POST /webhooks/teams/actions", () => {
     const analysis = await store.createAnalysis({
       caseId: supportCase.id,
       analysisType: "customer_message",
+      category: "SOFTWARE_APPLICATION",
       confidence: 85,
       rawJson: {},
     });
@@ -952,9 +953,10 @@ describe("POST /webhooks/teams/actions", () => {
       validatedByTeam: false,
     });
     const suggestionsResponse = await app.fetch(new Request("http://localhost/confidence/suggestions"));
-    const suggestions = await suggestionsResponse.json() as { data: Array<{ id: string; caseId: string; hasSuggestedSolution: boolean }> };
+    const suggestions = await suggestionsResponse.json() as { data: Array<{ id: string; caseId: string; category: string; hasSuggestedSolution: boolean }> };
     const suggestion = suggestions.data.find((item) => item.caseId === supportCase.id);
     expect(suggestion?.hasSuggestedSolution).toBe(false);
+    expect(suggestion?.category).toBe("ปัญหาซอฟต์แวร์");
 
     const response = await postConfidenceReview({
       caseId: supportCase.id,

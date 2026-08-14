@@ -1,5 +1,6 @@
 import { env } from "../config/env";
 import type { CaseDetail } from "../domain/types";
+import { categoryLabelOf } from "../lib/category";
 
 export const teamsClient = {
   getWebhookUrl() {
@@ -49,7 +50,7 @@ export const teamsClient = {
       `Customer: ${caseDetail.customer.displayName ?? caseDetail.customer.lineUserId}`,
       `Original: ${latestCustomerMessage?.originalText ?? "-"}`,
       `Summary: ${caseDetail.aiStatus === "AI_FAILED" ? "AI วิเคราะห์ไม่สำเร็จ" : latestAnalysis?.summary ?? "-"}`,
-      `Category: ${latestAnalysis?.category ?? "-"}`,
+      `หมวดหมู่: ${categoryLabelOf(latestAnalysis?.category)}`,
       `Confidence: ${caseDetail.aiStatus === "AI_FAILED" ? "ไม่พร้อมใช้งาน" : `${latestAnalysis?.confidence ?? 0}%`}`,
     ].join("\n");
 
@@ -60,7 +61,7 @@ export const teamsClient = {
       customerName: caseDetail.customer.displayName ?? caseDetail.customer.lineUserId,
       originalText: latestCustomerMessage?.originalText ?? "-",
       summary: caseDetail.aiStatus === "AI_FAILED" ? "AI วิเคราะห์ไม่สำเร็จ" : latestAnalysis?.summary ?? "-",
-      category: latestAnalysis?.category ?? "-",
+      category: categoryLabelOf(latestAnalysis?.category),
       confidence: latestAnalysis?.confidence ?? 0,
       aiStatus: caseDetail.aiStatus ?? "AI_SUCCESS",
     };
@@ -75,7 +76,7 @@ export const teamsClient = {
           { title: "Customer", value: data.customerName },
           { title: "Case ID", value: data.caseId },
           { title: "Case title", value: data.caseTitle },
-          { title: "Category", value: data.category },
+          { title: "หมวดหมู่", value: data.category },
           { title: "AI confidence", value: `${data.confidence}%` },
         ] },
         { type: "TextBlock", wrap: true, text: `Customer message: ${data.originalText}` },

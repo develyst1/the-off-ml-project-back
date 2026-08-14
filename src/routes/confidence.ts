@@ -5,6 +5,7 @@ import { caseService } from "../services/case-service";
 import { hasActionableSolutionSteps } from "../lib/solution-quality";
 import { listAiReviewFeedbackForAnalysis, saveAiReviewFeedback, saveQualityReview } from "../services/ai-review-feedback-service";
 import { getLatestCustomerMessageAnalysis } from "../lib/analysis";
+import { categoryLabelOf } from "../lib/category";
 
 export const confidenceRoutes = new Hono();
 
@@ -73,7 +74,7 @@ confidenceRoutes.get("/suggestions", async (c) => {
         caseNumber: item.caseNumber,
         customerName: item.customer.displayName ?? "ผู้ใช้งาน LINE",
         suggestedSolutionId: latestSolution?.id ?? "",
-        category: item.category ?? "-",
+        category: categoryLabelOf(currentAnalysis.category ?? item.category),
         originalText: customerMessage?.originalText ?? "",
         solutionText: latestSolution?.solutionSteps.join("\n") ?? "—",
         caseUnderstandingConfidence: caseConfidence,

@@ -4,9 +4,18 @@ import { Hono } from "hono";
 const cases = [
   {
     caseNumber: "OFF-2026-00001",
+    category: "SOFTWARE_APPLICATION",
+    confidenceScore: 99,
     customer: { displayName: "Test Customer" },
+    analyses: [],
     solutions: [
-      { id: "solution-auto", solutionSteps: ["ออกจากระบบ", "เข้าสู่ระบบใหม่"] },
+      {
+        id: "solution-auto",
+        solutionSteps: ["ออกจากระบบ", "เข้าสู่ระบบใหม่"],
+        confidence: 99,
+        validatedByTeam: true,
+        validatedAt: "2026-07-22T07:59:00.000Z",
+      },
     ],
     messages: [
       {
@@ -47,7 +56,11 @@ let reliabilityShouldFail = false;
 
 mock.module("../repositories/store", () => ({
   store: {
-    getAutomationSettings: async () => ({ enabled: false }),
+    getAutomationSettings: async () => ({
+      enabled: false,
+      caseUnderstandingThreshold: 98,
+      caseDiscriminationThreshold: 98,
+    }),
     updateAutomationSettings: async (patch: Record<string, unknown>) => ({
       enabled: false,
       ...patch,
@@ -164,5 +177,14 @@ describe("automation logs", () => {
       id: "auto-answer-teams-failed",
       teamsNotified: false,
     });
+  });
+
+  test("returns Thai category labels for guardrail-ready solutions", async () => {
+    const response = await app.fetch(new Request("http://localhost/automation/solutions"));
+    const body = await response.json() as { data: Array<{ category: string }> };
+
+    expect(response.status).toBe(200);
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]?.category).toBe("ปัญหาซอฟต์แวร์");
   });
 });

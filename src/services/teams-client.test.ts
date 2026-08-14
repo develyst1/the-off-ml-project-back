@@ -10,7 +10,7 @@ mock.module("../config/env", () => ({
 }));
 
 const originalFetch = globalThis.fetch;
-globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+const captureFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
   postedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
   return new Response(null, { status: 200 });
 }) as typeof fetch;
@@ -18,6 +18,7 @@ globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
 const { teamsClient } = await import("./teams-client");
 
 test("API-016 Teams card contains the auto-answer audit identity and emergency-disable action", async () => {
+  globalThis.fetch = captureFetch;
   try {
     const result = await teamsClient.notifyAutoAnswer({
       caseId: "case-016",
@@ -48,6 +49,60 @@ test("API-016 Teams card contains the auto-answer audit identity and emergency-d
         caseMessageId: "message-016",
       },
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("case notification shows a Thai category label instead of the internal key", async () => {
+  globalThis.fetch = captureFetch;
+  try {
+    await teamsClient.notifyCase({
+      id: "case-thai-category",
+      caseNumber: "OFF-2026-00040",
+      sequenceNumber: 40,
+      sequenceYear: 2026,
+      customerId: "customer-thai-category",
+      title: "เปิดโปรแกรมไม่ได้",
+      status: "awaiting_tech",
+      aiStatus: "AI_SUCCESS",
+      createdAt: "2026-08-14T08:00:00.000Z",
+      updatedAt: "2026-08-14T08:00:00.000Z",
+      customer: {
+        id: "customer-thai-category",
+        lineUserId: "U-thai-category",
+        displayName: "ผู้ใช้งานทดสอบ",
+        createdAt: "2026-08-14T08:00:00.000Z",
+        updatedAt: "2026-08-14T08:00:00.000Z",
+      },
+      messages: [{
+        id: "message-thai-category",
+        caseId: "case-thai-category",
+        direction: "INBOUND",
+        channel: "line",
+        senderType: "CUSTOMER",
+        originalText: "เปิดโปรแกรมไม่ได้",
+        createdAt: "2026-08-14T08:00:00.000Z",
+      }],
+      analyses: [{
+        id: "analysis-row-thai-category",
+        analysisId: "analysis-thai-category",
+        caseId: "case-thai-category",
+        analysisVersion: 1,
+        analysisType: "customer_message",
+        summary: "ผู้ใช้งานเปิดโปรแกรมไม่ได้",
+        category: "SOFTWARE_APPLICATION",
+        confidence: 90,
+        rawJson: {},
+        createdAt: "2026-08-14T08:00:01.000Z",
+      }],
+      solutions: [],
+    });
+
+    const serialized = JSON.stringify(postedBody);
+    expect(serialized).toContain("หมวดหมู่");
+    expect(serialized).toContain("ปัญหาซอฟต์แวร์");
+    expect(serialized).not.toContain("SOFTWARE_APPLICATION");
   } finally {
     globalThis.fetch = originalFetch;
   }

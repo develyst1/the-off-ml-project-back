@@ -6,6 +6,8 @@ import { isSolutionReadyForAutoAnswer } from "../services/auto-answer-guardrail"
 import { emergencyDisableAutoAnswer, getLearnedReliabilityForAutomation } from "../services/automation-settings";
 import { LEARNED_RELIABILITY_MINIMUM_SAMPLE, LEARNED_RELIABILITY_THRESHOLD } from "../services/learned-reliability-service";
 import type { AutomationSettings } from "../domain/types";
+import { categoryLabelOf } from "../lib/category";
+import { getLatestCustomerMessageAnalysis } from "../lib/analysis";
 
 const LOG_PAGE_SIZES = new Set([10, 20, 50, 100]);
 
@@ -70,8 +72,9 @@ automationRoutes.patch("/settings", async (c) => {
 automationRoutes.get("/solutions", async (c) => {
   const cases = await caseService.listCases();
   const settings = await store.getAutomationSettings();
-  const solutions = cases.flatMap((item) =>
-    item.solutions
+  const solutions = cases.flatMap((item) => {
+    const category = categoryLabelOf(getLatestCustomerMessageAnalysis(item.analyses)?.category ?? item.category);
+    return item.solutions
       .filter((solution) => isSolutionReadyForAutoAnswer(
         item.confidenceScore,
         solution,
@@ -79,13 +82,13 @@ automationRoutes.get("/solutions", async (c) => {
       ))
       .map((solution) => ({
         id: solution.id,
-        category: item.category ?? "-",
+        category,
         solutionText: solution.solutionSteps.join("\n"),
         caseUnderstandingConfidence: item.confidenceScore ?? 0,
         caseDiscriminationConfidence: solution.confidence,
         status: "ready",
-      })),
-  );
+      }));
+  });
 
   return c.json({ data: solutions });
 });

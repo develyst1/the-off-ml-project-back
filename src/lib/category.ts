@@ -19,6 +19,8 @@ const categoryKeys: Record<string, string> = {
   "-": "OTHER",
   LOGIN_ISSUE: "LOGIN_ACCESS",
   LOGIN_FAILURE: "LOGIN_ACCESS",
+  PASSWORD_RESET: "LOGIN_ACCESS",
+  PASSWORD_RESET_FAILURE: "LOGIN_ACCESS",
   "เข้าสู่ระบบไม่ได้": "LOGIN_ACCESS",
   "ปัญหาการเข้าสู่ระบบ": "LOGIN_ACCESS",
   NETWORK_ISSUE: "NETWORK_CONNECTION",
@@ -29,8 +31,12 @@ const categoryKeys: Record<string, string> = {
   STATUS_UPDATE: "STATUS_UPDATE",
   "ปัญหาการอัปเดตสถานะ": "STATUS_UPDATE",
   "ปัญหาฮาร์ดแวร์": "HARDWARE_DEVICE",
+  BLUE_SCREEN: "HARDWARE_DEVICE",
+  "ภาพแสดงสีฟ้า (BLUE SCREEN)": "HARDWARE_DEVICE",
   "ปัญหาซอฟต์แวร์": "SOFTWARE_APPLICATION",
   "ปัญหาการแสดงข้อมูล": "DATA_DISPLAY",
+  PAYMENT_ISSUE: "OTHER",
+  RESOLVED: "OTHER",
 };
 
 const categoryKeyLabels: Record<string, string> = {
@@ -53,13 +59,7 @@ export function categoryKeyOf(category?: string | null) {
 
 export function categoryLabelOf(category?: string | null) {
   const key = categoryKeyOf(category);
-  if (key.startsWith("AI_")) {
-    try {
-      return decodeURIComponent(key.slice(3));
-    } catch {
-      return "อื่นๆ";
-    }
-  }
+  if (key.startsWith("AI_")) return "อื่นๆ";
   return categoryKeyLabels[key] ?? "อื่นๆ";
 }
 
