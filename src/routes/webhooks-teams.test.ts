@@ -37,12 +37,24 @@ mock.module("../services/ai-center-client", () => ({
   aiCenterClient: {
     analyzeCustomerMessage: async (input: CapturedCustomerAnalysisInput) => {
       lastCustomerAnalysisInput = input;
+      const currentContext = [input.text, ...(input.conversationContext ?? [])].join("\n");
+      const extractedSolution = currentContext.includes("ลบไฟล์ชั่วคราวแล้ว")
+        ? "ตรวจสอบโควตาพื้นที่ของบัญชีและพื้นที่สำรองของระบบ"
+        : currentContext.includes("พื้นที่จัดเก็บ")
+          ? "ตรวจสอบพื้นที่ว่างและลบไฟล์ชั่วคราวที่ไม่จำเป็น"
+          : "";
       return aiAnalysisShouldFail
         ? ({ status: "AI_FAILED", summary: "failed", caseTitle: "title", category: "category", urgency: "medium", confidence: 50, missingInformation: [] })
-        : ({ status: "AI_SUCCESS", summary: "summary", caseTitle: "title", category: "category", urgency: "medium", confidence: 85, missingInformation: [] });
+        : ({ status: "AI_SUCCESS", summary: "summary", caseTitle: "title", category: "category", urgency: "medium", confidence: 85, missingInformation: [], extractedSolution });
     },
     analyzeCaseRelation: async () => ({ related: true, confidence: 100, reason: "test" }),
     extractPendingInformation: async () => ({ values: {} }),
+    generateProblemSummary: async ({ latestCustomerMessage }: { latestCustomerMessage: string }) => ({
+      problemSummary: latestCustomerMessage,
+      shouldUpdate: true,
+      reason: "test",
+      status: "SUCCESS",
+    }),
     generateLineContinuationReply: async () => "รับทราบค่ะ",
     rewriteCustomerReply: async ({ rawSupportMessage }: { rawSupportMessage: string }) => ({ rewrittenMessage: rawSupportMessage }),
     rewriteAdditionalInfoRequest: async () => ({ rewrittenMessage: "ขอข้อมูลเพิ่มค่ะ" }),
@@ -66,6 +78,8 @@ mock.module("../services/ai-center-client", () => ({
 }));
 
 const { app } = await import("../app");
+const { caseService } = await import("../services/case-service");
+const { realtimeEventHub } = await import("../services/realtime-event-hub");
 
 let sequence = 0;
 
@@ -763,6 +777,16 @@ describe("POST /webhooks/teams/actions", () => {
       confidence: 85,
       rawJson: {},
     });
+    const openCaseResponse = await patchAiFeedback(supportCase.id, {
+      caseId: supportCase.id,
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      feedbackType: "ISSUE_UNDERSTANDING",
+      value: "CORRECT",
+    });
+    expect(openCaseResponse.status).toBe(400);
+    expect((await store.listAiReviewFeedback()).some((item) => item.caseId === supportCase.id)).toBe(false);
+    await store.updateCase(supportCase.id, { status: "closed" });
     const understandingResponse = await patchAiFeedback(supportCase.id, {
       caseId: supportCase.id,
       analysisId: analysis.analysisId,
@@ -1023,6 +1047,7 @@ describe("POST /webhooks/teams/actions", () => {
 
   test("calculates Analytics accuracy from current analysis-version feedback only", async () => {
     const supportCases = await Promise.all([createCase(90), createCase(90), createCase(90), createCase(90)]);
+    await Promise.all(supportCases.map((supportCase) => store.updateCase(supportCase.id, { status: "closed" })));
     const firstAnalysis = await store.createAnalysis({
       caseId: supportCases[0].id,
       analysisType: "customer_message",
@@ -1104,6 +1129,7 @@ describe("POST /webhooks/teams/actions", () => {
       rawJson: {},
     });
     const unknownCategoryCase = await createCase(90);
+    await store.updateCase(unknownCategoryCase.id, { status: "closed" });
     const unknownAnalysis = await store.createAnalysis({
       caseId: unknownCategoryCase.id,
       analysisType: "customer_message",
@@ -1118,6 +1144,7 @@ describe("POST /webhooks/teams/actions", () => {
       result: "INCORRECT",
     });
     const zeroAccuracyCase = await createCase(90);
+    await store.updateCase(zeroAccuracyCase.id, { status: "closed" });
     const zeroAccuracyAnalysis = await store.createAnalysis({
       caseId: zeroAccuracyCase.id,
       analysisType: "customer_message",
@@ -1171,6 +1198,76 @@ describe("POST /webhooks/teams/actions", () => {
     expect(other?.caseUnderstandingReviewedCount).toBeGreaterThanOrEqual(1);
     expect(dataDisplay?.caseUnderstandingReviewedCount).toBe(1);
     expect(dataDisplay?.caseUnderstandingAccuracy).toBe(0);
+  });
+
+  test("creates an initial solution and updates it in realtime from canonical conversation history", async () => {
+    const customer = await store.upsertCustomer({ lineUserId: `U-inbox-solution-${++sequence}`, displayName: "Inbox solution" });
+    const historicalMessage = await store.createInboxMessage({
+      customerId: customer.id,
+      direction: "INBOUND",
+      senderType: "CUSTOMER",
+      text: "ข้อความเก่าเรื่องรหัสผ่านที่ไม่ได้เลือก",
+      createdAt: "2026-08-14T07:29:00.000Z",
+    });
+    const selectedMessage = await store.createInboxMessage({
+      customerId: customer.id,
+      direction: "INBOUND",
+      senderType: "CUSTOMER",
+      text: "บันทึกไฟล์ไม่ได้ ระบบแจ้งว่าพื้นที่จัดเก็บไม่เพียงพอ",
+      createdAt: "2026-08-14T07:30:00.000Z",
+    });
+    const analysisEvents: string[] = [];
+    const unsubscribe = realtimeEventHub.subscribe((event) => {
+      if (event.name === "case.analysis.updated") analysisEvents.push(event.data.analysisId);
+    });
+
+    try {
+      const response = await openInboxCase(customer.id, {
+        title: "บันทึกไฟล์ไม่ได้",
+        description: "พื้นที่จัดเก็บไม่เพียงพอ",
+        from: "2026-08-14T07:28:00.000Z",
+        to: "2026-08-14T07:31:00.000Z",
+        selectedMessageIds: [selectedMessage.id],
+      });
+      const body = await response.json() as { data: { id: string } };
+      const initialDetail = await store.getCaseDetail(body.data.id);
+      const initialAnalysis = initialDetail?.analyses
+        .filter((analysis) => analysis.analysisType === "customer_message")
+        .sort((left, right) => right.analysisVersion - left.analysisVersion)[0];
+      const initialRawJson = initialAnalysis?.rawJson as {
+        extractedSolution?: string;
+        sourceMessageIds?: string[];
+      } | undefined;
+
+      expect(response.status).toBe(201);
+      expect(initialRawJson?.extractedSolution).toBe("ตรวจสอบพื้นที่ว่างและลบไฟล์ชั่วคราวที่ไม่จำเป็น");
+      expect(initialRawJson?.sourceMessageIds).toContain(selectedMessage.id);
+      expect(initialRawJson?.sourceMessageIds).not.toContain(historicalMessage.id);
+      expect(analysisEvents).toContain(initialAnalysis?.analysisId ?? "missing");
+
+      await caseService.appendLineMessageToCase({
+        caseId: body.data.id,
+        text: "ลบไฟล์ชั่วคราวแล้ว แต่ยังบันทึกไฟล์ไม่ได้",
+        receivedAt: "2026-08-14T07:32:00.000Z",
+      });
+      const updatedDetail = await store.getCaseDetail(body.data.id);
+      const updatedAnalysis = updatedDetail?.analyses
+        .filter((analysis) => analysis.analysisType === "customer_message")
+        .sort((left, right) => right.analysisVersion - left.analysisVersion)[0];
+      const updatedRawJson = updatedAnalysis?.rawJson as {
+        analysisMode?: string;
+        extractedSolution?: string;
+        sourceMessageIds?: string[];
+      } | undefined;
+
+      expect(updatedRawJson?.analysisMode).toBe("CASE_REANALYSIS");
+      expect(updatedRawJson?.extractedSolution).toBe("ตรวจสอบโควตาพื้นที่ของบัญชีและพื้นที่สำรองของระบบ");
+      expect(updatedRawJson?.sourceMessageIds).not.toContain(historicalMessage.id);
+      expect(analysisEvents).toContain(updatedAnalysis?.analysisId ?? "missing");
+      expect(updatedAnalysis?.analysisVersion).toBeGreaterThan(initialAnalysis?.analysisVersion ?? 0);
+    } finally {
+      unsubscribe();
+    }
   });
 
   test("keeps only explicitly selected Inbox messages as case references", async () => {
@@ -1695,6 +1792,7 @@ describe("POST /webhooks/teams/actions", () => {
     });
 
     const negativeCase = await createCase(99);
+    await store.updateCase(negativeCase.id, { status: "closed" });
     const negativeAnalysis = await store.createAnalysis({
       caseId: negativeCase.id,
       analysisType: "customer_message",
@@ -1718,6 +1816,7 @@ describe("POST /webhooks/teams/actions", () => {
     });
 
     const oldFeedbackCase = await createCase(99);
+    await store.updateCase(oldFeedbackCase.id, { status: "closed" });
     const oldAnalysis = await store.createAnalysis({
       caseId: oldFeedbackCase.id,
       analysisType: "customer_message",
@@ -1820,6 +1919,7 @@ describe("POST /webhooks/teams/actions", () => {
 
   test("keeps Case Detail feedback in the queue until Confidence Review confirms it", async () => {
     const supportCase = await createCase(95);
+    await store.updateCase(supportCase.id, { status: "closed" });
     const analysis = await store.createAnalysis({
       caseId: supportCase.id,
       analysisType: "customer_message",

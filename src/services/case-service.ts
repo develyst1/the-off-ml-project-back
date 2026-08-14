@@ -358,6 +358,24 @@ async function updateProblemSummaryForMessage(detail: CaseDetail, message: Pick<
   return store.updateCase(detail.id, patch);
 }
 
+function publishCaseAnalysisUpdated(analysis: {
+  caseId: string;
+  analysisId: string;
+  analysisVersion: number;
+  createdAt: string;
+}) {
+  realtimeEventHub.publish({
+    name: "case.analysis.updated",
+    data: {
+      eventId: `case-analysis:${analysis.caseId}:${analysis.analysisId}`,
+      caseId: analysis.caseId,
+      analysisId: analysis.analysisId,
+      analysisVersion: analysis.analysisVersion,
+      createdAt: analysis.createdAt,
+    },
+  });
+}
+
 async function extractAndStoreTechSolution(input: {
   detail: CaseDetail;
   messageId: string;
@@ -398,7 +416,7 @@ async function extractAndStoreTechSolution(input: {
     rewrittenCustomerText: solutionAnalysis.rewrittenCustomerText.trim() || input.rewrittenCustomerText,
   };
 
-  await store.createAnalysis({
+  const savedAnalysis = await store.createAnalysis({
     caseId: input.detail.id,
     messageId: input.messageId,
     analysisType: "tech_solution",
@@ -421,6 +439,8 @@ async function extractAndStoreTechSolution(input: {
       validatedByTeam: false,
     });
   }
+
+  publishCaseAnalysisUpdated(savedAnalysis);
 
   return normalizedSolutionAnalysis;
 }
@@ -675,20 +695,29 @@ export const caseService = {
 
     {
       const sourceMessage = copiedMessages.filter((message) => message.senderType === "CUSTOMER").at(-1);
+      const conversationContext = sourceMessages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : "ทีม Tech"}: ${message.text}`);
       const analysis = await aiCenterClient.analyzeCustomerMessage({
         text: `${resolvedTitle}\n${resolvedDescription}`,
         caseAnalysisContext,
         feedbackExamples,
-        conversationContext: sourceMessages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : "ทีม Tech"}: ${message.text}`),
+        conversationContext,
       });
-      await store.createAnalysis({
+      const savedAnalysis = await store.createAnalysis({
         caseId: supportCase.id,
         messageId: sourceMessage?.id,
         analysisType: "customer_message",
         summary: analysis.summary,
         category: analysis.category,
         confidence: analysis.confidence,
-        rawJson: { ...analysis, caseAnalysisContext, feedbackExamples },
+        rawJson: {
+          ...analysis,
+          analysisMode: "INITIAL_CASE_ANALYSIS",
+          caseAnalysisContext,
+          sourceMessageIds: copiedMessages
+            .filter((message) => message.metadata?.isCaseReference === true)
+            .map(analysisMessageIdentity),
+          feedbackExamples,
+        },
       });
       await store.updateCase(supportCase.id, {
         status: "awaiting_tech",
@@ -702,6 +731,7 @@ export const caseService = {
         initialCustomerMessageId: copiedMessages.find((message) => message.senderType === "CUSTOMER")?.id,
         latestCustomerMessageId: sourceMessage?.id,
       });
+      publishCaseAnalysisUpdated(savedAnalysis);
     }
 
     // The selected messages are the opening context; new messages are linked only
@@ -1152,11 +1182,24 @@ export const caseService = {
       },
     });
     const shouldAnalyze = shouldRefreshProblemSummary(contextualText);
+    const currentConversationDetail = { ...detail, messages: [...detail.messages, message] };
+    const currentAnalysisContext = shouldAnalyze
+      ? buildConversationCaseAnalysisContext(currentConversationDetail)
+      : undefined;
+    const currentFeedbackExamples = currentAnalysisContext
+      ? await feedbackExamplesForContext(currentAnalysisContext.context, input.caseId)
+      : undefined;
+    const currentConversation = currentAnalysisContext?.messages.map((currentMessage) => (
+      `${currentMessage.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : currentMessage.senderType === "TECH" ? "ทีม Tech" : "ระบบ"}: ${currentMessage.originalText}`
+    ));
     const analysis = shouldAnalyze
       ? await aiCenterClient.analyzeCustomerMessage({
-          text: contextualText,
+          text: currentConversation?.join("\n") || contextualText,
           customerDisplayName: detail.customer.displayName,
-          conversationContext: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
+          conversationContext: currentConversation,
+          caseAnalysisContext: currentAnalysisContext?.context,
+          latestUserClarification: { content: contextualText, createdAt: receivedAt },
+          feedbackExamples: currentFeedbackExamples,
         })
       : undefined;
     const lastBotQuestion = [...detail.messages]
@@ -1212,16 +1255,29 @@ export const caseService = {
         })
       : `ขอบคุณที่แจ้งข้อมูลเพิ่มเติมนะคะ สำหรับ${this.formatCaseTitle(detail)} ทีมงานจะตรวจสอบต่อให้ค่ะ`;
 
+    let savedCustomerAnalysis: {
+      caseId: string;
+      analysisId: string;
+      analysisVersion: number;
+      createdAt: string;
+    } | undefined;
     if (analysis) {
-      await store.createAnalysis({
+      const savedAnalysis = await store.createAnalysis({
         caseId: input.caseId,
         messageId: message.id,
         analysisType: "customer_message",
         summary: analysis.summary,
         category: analysis.category,
         confidence: analysis.confidence,
-        rawJson: analysis,
+        rawJson: {
+          ...analysis,
+          analysisMode: "CASE_REANALYSIS",
+          caseAnalysisContext: currentAnalysisContext?.context,
+          sourceMessageIds: currentAnalysisContext?.messages.map(analysisMessageIdentity) ?? [],
+          feedbackExamples: currentFeedbackExamples,
+        },
       });
+      savedCustomerAnalysis = savedAnalysis;
     }
     if (input.customerOutcome) {
       await store.createAnalysis({
@@ -1254,6 +1310,7 @@ export const caseService = {
       confidenceScore: analysis?.confidence ?? detail.confidenceScore,
       latestCustomerMessageId: message.id,
     });
+    if (savedCustomerAnalysis) publishCaseAnalysisUpdated(savedCustomerAnalysis);
 
     const updatedDetail = await store.getCaseDetail(input.caseId);
     if (!updatedDetail) throw new Error("Case detail missing after appending LINE message");
@@ -2430,16 +2487,7 @@ export const caseService = {
       latestCustomerMessageId: latestCustomerMessage?.id ?? detail.latestCustomerMessageId,
     });
 
-    realtimeEventHub.publish({
-      name: "case.analysis.updated",
-      data: {
-        eventId: `case-analysis:${caseId}:${savedAnalysis.analysisId}`,
-        caseId,
-        analysisId: savedAnalysis.analysisId,
-        analysisVersion: savedAnalysis.analysisVersion,
-        createdAt: savedAnalysis.createdAt,
-      },
-    });
+    publishCaseAnalysisUpdated(savedAnalysis);
 
     const updatedDetail = await store.getCaseDetail(caseId);
     if (!updatedDetail) throw new Error("Case detail missing after re-analysis");

@@ -33,6 +33,12 @@ export async function saveAiReviewFeedback(input: SaveAiReviewFeedbackInput): Pr
     throw new Error("Analysis does not match the selected case version");
   }
 
+  if (input.reviewSource === "CASE_DETAIL"
+    && caseDetail.status !== "closed"
+    && caseDetail.status !== "resolved") {
+    throw new Error("กรุณาปิดเคสก่อนบันทึกผลการตรวจ AI");
+  }
+
   return store.upsertAiReviewFeedback({
     ...input,
     reason: input.result === "INCORRECT" ? input.reason?.trim() || undefined : undefined,

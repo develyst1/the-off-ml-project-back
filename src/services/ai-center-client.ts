@@ -96,7 +96,7 @@ export const CUSTOMER_ANALYSIS_INSTRUCTIONS = [
   "Analyze the current case context as the primary source of truth. Do not analyze only the title or only the latest message.",
   "Use positiveUnderstanding and positiveSolutionSelection only as guidance for the matching task.",
   "Use negativeUnderstanding and negativeSolutionSelection only as mistakes to avoid for the matching task; never mix the two feedback types.",
-  "Never copy an old case answer. Do not invent troubleshooting steps; return an empty extractedSolution when the current context has no confirmed solution.",
+  "Never copy an old case answer. For extractedSolution, recommend only concise, low-risk Tech Support checks or troubleshooting steps supported by the current case facts and current conversation. Do not claim that a step was already completed, do not change production data, bypass access controls, expose credentials, or recommend destructive actions. Return an empty extractedSolution when the issue is ambiguous or the available facts are insufficient for a safe recommendation.",
   "Read the current conversation in chronological order from oldest to newest.",
   "The latestUserClarification is the highest-priority current-case fact when it corrects, adds to, confirms, or rejects earlier information.",
   "When facts conflict, replace the older conflicting fact with the latest explicit clarification from the user. Do not state a corrected historical fact as the current issue.",
@@ -952,7 +952,7 @@ export const aiCenterClient = {
             sentiment: "string",
             missingInformation: ["string"],
             suggestedTeamNote: "string",
-            extractedSolution: "string; use an empty string when the current case has no confirmed troubleshooting steps",
+            extractedSolution: "string; concise internal Tech Support recommendation derived from current case facts and conversation, or an empty string when there is not enough evidence for safe troubleshooting",
             confidence: "number 0-100",
           },
           customerDisplayName: input.customerDisplayName,
@@ -979,6 +979,7 @@ export const aiCenterClient = {
         caseTitle: shortenCaseTitle(parsed.caseTitle || parsed.summary || input.text),
         category: customerAnalysisCategoryKeyOf(parsed.category),
         technicalTopic: normalizeTechnicalTopic(parsed.technicalTopic),
+        extractedSolution: typeof parsed.extractedSolution === "string" ? parsed.extractedSolution.trim() : "",
         status: parsed.confidence < 70 ? "AI_LOW_CONFIDENCE" : "AI_SUCCESS",
       };
     } catch (error) {
