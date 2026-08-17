@@ -35,7 +35,11 @@ try {
   await pool.query(`
     update automation_settings
     set enabled = false,
+        case_understanding_threshold = 98,
+        case_discrimination_threshold = 98,
+        learned_reliability_threshold = 90,
         emergency_disabled_at = null,
+        updated_by = 'ระบบเริ่มต้น',
         updated_at = now()
     where id = 'default'
   `);

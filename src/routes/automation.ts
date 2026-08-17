@@ -36,11 +36,12 @@ export const automationRoutes = new Hono();
 
 async function automationSettingsResponse(settings: AutomationSettings) {
   const learnedGate = await getLearnedReliabilityForAutomation();
+  const learnedThreshold = settings.learnedReliabilityThreshold ?? Math.round(LEARNED_RELIABILITY_THRESHOLD * 100);
 
   return {
     ...settings,
     learnedReliability: learnedGate.reliability
-      ? { threshold: LEARNED_RELIABILITY_THRESHOLD, minimumSample: LEARNED_RELIABILITY_MINIMUM_SAMPLE, ...learnedGate.reliability }
+      ? { threshold: learnedThreshold / 100, minimumSample: LEARNED_RELIABILITY_MINIMUM_SAMPLE, ...learnedGate.reliability }
       : null,
     learnedReliabilityDecision: {
       allowed: learnedGate.allowed,
@@ -59,9 +60,48 @@ automationRoutes.patch("/settings", async (c) => {
   const current = await store.getAutomationSettings();
   const enabled = typeof body.enabled === "boolean" ? body.enabled : current.enabled;
   const emergencyDisable = body.emergencyDisable === true;
+  const parseThreshold = (key: string, fallback: number, minimum: number) => {
+    if (!(key in body)) return fallback;
+    const value = body[key];
+    if (typeof value !== "number" || !Number.isInteger(value) || value < minimum || value > 100) {
+      const label = key === "caseUnderstandingThreshold"
+        ? "เกณฑ์ความมั่นใจด้านการเข้าใจเคส"
+        : key === "caseDiscriminationThreshold"
+          ? "เกณฑ์ความมั่นใจด้านวิธีแก้"
+          : "เกณฑ์ความน่าเชื่อถือจากผลตรวจ";
+      throw new Error(`${label} ต้องเป็นจำนวนเต็มระหว่าง ${minimum} ถึง 100`);
+    }
+    return value;
+  };
+  let caseUnderstandingThreshold: number;
+  let caseDiscriminationThreshold: number;
+  let learnedReliabilityThreshold: number;
+  try {
+    caseUnderstandingThreshold = parseThreshold("caseUnderstandingThreshold", current.caseUnderstandingThreshold, 80);
+    caseDiscriminationThreshold = parseThreshold("caseDiscriminationThreshold", current.caseDiscriminationThreshold, 80);
+    learnedReliabilityThreshold = parseThreshold("learnedReliabilityThreshold", current.learnedReliabilityThreshold, 70);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "ค่า Threshold ไม่ถูกต้อง" }, 400);
+  }
+  const updatedBy = typeof body.updatedBy === "string" && body.updatedBy.trim().length > 0
+    ? body.updatedBy.trim().slice(0, 120)
+    : "Tech Support Console";
   const patch = enabled
-      ? { enabled: true, emergencyDisabledAt: undefined }
-      : { enabled: false };
+      ? {
+        enabled: true,
+        emergencyDisabledAt: undefined,
+        caseUnderstandingThreshold,
+        caseDiscriminationThreshold,
+        learnedReliabilityThreshold,
+        updatedBy,
+      }
+      : {
+        enabled: false,
+        caseUnderstandingThreshold,
+        caseDiscriminationThreshold,
+        learnedReliabilityThreshold,
+        updatedBy,
+      };
 
   const updated = emergencyDisable
     ? (await emergencyDisableAutoAnswer()).settings

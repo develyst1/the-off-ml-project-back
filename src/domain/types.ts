@@ -313,8 +313,10 @@ export type AutomationSettings = {
   enabled: boolean;
   caseUnderstandingThreshold: number;
   caseDiscriminationThreshold: number;
+  learnedReliabilityThreshold: number;
   emergencyDisabledAt?: string;
   updatedAt: string;
+  updatedBy: string;
 };
 
 export type CaseDetail = SupportCase & {

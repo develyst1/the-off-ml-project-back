@@ -3,6 +3,10 @@ import { store } from "../repositories/store";
 import { isAutoAnswerRelevanceReady, isSolutionReadyForAutoAnswer } from "./auto-answer-guardrail";
 import { evaluateLearnedReliabilityGate, type LearnedReliability, type LearnedReliabilityGateReason } from "./learned-reliability-service";
 
+function learnedThresholdRatio(value: number | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value / 100 : 0.9;
+}
+
 export type AutoAnswerSolutionDecisionReason =
   | "AUTOMATION_DISABLED"
   | "EXISTING_GUARDRAIL_FAILED"
@@ -34,7 +38,10 @@ export async function evaluateAutoAnswerForSolution(
     return { allowed: false, reason: "EXISTING_GUARDRAIL_FAILED", learnedReliability: null };
   }
 
-  const learnedReliability = await evaluateLearnedReliabilityGate({ excludeCaseId: options.caseId });
+  const learnedReliability = await evaluateLearnedReliabilityGate({
+    excludeCaseId: options.caseId,
+    threshold: learnedThresholdRatio(settings.learnedReliabilityThreshold),
+  });
   return {
     allowed: learnedReliability.allowed,
     reason: learnedReliability.reason,
@@ -51,7 +58,12 @@ export async function isAutoAnswerAllowedForSolution(
 }
 
 export async function getLearnedReliabilityForAutomation() {
-  return evaluateLearnedReliabilityGate();
+  try {
+    const settings = await store.getAutomationSettings();
+    return evaluateLearnedReliabilityGate({ threshold: learnedThresholdRatio(settings.learnedReliabilityThreshold) });
+  } catch {
+    return { allowed: false, reason: "LEARNED_RELIABILITY_UNAVAILABLE" as const, reliability: null };
+  }
 }
 
 export async function emergencyDisableAutoAnswer() {
@@ -62,6 +74,7 @@ export async function emergencyDisableAutoAnswer() {
   const settings = await store.updateAutomationSettings({
     enabled: false,
     emergencyDisabledAt: new Date().toISOString(),
+    updatedBy: "Tech Support Console",
   });
   return { settings, duplicate: false };
 }

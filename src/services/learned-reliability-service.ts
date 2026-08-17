@@ -61,7 +61,10 @@ export async function getLearnedReliability(options: { excludeCaseId?: string } 
   };
 }
 
-export function evaluateLearnedReliabilitySnapshot(reliability: LearnedReliability): LearnedReliabilityGate {
+export function evaluateLearnedReliabilitySnapshot(
+  reliability: LearnedReliability,
+  threshold = LEARNED_RELIABILITY_THRESHOLD,
+): LearnedReliabilityGate {
   const dimensions = [reliability.issueUnderstanding, reliability.solutionSelection];
 
   if (dimensions.some((dimension) => dimension.status === "NO_DATA")) {
@@ -73,22 +76,22 @@ export function evaluateLearnedReliabilitySnapshot(reliability: LearnedReliabili
   if (reliability.issueUnderstanding.status !== "READY"
     || reliability.issueUnderstanding.reliability === null
     || !Number.isFinite(reliability.issueUnderstanding.reliability)
-    || reliability.issueUnderstanding.reliability < LEARNED_RELIABILITY_THRESHOLD) {
+    || reliability.issueUnderstanding.reliability < threshold) {
     return { allowed: false, reason: "UNDERSTANDING_RELIABILITY_BELOW_THRESHOLD", reliability };
   }
   if (reliability.solutionSelection.status !== "READY"
     || reliability.solutionSelection.reliability === null
     || !Number.isFinite(reliability.solutionSelection.reliability)
-    || reliability.solutionSelection.reliability < LEARNED_RELIABILITY_THRESHOLD) {
+    || reliability.solutionSelection.reliability < threshold) {
     return { allowed: false, reason: "SOLUTION_RELIABILITY_BELOW_THRESHOLD", reliability };
   }
 
   return { allowed: true, reliability };
 }
 
-export async function evaluateLearnedReliabilityGate(options: { excludeCaseId?: string } = {}): Promise<LearnedReliabilityGate> {
+export async function evaluateLearnedReliabilityGate(options: { excludeCaseId?: string; threshold?: number } = {}): Promise<LearnedReliabilityGate> {
   try {
-    return evaluateLearnedReliabilitySnapshot(await getLearnedReliability(options));
+    return evaluateLearnedReliabilitySnapshot(await getLearnedReliability(options), options.threshold ?? LEARNED_RELIABILITY_THRESHOLD);
   } catch {
     return { allowed: false, reason: "LEARNED_RELIABILITY_UNAVAILABLE", reliability: null };
   }

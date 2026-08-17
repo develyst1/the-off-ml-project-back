@@ -451,10 +451,17 @@ create table if not exists automation_settings (
   enabled boolean not null default false,
   case_understanding_threshold numeric not null default 98,
   case_discrimination_threshold numeric not null default 98,
+  learned_reliability_threshold numeric not null default 90,
   emergency_disabled_at timestamptz,
+  updated_by text not null default 'ระบบเริ่มต้น',
   updated_at timestamptz not null default now(),
   constraint automation_settings_singleton check (id = 'default')
 );
+
+alter table automation_settings
+  add column if not exists learned_reliability_threshold numeric not null default 90;
+alter table automation_settings
+  add column if not exists updated_by text not null default 'ระบบเริ่มต้น';
 
 insert into automation_settings (id)
 values ('default')

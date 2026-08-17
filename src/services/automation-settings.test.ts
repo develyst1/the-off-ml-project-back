@@ -4,7 +4,9 @@ const automationSettings = {
   enabled: true,
   caseUnderstandingThreshold: 98,
   caseDiscriminationThreshold: 98,
+  learnedReliabilityThreshold: 80,
   updatedAt: "2026-08-11T00:00:00.000Z",
+  updatedBy: "ระบบเริ่มต้น",
 };
 
 const readyReliability = {
@@ -13,6 +15,7 @@ const readyReliability = {
 };
 
 let receivedExcludeCaseId: string | undefined;
+let receivedThreshold: number | undefined;
 let settingsError: Error | undefined;
 let reliabilityGate: { allowed: boolean; reason?: string; reliability: typeof readyReliability | null } = {
   allowed: true,
@@ -28,8 +31,9 @@ mock.module("../repositories/store", () => ({
   },
 }));
 mock.module("./learned-reliability-service", () => ({
-  evaluateLearnedReliabilityGate: async (options: { excludeCaseId?: string }) => {
+  evaluateLearnedReliabilityGate: async (options: { excludeCaseId?: string; threshold?: number }) => {
     receivedExcludeCaseId = options.excludeCaseId;
+    receivedThreshold = options.threshold;
     return reliabilityGate;
   },
 }));
@@ -47,9 +51,10 @@ test("allows auto-answer only when the existing guardrail and both reliability d
   const result = await evaluateAutoAnswerForSolution(98, solution, { caseId: "current-case" });
   expect(result.allowed).toBe(true);
   expect(receivedExcludeCaseId).toBe("current-case");
+  expect(receivedThreshold).toBe(0.8);
 });
 
-test("blocks reliability below 90%, no data, insufficient data, and unavailable states", async () => {
+test("blocks reliability below the configured threshold, no data, insufficient data, and unavailable states", async () => {
   reliabilityGate = { allowed: false, reason: "UNDERSTANDING_RELIABILITY_BELOW_THRESHOLD", reliability: readyReliability };
   expect((await evaluateAutoAnswerForSolution(98, solution)).reason).toBe("UNDERSTANDING_RELIABILITY_BELOW_THRESHOLD");
 

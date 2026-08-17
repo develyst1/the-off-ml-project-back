@@ -7,6 +7,7 @@ import { listAiReviewFeedbackForAnalysis, saveAiReviewFeedback, saveQualityRevie
 import { getAnalysisSourceMessageIds, getAnalysisTechnicalTopic, getLatestCustomerMessageAnalysis } from "../lib/analysis";
 import { categoryLabelOf } from "../lib/category";
 import { analysisMessageIdentity } from "../repositories/case-message-normalizer";
+import type { AutomationSettings } from "../domain/types";
 
 export const confidenceRoutes = new Hono();
 
@@ -14,10 +15,28 @@ type ReviewStage = "QUALITY" | "AUTO_ANSWER";
 type FeedbackResult = "CORRECT" | "INCORRECT";
 type ReviewStatus = "LOW_CONFIDENCE" | "NEGATIVE_FEEDBACK" | "NOT_REVIEWED";
 
-const REVIEW_THRESHOLD = 98;
+const DEFAULT_REVIEW_THRESHOLDS = { caseUnderstandingThreshold: 98, caseDiscriminationThreshold: 98 };
 
-function getReviewStage(caseConfidence: number, solutionConfidence?: number, hasSolution = true): ReviewStage {
-  return hasSolution && caseConfidence >= REVIEW_THRESHOLD && (solutionConfidence ?? 0) >= REVIEW_THRESHOLD
+function reviewThresholds(settings: Pick<AutomationSettings, "caseUnderstandingThreshold" | "caseDiscriminationThreshold">) {
+  return {
+    caseUnderstandingThreshold: Number.isFinite(settings.caseUnderstandingThreshold)
+      ? settings.caseUnderstandingThreshold
+      : DEFAULT_REVIEW_THRESHOLDS.caseUnderstandingThreshold,
+    caseDiscriminationThreshold: Number.isFinite(settings.caseDiscriminationThreshold)
+      ? settings.caseDiscriminationThreshold
+      : DEFAULT_REVIEW_THRESHOLDS.caseDiscriminationThreshold,
+  };
+}
+
+function getReviewStage(
+  caseConfidence: number,
+  solutionConfidence?: number,
+  hasSolution = true,
+  thresholds = DEFAULT_REVIEW_THRESHOLDS,
+): ReviewStage {
+  return hasSolution
+    && caseConfidence >= thresholds.caseUnderstandingThreshold
+    && (solutionConfidence ?? 0) >= thresholds.caseDiscriminationThreshold
     ? "AUTO_ANSWER"
     : "QUALITY";
 }
@@ -62,6 +81,7 @@ function getCustomerMessageForAnalysis<T extends {
 
 confidenceRoutes.get("/suggestions", async (c) => {
   const cases = await caseService.listCases();
+  const settings = reviewThresholds(await store.getAutomationSettings());
   const suggestions = (await Promise.all(cases
     .map(async (item) => {
       const latestSolution = getLatestActionableSolution(item.solutions);
@@ -70,7 +90,7 @@ confidenceRoutes.get("/suggestions", async (c) => {
       const customerMessage = getCustomerMessageForAnalysis(item, currentAnalysis);
       const caseConfidence = item.confidenceScore ?? 0;
       const solutionConfidence = latestSolution?.confidence;
-      const baseReviewStage = getReviewStage(caseConfidence, latestSolution?.confidence, Boolean(latestSolution));
+      const baseReviewStage = getReviewStage(caseConfidence, latestSolution?.confidence, Boolean(latestSolution), settings);
       const currentFeedback = await listAiReviewFeedbackForAnalysis({
         caseId: item.id,
         analysisId: currentAnalysis.analysisId,
@@ -83,8 +103,8 @@ confidenceRoutes.get("/suggestions", async (c) => {
       const hasReviewedSolution = solutionFeedback?.reviewSource === "CONFIDENCE_REVIEW";
       const hasCompletedQualityReview = Boolean(latestSolution) && hasReviewedUnderstanding && hasReviewedSolution;
       const reviewStage = hasNegativeFeedback ? "QUALITY" : baseReviewStage;
-      const reviewStatus: ReviewStatus = caseConfidence < REVIEW_THRESHOLD
-        || (solutionConfidence !== undefined && solutionConfidence < REVIEW_THRESHOLD)
+      const reviewStatus: ReviewStatus = caseConfidence < settings.caseUnderstandingThreshold
+        || (solutionConfidence !== undefined && solutionConfidence < settings.caseDiscriminationThreshold)
         ? "LOW_CONFIDENCE"
         : hasNegativeFeedback
           ? "NEGATIVE_FEEDBACK"
@@ -176,6 +196,7 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
 
     const detail = await caseService.getCase(caseId);
     if (!detail) return c.json({ error: "case_not_found" }, 404);
+    const settings = reviewThresholds(await store.getAutomationSettings());
 
     const currentAnalysis = getLatestCustomerMessageAnalysis(detail.analyses);
     if (!currentAnalysis
@@ -193,7 +214,7 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
     const hasNegativeFeedback = currentFeedback.some((entry) => entry.result === "INCORRECT");
     const calculatedStage = hasNegativeFeedback
       ? "QUALITY"
-      : getReviewStage(detail.confidenceScore ?? 0, latestSolution?.confidence, Boolean(latestSolution));
+      : getReviewStage(detail.confidenceScore ?? 0, latestSolution?.confidence, Boolean(latestSolution), settings);
     if (requestedStage && requestedStage !== calculatedStage) {
       return c.json({ error: "review_stage_changed", message: "Review stage changed. Reload Confidence Review and try again." }, 409);
     }
@@ -332,11 +353,12 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
 
   const detail = await caseService.getCase(caseId);
   if (!detail) return c.json({ error: "case_not_found" }, 404);
+  const settings = reviewThresholds(await store.getAutomationSettings());
 
   const suggestedSolution = solutionId
     ? detail.solutions.find((solution) => solution.id === solutionId)
     : undefined;
-  const reviewStage = getReviewStage(detail.confidenceScore ?? 0, suggestedSolution?.confidence, Boolean(suggestedSolution));
+  const reviewStage = getReviewStage(detail.confidenceScore ?? 0, suggestedSolution?.confidence, Boolean(suggestedSolution), settings);
   if (requestedStage && requestedStage !== reviewStage) {
     return c.json({ error: "review_stage_changed", message: "คะแนนของเคสเปลี่ยน กรุณารีเฟรชรายการก่อนยืนยัน" }, 409);
   }

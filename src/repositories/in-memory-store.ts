@@ -21,7 +21,9 @@ export class InMemoryStore implements CaseStore {
     enabled: false,
     caseUnderstandingThreshold: 98,
     caseDiscriminationThreshold: 98,
+    learnedReliabilityThreshold: 90,
     updatedAt: nowIso(),
+    updatedBy: "ระบบเริ่มต้น",
   };
 
   private retainedInboxMessages(customerId: string) {
@@ -416,7 +418,7 @@ export class InMemoryStore implements CaseStore {
     return this.automationSettings;
   }
 
-  async updateAutomationSettings(patch: Partial<Pick<AutomationSettings, "enabled" | "caseUnderstandingThreshold" | "caseDiscriminationThreshold" | "emergencyDisabledAt">>): Promise<AutomationSettings> {
+  async updateAutomationSettings(patch: Partial<Pick<AutomationSettings, "enabled" | "caseUnderstandingThreshold" | "caseDiscriminationThreshold" | "learnedReliabilityThreshold" | "emergencyDisabledAt" | "updatedBy">>): Promise<AutomationSettings> {
     this.automationSettings = { ...this.automationSettings, ...patch, updatedAt: nowIso() };
     return this.automationSettings;
   }

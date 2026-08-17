@@ -186,7 +186,9 @@ type DbAutomationSettings = {
   enabled: boolean;
   case_understanding_threshold: string | number;
   case_discrimination_threshold: string | number;
+  learned_reliability_threshold: string | number;
   emergency_disabled_at: Date | null;
+  updated_by: string;
   updated_at: Date;
 };
 
@@ -217,8 +219,10 @@ function mapAutomationSettings(row: DbAutomationSettings): AutomationSettings {
     enabled: row.enabled,
     caseUnderstandingThreshold: Number(row.case_understanding_threshold),
     caseDiscriminationThreshold: Number(row.case_discrimination_threshold),
+    learnedReliabilityThreshold: Number(row.learned_reliability_threshold),
     emergencyDisabledAt: row.emergency_disabled_at ? dateIso(row.emergency_disabled_at) : undefined,
     updatedAt: dateIso(row.updated_at),
+    updatedBy: row.updated_by,
   };
 }
 
@@ -1090,37 +1094,43 @@ export class PostgresStore implements CaseStore {
 
   async getAutomationSettings(): Promise<AutomationSettings> {
     const result = await this.query<DbAutomationSettings>(
-      `select enabled, case_understanding_threshold, case_discrimination_threshold, emergency_disabled_at, updated_at
+      `select enabled, case_understanding_threshold, case_discrimination_threshold, learned_reliability_threshold, emergency_disabled_at, updated_by, updated_at
        from automation_settings where id = 'default'`,
     );
     if (!result.rows[0]) throw new Error("Automation settings not found");
     return mapAutomationSettings(result.rows[0]);
   }
 
-  async updateAutomationSettings(patch: Partial<Pick<AutomationSettings, "enabled" | "caseUnderstandingThreshold" | "caseDiscriminationThreshold" | "emergencyDisabledAt">>): Promise<AutomationSettings> {
+  async updateAutomationSettings(patch: Partial<Pick<AutomationSettings, "enabled" | "caseUnderstandingThreshold" | "caseDiscriminationThreshold" | "learnedReliabilityThreshold" | "emergencyDisabledAt" | "updatedBy">>): Promise<AutomationSettings> {
     const current = await this.getAutomationSettings();
     const next = {
       enabled: patch.enabled ?? current.enabled,
       caseUnderstandingThreshold: patch.caseUnderstandingThreshold ?? current.caseUnderstandingThreshold,
       caseDiscriminationThreshold: patch.caseDiscriminationThreshold ?? current.caseDiscriminationThreshold,
+      learnedReliabilityThreshold: patch.learnedReliabilityThreshold ?? current.learnedReliabilityThreshold,
       emergencyDisabledAt: "emergencyDisabledAt" in patch
         ? patch.emergencyDisabledAt
         : current.emergencyDisabledAt,
+      updatedBy: patch.updatedBy ?? current.updatedBy,
     };
     const result = await this.query<DbAutomationSettings>(
       `update automation_settings
        set enabled = $1,
            case_understanding_threshold = $2,
            case_discrimination_threshold = $3,
-           emergency_disabled_at = $4,
-           updated_at = $5
+           learned_reliability_threshold = $4,
+           emergency_disabled_at = $5,
+           updated_by = $6,
+           updated_at = $7
        where id = 'default'
-       returning enabled, case_understanding_threshold, case_discrimination_threshold, emergency_disabled_at, updated_at`,
+       returning enabled, case_understanding_threshold, case_discrimination_threshold, learned_reliability_threshold, emergency_disabled_at, updated_by, updated_at`,
       [
         next.enabled,
         next.caseUnderstandingThreshold,
         next.caseDiscriminationThreshold,
+        next.learnedReliabilityThreshold,
         next.emergencyDisabledAt ?? null,
+        next.updatedBy,
         nowIso(),
       ],
     );

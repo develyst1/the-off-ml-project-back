@@ -60,6 +60,8 @@ mock.module("../repositories/store", () => ({
       enabled: false,
       caseUnderstandingThreshold: 98,
       caseDiscriminationThreshold: 98,
+      learnedReliabilityThreshold: 90,
+      updatedBy: "ระบบเริ่มต้น",
     }),
     updateAutomationSettings: async (patch: Record<string, unknown>) => ({
       enabled: false,
@@ -158,6 +160,38 @@ describe("automation logs", () => {
       learnedReliability: { threshold: 0.9 },
       learnedReliabilityDecision: { allowed: true },
     });
+  });
+
+  test("saves the three thresholds and exposes audit metadata", async () => {
+    const response = await app.fetch(new Request("http://localhost/automation/settings", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        caseUnderstandingThreshold: 90,
+        caseDiscriminationThreshold: 90,
+        learnedReliabilityThreshold: 80,
+        updatedBy: "ผู้ดูแลระบบ",
+      }),
+    }));
+    const body = await response.json() as { data: Record<string, unknown> };
+
+    expect(response.status).toBe(200);
+    expect(body.data).toMatchObject({
+      caseUnderstandingThreshold: 90,
+      caseDiscriminationThreshold: 90,
+      learnedReliabilityThreshold: 80,
+      updatedBy: "ผู้ดูแลระบบ",
+    });
+  });
+
+  test("rejects thresholds outside their safe ranges", async () => {
+    const response = await app.fetch(new Request("http://localhost/automation/settings", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ learnedReliabilityThreshold: 69 }),
+    }));
+
+    expect(response.status).toBe(400);
   });
 
   test("lists only messages actually sent by auto-answer", async () => {

@@ -56,7 +56,7 @@ export type CaseStore = {
   createSolution(input: Omit<Solution, "id" | "createdAt">): Promise<Solution>;
   updateSolution(id: string, patch: Partial<Pick<Solution, "confidence" | "validatedByTeam" | "validatedAt" | "validatedBy" | "autoAnswerReviewResult" | "autoAnswerReviewedAt" | "autoAnswerReviewedBy">>): Promise<Solution>;
   getAutomationSettings(): Promise<AutomationSettings>;
-  updateAutomationSettings(patch: Partial<Pick<AutomationSettings, "enabled" | "caseUnderstandingThreshold" | "caseDiscriminationThreshold" | "emergencyDisabledAt">>): Promise<AutomationSettings>;
+  updateAutomationSettings(patch: Partial<Pick<AutomationSettings, "enabled" | "caseUnderstandingThreshold" | "caseDiscriminationThreshold" | "learnedReliabilityThreshold" | "emergencyDisabledAt" | "updatedBy">>): Promise<AutomationSettings>;
   createCaseMatchLog(input: Omit<CaseMatchLog, "id" | "createdAt">): Promise<CaseMatchLog>;
   updateCaseMatchLogDecision(id: string, finalUserDecision: NonNullable<CaseMatchLog["finalUserDecision"]>): Promise<CaseMatchLog>;
   listCases(): Promise<CaseDetail[]>;
