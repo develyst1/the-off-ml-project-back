@@ -42,7 +42,7 @@ export function buildInitialCaseAcknowledgement({
     `หมายเลขเคส: ${caseNumber}`,
     `ปัญหา: ${caseTitle}`,
     "",
-    "ทีม Tech จะตรวจสอบและติดต่อกลับหากต้องการข้อมูลเพิ่มเติมนะคะ",
+    "ตอนนี้ยังไม่มีวิธีแก้ที่ยืนยันแล้ว จึงส่งเรื่องให้ทีม Tech ตรวจสอบก่อนนะคะ",
   ].join("\n");
 }
 
@@ -346,9 +346,53 @@ export async function receiveLineInboxMessage(input: LineTextMessageInput): Prom
   }
 
   const customer = await store.upsertCustomer({ lineUserId: input.lineUserId, displayName });
+  // The production LINE webhook uses this Inbox-first handler. When the
+  // customer already has an active case, hand the message to the full case
+  // continuation pipeline so that analysis, guardrails, Auto-answer, and the
+  // Teams fallback all run. Keep greetings in the Inbox handoff flow.
+  const activeCaseId = await caseService.resolveIncomingCaseId(customer.id);
+  if (activeCaseId && !isGreetingMessage(input.text)) {
+    return receiveLineTextMessage(input);
+  }
+  // A first real support issue should enter the normal case pipeline
+  // immediately. Keep greetings in Inbox, but do not make the user wait for
+  // a manual console assignment before the case is analysed and forwarded.
+  if (!activeCaseId && !isGreetingMessage(input.text)) {
+    const result = await receiveLineTextMessage(input);
+    const directCaseId = result.processed ? result.caseDetail?.id : undefined;
+    const inboxMessage = await store.createInboxMessage({
+      customerId: customer.id,
+      caseId: directCaseId,
+      assignedCaseId: directCaseId,
+      assignedBy: directCaseId ? "SYSTEM_AUTO_CASE" : undefined,
+      assignedAt: directCaseId ? new Date().toISOString() : undefined,
+      direction: "INBOUND",
+      senderType: "CUSTOMER",
+      text: input.text,
+      externalMessageId: input.messageId,
+      webhookEventId: input.webhookEventId,
+      deliveryStatus: "DELIVERED",
+      createdAt: input.timestamp ? new Date(input.timestamp).toISOString() : input.systemReceivedAt,
+    });
+    realtimeEventHub.publish({
+      name: "conversation.message.created",
+      data: {
+        eventId: `line:${input.webhookEventId ?? input.messageId}`,
+        messageId: inboxMessage.id,
+        conversationId: customer.id,
+        userId: customer.id,
+        caseId: inboxMessage.caseId,
+        senderType: inboxMessage.senderType,
+        createdAt: inboxMessage.createdAt,
+        direction: inboxMessage.direction,
+      },
+    });
+    return result;
+  }
+
   // Resolve from the latest repository state before writing the Inbox row so
   // the canonical record and its realtime event carry the same caseId.
-  const assignedCaseId = await caseService.resolveIncomingCaseId(customer.id);
+  const assignedCaseId = activeCaseId;
   const inboxMessage = await store.createInboxMessage({
     customerId: customer.id,
     caseId: assignedCaseId,
@@ -1500,6 +1544,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     problemSummaryStatus: analysis.status === "AI_FAILED" ? "FAILED" : "SUCCESS",
   });
   await store.setActiveCase(customer.id, supportCase.id);
+  await store.setConversationState(customer.id, "ACTIVE_CASE_CONVERSATION");
   if (pendingNewCaseText) {
     await store.createMessage({
       caseId: supportCase.id,

@@ -5,7 +5,7 @@ const cases = [
   {
     caseNumber: "OFF-2026-00001",
     category: "SOFTWARE_APPLICATION",
-    confidenceScore: 99,
+    confidenceScore: 75,
     customer: { displayName: "Test Customer" },
     analyses: [],
     solutions: [
@@ -215,10 +215,14 @@ describe("automation logs", () => {
 
   test("returns Thai category labels for guardrail-ready solutions", async () => {
     const response = await app.fetch(new Request("http://localhost/automation/solutions"));
-    const body = await response.json() as { data: Array<{ category: string }> };
+    const body = await response.json() as { data: Array<{ category: string; caseUnderstandingConfidence: number; caseDiscriminationConfidence: number }> };
 
     expect(response.status).toBe(200);
     expect(body.data).toHaveLength(1);
-    expect(body.data[0]?.category).toBe("ปัญหาซอฟต์แวร์");
+    expect(body.data[0]).toMatchObject({
+      category: "ปัญหาซอฟต์แวร์",
+      caseUnderstandingConfidence: 75,
+      caseDiscriminationConfidence: 99,
+    });
   });
 });

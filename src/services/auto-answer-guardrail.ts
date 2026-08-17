@@ -7,12 +7,15 @@ export type AutoAnswerGuardrailSettings = {
 };
 
 export function isSolutionReadyForAutoAnswer(
-  caseConfidence: number | undefined,
+  _caseConfidence: number | undefined,
   solution: Pick<Solution, "confidence" | "validatedByTeam" | "validatedAt" | "solutionSteps">,
   settings: AutoAnswerGuardrailSettings,
 ) {
+  // The live customer-message confidence is informational only. It changes
+  // whenever a follow-up is re-analysed and must not remove an already
+  // validated solution from the guardrail. Human feedback remains the source
+  // for Learned Reliability through the existing closed-case/Formal Review flows.
   return (
-    (caseConfidence ?? 0) >= settings.caseUnderstandingThreshold &&
     solution.confidence >= settings.caseDiscriminationThreshold &&
     solution.validatedByTeam &&
     Boolean(solution.validatedAt) &&

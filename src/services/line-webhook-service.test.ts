@@ -190,21 +190,26 @@ describe("Inbox LINE handoff", () => {
     await receiveLineInboxMessage({ lineUserId, messageId: "inbox-issue-1", text: "ข้อมูลในระบบไม่อัปเดต", replyToken: "reply-inbox-issue-1" });
     const afterIssue = (await store.listInboxUsers()).find((item) => item.customer.lineUserId === lineUserId);
 
-    expect(lineReplies.slice(replyCountBefore)).toEqual(["สวัสดีค่ะ มีปัญหาด้านไหนให้ทีมช่วยตรวจสอบคะ"]);
-    expect(afterIssue?.customer.conversationState).toBe("HANDOFF_TO_TECH");
-    expect(afterIssue?.cases).toHaveLength(0);
+    expect(lineReplies.slice(replyCountBefore)).toHaveLength(2);
+    expect(lineReplies.at(-1)).toContain("ยังไม่มีวิธีแก้ที่ยืนยันแล้ว");
+    expect(afterIssue?.customer.conversationState).toBe("ACTIVE_CASE_CONVERSATION");
+    expect(afterIssue?.cases).toHaveLength(1);
   });
 
-  test("hands a direct issue to Tech without an automated acknowledgement", async () => {
+  test("opens a direct issue immediately and tells the customer to wait when no solution passed guardrail", async () => {
     const lineUserId = "U-inbox-direct-issue-1";
     const replyCountBefore = lineReplies.length;
 
     await receiveLineInboxMessage({ lineUserId, messageId: "inbox-direct-issue-1", text: "เปิดหน้าเว็บแล้วขึ้น 404", replyToken: "reply-inbox-direct-issue-1" });
     const inboxUser = (await store.listInboxUsers()).find((item) => item.customer.lineUserId === lineUserId);
+    const cases = inboxUser?.cases ?? [];
 
-    expect(lineReplies.slice(replyCountBefore)).toEqual([]);
-    expect(inboxUser?.customer.conversationState).toBe("HANDOFF_TO_TECH");
-    expect(inboxUser?.cases).toHaveLength(0);
+    expect(lineReplies.slice(replyCountBefore)).toHaveLength(1);
+    expect(lineReplies.at(-1)).toContain("ยังไม่มีวิธีแก้ที่ยืนยันแล้ว");
+    expect(inboxUser?.customer.conversationState).toBe("ACTIVE_CASE_CONVERSATION");
+    expect(cases).toHaveLength(1);
+    expect(cases[0]?.status).toBe("awaiting_tech");
+    expect(inboxUser?.messages.some((message) => message.caseId === cases[0]?.id)).toBe(true);
   });
 
   test("persists an incoming LINE message with the active case before linking the timeline", async () => {
@@ -227,6 +232,57 @@ describe("Inbox LINE handoff", () => {
     expect(inboxMessage?.caseId).toBe(supportCase.id);
     expect(inboxMessage?.assignedCaseId).toBe(supportCase.id);
     expect(detail?.messages.filter((message) => message.metadata?.sourceInboxMessageId === inboxMessage?.id)).toHaveLength(1);
+  });
+
+  test("runs the Auto-answer pipeline when the production Inbox handler receives an active-case follow-up", async () => {
+    await seedReadyReliability(`inbox-auto-answer-${sequence}`);
+    await store.updateAutomationSettings({ enabled: true, emergencyDisabledAt: undefined });
+    const setup = await createAutoAnswerCase();
+    const lineCountBefore = lineReplies.length;
+    const teamsCountBefore = autoAnswerTeamsPayloads.length;
+    const eventsBefore = autoAnswerDeliveryEvents.length;
+    forcedIntentClassification = {
+      intent: "FOLLOW_UP_EXISTING_CASE",
+      shouldCreateCase: false,
+      shouldAppendToCase: true,
+      nextAction: "CONTINUE_CASE",
+      targetCaseNumber: null,
+      matchedActiveCaseId: setup.supportCase.id,
+      confidence: 1,
+      reason: "active-case follow-up through Inbox webhook",
+    };
+
+    try {
+      const result = await receiveLineInboxMessage({
+        lineUserId: setup.lineUserId,
+        messageId: `inbox-auto-answer-${sequence}`,
+        text: "The connection problem is still happening after the last check",
+        replyToken: `reply-inbox-auto-answer-${sequence}`,
+      });
+      expect(result.duplicate).toBe(false);
+
+      const detail = await store.getCaseDetail(setup.supportCase.id);
+      const audits = detail?.messages.filter((message) => message.messageType === "AUTO_ANSWER") ?? [];
+      expect(lineReplies.length - lineCountBefore).toBe(1);
+      expect(autoAnswerTeamsPayloads.length - teamsCountBefore).toBe(1);
+      expect(audits).toHaveLength(1);
+      expect(autoAnswerDeliveryEvents.slice(eventsBefore)).toEqual(["line", "teams"]);
+      expect(detail?.analyses.some((analysis) => analysis.analysisType === "customer_message" && analysis.analysisVersion > setup.originalAnalysis.analysisVersion)).toBe(true);
+
+      const duplicate = await receiveLineInboxMessage({
+        lineUserId: setup.lineUserId,
+        messageId: `inbox-auto-answer-${sequence}`,
+        text: "The connection problem is still happening after the last check",
+        replyToken: `reply-inbox-auto-answer-duplicate-${sequence}`,
+      });
+      expect(duplicate.duplicate).toBe(true);
+      expect(lineReplies.length - lineCountBefore).toBe(1);
+      expect(autoAnswerTeamsPayloads.length - teamsCountBefore).toBe(1);
+      expect((await store.getCaseDetail(setup.supportCase.id))?.messages.filter((message) => message.messageType === "AUTO_ANSWER")).toHaveLength(1);
+    } finally {
+      forcedIntentClassification = undefined;
+      await store.updateAutomationSettings({ enabled: false });
+    }
   });
 });
 
@@ -860,7 +916,7 @@ describe("Phase 13 auto-answer Teams audit", () => {
     await store.updateAutomationSettings({ enabled: false });
   });
 
-  test("does not create an audit or notify API-016 when the existing guardrail blocks", async () => {
+  test("keeps a validated solution eligible when live customer-message confidence is low", async () => {
     await seedReadyReliability(`blocked-${sequence}`);
     await store.updateAutomationSettings({ enabled: true, emergencyDisabledAt: undefined });
     const setup = await createAutoAnswerCase(97);
@@ -873,8 +929,8 @@ describe("Phase 13 auto-answer Teams audit", () => {
     });
 
     const detail = await store.getCaseDetail(setup.supportCase.id);
-    expect(detail?.messages.some((message) => message.messageType === "AUTO_ANSWER")).toBe(false);
-    expect(autoAnswerTeamsPayloads.length).toBe(teamsCountBefore);
+    expect(detail?.messages.some((message) => message.messageType === "AUTO_ANSWER")).toBe(true);
+    expect(autoAnswerTeamsPayloads.length).toBe(teamsCountBefore + 1);
     await store.updateAutomationSettings({ enabled: false });
   });
 

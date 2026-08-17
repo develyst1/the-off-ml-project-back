@@ -68,10 +68,10 @@ test("blocks reliability below the configured threshold, no data, insufficient d
   expect((await evaluateAutoAnswerForSolution(98, solution)).reason).toBe("LEARNED_RELIABILITY_UNAVAILABLE");
 });
 
-test("keeps the existing 98% model guardrail as a separate gate", async () => {
+test("does not block a validated solution because live customer-message confidence is low", async () => {
   reliabilityGate = { allowed: true, reliability: readyReliability };
   const result = await evaluateAutoAnswerForSolution(97, solution);
-  expect(result).toMatchObject({ allowed: false, reason: "EXISTING_GUARDRAIL_FAILED" });
+  expect(result).toMatchObject({ allowed: true });
 });
 
 test("does not mutate the model confidence while evaluating reliability", async () => {

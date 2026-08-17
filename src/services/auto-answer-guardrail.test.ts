@@ -7,10 +7,10 @@ const settings = {
 };
 
 describe("auto-answer guardrail", () => {
-  test("requires both confidence levels and team validation", () => {
+  test("uses solution confidence and team validation, not live customer-message confidence", () => {
     const actionableSteps = ["ลองออกจากระบบแล้วเข้าใหม่"];
     expect(isSolutionReadyForAutoAnswer(98, { confidence: 98, validatedByTeam: true, validatedAt: "2026-07-21T00:00:00.000Z", solutionSteps: actionableSteps }, settings)).toBe(true);
-    expect(isSolutionReadyForAutoAnswer(97, { confidence: 100, validatedByTeam: true, validatedAt: "2026-07-21T00:00:00.000Z", solutionSteps: actionableSteps }, settings)).toBe(false);
+    expect(isSolutionReadyForAutoAnswer(0, { confidence: 100, validatedByTeam: true, validatedAt: "2026-07-21T00:00:00.000Z", solutionSteps: actionableSteps }, settings)).toBe(true);
     expect(isSolutionReadyForAutoAnswer(100, { confidence: 97, validatedByTeam: true, validatedAt: "2026-07-21T00:00:00.000Z", solutionSteps: actionableSteps }, settings)).toBe(false);
     expect(isSolutionReadyForAutoAnswer(100, { confidence: 100, validatedByTeam: false, validatedAt: undefined, solutionSteps: actionableSteps }, settings)).toBe(false);
     expect(isSolutionReadyForAutoAnswer(100, { confidence: 100, validatedByTeam: true, validatedAt: undefined, solutionSteps: actionableSteps }, settings)).toBe(false);

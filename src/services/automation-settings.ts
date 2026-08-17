@@ -20,7 +20,7 @@ export type AutoAnswerSolutionDecision = {
 };
 
 export async function evaluateAutoAnswerForSolution(
-  caseConfidence: number | undefined,
+  _caseConfidence: number | undefined,
   solution: Pick<Solution, "confidence" | "solutionSteps" | "validatedByTeam" | "validatedAt">,
   options: { caseId?: string } = {},
 ): Promise<AutoAnswerSolutionDecision> {
@@ -34,7 +34,7 @@ export async function evaluateAutoAnswerForSolution(
   if (!settings.enabled) {
     return { allowed: false, reason: "AUTOMATION_DISABLED", learnedReliability: null };
   }
-  if (!isSolutionReadyForAutoAnswer(caseConfidence, solution, settings)) {
+  if (!isSolutionReadyForAutoAnswer(_caseConfidence, solution, settings)) {
     return { allowed: false, reason: "EXISTING_GUARDRAIL_FAILED", learnedReliability: null };
   }
 
@@ -50,11 +50,11 @@ export async function evaluateAutoAnswerForSolution(
 }
 
 export async function isAutoAnswerAllowedForSolution(
-  caseConfidence: number | undefined,
+  _caseConfidence: number | undefined,
   solution: Pick<Solution, "confidence" | "solutionSteps" | "validatedByTeam" | "validatedAt">,
   options: { caseId?: string } = {},
 ) {
-  return (await evaluateAutoAnswerForSolution(caseConfidence, solution, options)).allowed;
+  return (await evaluateAutoAnswerForSolution(_caseConfidence, solution, options)).allowed;
 }
 
 export async function getLearnedReliabilityForAutomation() {
