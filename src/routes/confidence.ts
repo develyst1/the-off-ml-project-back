@@ -28,6 +28,27 @@ function reviewThresholds(settings: Pick<AutomationSettings, "caseUnderstandingT
   };
 }
 
+async function syncAnswerLibrary(detail: Awaited<ReturnType<typeof caseService.getCase>>, solution: NonNullable<Awaited<ReturnType<typeof caseService.getCase>>>["solutions"][number], status: "ACTIVE" | "RETIRED") {
+  if (!detail) return;
+  if (status === "RETIRED") {
+    await store.retireAnswerLibraryBySourceSolution(solution.id);
+    return;
+  }
+  const currentAnalysis = getLatestCustomerMessageAnalysis(detail.analyses);
+  await store.upsertAnswerLibrary({
+    sourceSolutionId: solution.id,
+    sourceCaseId: detail.id,
+    category: currentAnalysis?.category ?? detail.category ?? "อื่นๆ",
+    solutionSteps: solution.solutionSteps,
+    rewrittenCustomerText: solution.rewrittenCustomerText,
+    confidence: solution.confidence,
+    validatedByTeam: solution.validatedByTeam,
+    validatedAt: solution.validatedAt,
+    validatedBy: solution.validatedBy,
+    status,
+  });
+}
+
 function getReviewStage(
   caseConfidence: number,
   solutionConfidence?: number,
@@ -305,7 +326,7 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
     const savedFeedback = feedback.filter((item): item is NonNullable<typeof item> => Boolean(item));
     const reviewedAt = new Date().toISOString();
     if (reviewStage === "AUTO_ANSWER" && latestSolution && decision) {
-      await store.updateSolution(latestSolution.id, {
+      const reviewedSolution = await store.updateSolution(latestSolution.id, {
         validatedByTeam: decision === "APPROVED",
         validatedAt: decision === "APPROVED" ? reviewedAt : undefined,
         validatedBy: decision === "APPROVED" ? "Tech Support Console" : undefined,
@@ -313,6 +334,7 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
         autoAnswerReviewedAt: reviewedAt,
         autoAnswerReviewedBy: "Tech Support Console",
       });
+      await syncAnswerLibrary(detail, reviewedSolution, decision === "APPROVED" ? "ACTIVE" : "RETIRED");
     }
     const reviewed = await store.updateCase(caseId, {
       confidenceReviewStatus: decision === "APPROVED" ? "AUTO_ANSWER_APPROVED" : "AUTO_ANSWER_REJECTED",
@@ -392,7 +414,7 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
   }
 
   if (reviewStage === "AUTO_ANSWER" && suggestedSolution) {
-    await store.updateSolution(suggestedSolution.id, {
+    const reviewedSolution = await store.updateSolution(suggestedSolution.id, {
       validatedByTeam: result === "approved",
       validatedAt: result === "approved" ? reviewedAt : undefined,
       validatedBy: result === "approved" ? "Tech Support Console" : undefined,
@@ -400,11 +422,12 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
       autoAnswerReviewedAt: reviewedAt,
       autoAnswerReviewedBy: "Tech Support Console",
     });
+    await syncAnswerLibrary(detail, reviewedSolution, result === "approved" ? "ACTIVE" : "RETIRED");
   }
 
   if (result === "rejected" && suggestedSolution) {
     if (correctedSolution) {
-      await store.createSolution({
+      const corrected = await store.createSolution({
         caseId,
         rawReplyText: correctedSolution,
         solutionSteps: correctedSolution.split(/\r?\n/).map((step) => step.trim()).filter(Boolean),
@@ -414,6 +437,7 @@ confidenceRoutes.post("/suggestions/:id/review", async (c) => {
         validatedAt: reviewedAt,
         validatedBy: "Tech Support Console",
       });
+      await syncAnswerLibrary(detail, corrected, "ACTIVE");
     }
     const reasonLabel = {
       CASE_UNDERSTANDING: "AI เข้าใจปัญหาผิด",

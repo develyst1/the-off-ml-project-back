@@ -112,23 +112,35 @@ automationRoutes.patch("/settings", async (c) => {
 automationRoutes.get("/solutions", async (c) => {
   const cases = await caseService.listCases();
   const settings = await store.getAutomationSettings();
-  const solutions = cases.flatMap((item) => {
-    const category = categoryLabelOf(getLatestCustomerMessageAnalysis(item.analyses)?.category ?? item.category);
-    return item.solutions
-      .filter((solution) => isSolutionReadyForAutoAnswer(
-        item.confidenceScore,
-        solution,
-        settings,
-      ))
-      .map((solution) => ({
-        id: solution.id,
-        category,
-        solutionText: solution.solutionSteps.join("\n"),
-        caseUnderstandingConfidence: item.confidenceScore ?? 0,
-        caseDiscriminationConfidence: solution.confidence,
+  const library = typeof store.listAnswerLibrary === "function" ? await store.listAnswerLibrary() : [];
+  const librarySourceIds = new Set(library.map((entry) => entry.sourceSolutionId));
+  const legacy = cases.flatMap((item) => item.solutions
+    .filter((solution) => !librarySourceIds.has(solution.id))
+    .map((solution) => ({
+      id: solution.id,
+      sourceSolutionId: solution.id,
+      sourceCaseId: item.id,
+      category: getLatestCustomerMessageAnalysis(item.analyses)?.category ?? item.category ?? "อื่นๆ",
+      solutionSteps: solution.solutionSteps,
+      confidence: solution.confidence,
+      validatedByTeam: solution.validatedByTeam,
+      validatedAt: solution.validatedAt,
+      status: solution.autoAnswerReviewResult === "REJECTED" ? "RETIRED" as const : "ACTIVE" as const,
+    })));
+  const solutions = [...library, ...legacy]
+    .filter((entry) => entry.status === "ACTIVE")
+    .filter((entry) => isSolutionReadyForAutoAnswer(undefined, entry, settings))
+    .map((entry) => {
+      const sourceCase = cases.find((item) => item.id === entry.sourceCaseId);
+      return {
+        id: entry.id,
+        category: categoryLabelOf(entry.category),
+        solutionText: entry.solutionSteps.join("\n"),
+        caseUnderstandingConfidence: sourceCase?.confidenceScore ?? 0,
+        caseDiscriminationConfidence: entry.confidence,
         status: "ready",
-      }));
-  });
+      };
+    });
 
   return c.json({ data: solutions });
 });
@@ -143,6 +155,7 @@ automationRoutes.get("/logs", async (c) => {
   const dateFrom = parseDateBoundary(c.req.query("dateFrom"));
   const dateTo = parseDateBoundary(c.req.query("dateTo"), true);
   const cases = await caseService.listCases();
+  const library = typeof store.listAnswerLibrary === "function" ? await store.listAnswerLibrary() : [];
   const logs = cases.flatMap((item) =>
     item.messages
       .filter((message) => message.messageType === "AUTO_ANSWER")
@@ -150,7 +163,10 @@ automationRoutes.get("/logs", async (c) => {
         const solutionId = typeof message.metadata?.autoAnswerSolutionId === "string"
           ? message.metadata.autoAnswerSolutionId
           : undefined;
-        const solution = solutionId ? item.solutions.find((candidate) => candidate.id === solutionId) : undefined;
+        const solution = solutionId
+          ? item.solutions.find((candidate) => candidate.id === solutionId)
+            ?? library.find((candidate) => candidate.sourceSolutionId === solutionId || candidate.id === solutionId)
+          : undefined;
 
         return {
         id: message.id,
@@ -160,6 +176,9 @@ automationRoutes.get("/logs", async (c) => {
         answerText: message.originalText,
         eventType: message.messageType ?? "UNKNOWN",
         status: message.deliveryStatus ?? "UNKNOWN",
+        answerLibraryId: typeof message.metadata?.autoAnswerLibraryId === "string"
+          ? message.metadata.autoAnswerLibraryId
+          : undefined,
         solutionText: solution?.solutionSteps.join("\n"),
         teamsNotified: message.metadata?.autoAnswerTeamsNotified === true,
         };

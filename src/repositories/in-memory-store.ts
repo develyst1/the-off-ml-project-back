@@ -1,4 +1,4 @@
-import type { AiReviewFeedback, Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { AiReviewFeedback, Analysis, AnswerLibraryEntry, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { getLatestCustomerMessageAnalysis } from "../lib/analysis";
 import { toAiReviewFeedbackMemoryItem } from "../lib/ai-review-feedback-memory";
 import { createId, nowIso } from "../lib/ids";
@@ -16,6 +16,7 @@ export class InMemoryStore implements CaseStore {
   private aiReviewFeedback = new Map<string, AiReviewFeedback>();
   private caseAiFeedback = new Map<string, CaseAiFeedback>();
   private solutions = new Map<string, Solution>();
+  private answerLibrary = new Map<string, AnswerLibraryEntry>();
   private caseMatchLogs = new Map<string, CaseMatchLog>();
   private automationSettings: AutomationSettings = {
     enabled: false,
@@ -412,6 +413,29 @@ export class InMemoryStore implements CaseStore {
     const updated = { ...current, ...patch };
     this.solutions.set(id, updated);
     return updated;
+  }
+
+  async listAnswerLibrary(): Promise<AnswerLibraryEntry[]> {
+    return [...this.answerLibrary.values()]
+      .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+  }
+
+  async upsertAnswerLibrary(input: Omit<AnswerLibraryEntry, "id" | "createdAt" | "updatedAt"> & { id?: string }): Promise<AnswerLibraryEntry> {
+    const existing = [...this.answerLibrary.values()].find((item) => item.sourceSolutionId === input.sourceSolutionId);
+    const timestamp = nowIso();
+    const entry: AnswerLibraryEntry = {
+      ...input,
+      id: input.id ?? existing?.id ?? createId("lib"),
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp,
+    };
+    this.answerLibrary.set(entry.id, entry);
+    return entry;
+  }
+
+  async retireAnswerLibraryBySourceSolution(sourceSolutionId: string): Promise<void> {
+    const entry = [...this.answerLibrary.values()].find((item) => item.sourceSolutionId === sourceSolutionId);
+    if (entry) this.answerLibrary.set(entry.id, { ...entry, status: "RETIRED", updatedAt: nowIso() });
   }
 
   async getAutomationSettings(): Promise<AutomationSettings> {

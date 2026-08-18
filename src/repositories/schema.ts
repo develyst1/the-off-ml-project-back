@@ -412,6 +412,64 @@ alter table solutions add column if not exists auto_answer_review_result text;
 alter table solutions add column if not exists auto_answer_reviewed_at timestamptz;
 alter table solutions add column if not exists auto_answer_reviewed_by text;
 
+-- Approved answers are reusable across cases. The original solutions table
+-- remains the case-level extraction/history source and is never deleted.
+create table if not exists answer_library (
+  id text primary key,
+  source_solution_id text not null unique,
+  source_case_id text not null,
+  category text not null,
+  solution_steps text[] not null default '{}',
+  rewritten_customer_text text not null,
+  confidence numeric not null,
+  validated_by_team boolean not null default false,
+  validated_at timestamptz,
+  validated_by text,
+  status text not null default 'ACTIVE',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint answer_library_status_check check (status in ('ACTIVE', 'RETIRED'))
+);
+
+create index if not exists answer_library_active_category_idx
+  on answer_library(status, category, updated_at desc);
+
+-- Make already-approved historical solutions available to the shared library
+-- without changing or deleting their case records.
+insert into answer_library (
+  id, source_solution_id, source_case_id, category, solution_steps,
+  rewritten_customer_text, confidence, validated_by_team, validated_at,
+  validated_by, status, created_at, updated_at
+)
+select
+  'lib_' || solutions.id,
+  solutions.id,
+  solutions.case_id,
+  coalesce(latest_analysis.category, support_cases.category, 'อื่นๆ'),
+  solutions.solution_steps,
+  solutions.rewritten_customer_text,
+  solutions.confidence,
+  solutions.validated_by_team,
+  solutions.validated_at,
+  solutions.validated_by,
+  case when solutions.validated_by_team and solutions.validated_at is not null
+    and coalesce(solutions.auto_answer_review_result, 'APPROVED') <> 'REJECTED'
+    then 'ACTIVE' else 'RETIRED' end,
+  solutions.created_at,
+  coalesce(solutions.auto_answer_reviewed_at, solutions.created_at)
+from solutions
+join support_cases on support_cases.id = solutions.case_id
+left join lateral (
+  select category
+  from analyses
+  where analyses.case_id = solutions.case_id
+    and analyses.analysis_type = 'customer_message'
+  order by analyses.analysis_version desc nulls last, analyses.created_at desc
+  limit 1
+) latest_analysis on true
+where solutions.validated_by_team = true
+on conflict (source_solution_id) do nothing;
+
 update analyses set category = case upper(category)
   when 'UNCATEGORIZED' then 'ยังไม่ระบุหมวดหมู่'
   when 'LOGIN_ISSUE' then 'เข้าสู่ระบบไม่ได้'

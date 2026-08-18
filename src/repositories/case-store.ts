@@ -1,4 +1,4 @@
-import type { AiReviewFeedback, AiReviewFeedbackMemoryItem, Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { AiReviewFeedback, AiReviewFeedbackMemoryItem, Analysis, AnswerLibraryEntry, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 
 export type ChatRetentionCleanupResult = {
   cutoffAt: string;
@@ -55,6 +55,9 @@ export type CaseStore = {
   listCaseAiFeedback(): Promise<CaseAiFeedback[]>;
   createSolution(input: Omit<Solution, "id" | "createdAt">): Promise<Solution>;
   updateSolution(id: string, patch: Partial<Pick<Solution, "confidence" | "validatedByTeam" | "validatedAt" | "validatedBy" | "autoAnswerReviewResult" | "autoAnswerReviewedAt" | "autoAnswerReviewedBy">>): Promise<Solution>;
+  listAnswerLibrary(): Promise<AnswerLibraryEntry[]>;
+  upsertAnswerLibrary(input: Omit<AnswerLibraryEntry, "id" | "createdAt" | "updatedAt"> & { id?: string }): Promise<AnswerLibraryEntry>;
+  retireAnswerLibraryBySourceSolution(sourceSolutionId: string): Promise<void>;
   getAutomationSettings(): Promise<AutomationSettings>;
   updateAutomationSettings(patch: Partial<Pick<AutomationSettings, "enabled" | "caseUnderstandingThreshold" | "caseDiscriminationThreshold" | "learnedReliabilityThreshold" | "emergencyDisabledAt" | "updatedBy">>): Promise<AutomationSettings>;
   createCaseMatchLog(input: Omit<CaseMatchLog, "id" | "createdAt">): Promise<CaseMatchLog>;

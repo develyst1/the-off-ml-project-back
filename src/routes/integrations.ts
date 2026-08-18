@@ -28,12 +28,14 @@ integrationRoutes.post("/teams/auto-answer-log", async (c) => {
   let caseId: string;
   let caseMessageId: string;
   let solutionId: string | undefined;
+  let answerLibraryId: string | undefined;
   let analysisId: string | undefined;
   try {
     body = await readJsonObject(c);
     caseId = requiredString(body, "caseId");
     caseMessageId = requiredString(body, "caseMessageId");
     solutionId = optionalString(body, "solutionId");
+    answerLibraryId = optionalString(body, "answerLibraryId");
     analysisId = optionalString(body, "analysisId");
   } catch {
     return c.json({ error: "invalid_request" }, 400);
@@ -53,6 +55,7 @@ integrationRoutes.post("/teams/auto-answer-log", async (c) => {
       caseId,
       caseMessageId,
       solutionId,
+      answerLibraryId,
       analysisId,
       analysisVersion,
     });

@@ -1007,4 +1007,32 @@ describe("Phase 13 auto-answer Teams audit", () => {
     expect(detail?.messages.some((message) => message.senderType === "TECH" && message.originalText.includes("Manual Tech reply"))).toBe(true);
     await store.updateAutomationSettings({ enabled: false });
   });
+
+  test("uses an approved answer from another case for a new case", async () => {
+    await seedReadyReliability(`global-${sequence}`);
+    await store.updateAutomationSettings({ enabled: true, emergencyDisabledAt: undefined });
+    await createAutoAnswerCase();
+    const newLineUserId = `U-auto-answer-new-case-${sequence}`;
+    const lineCountBefore = lineReplies.length;
+    const teamsCountBefore = autoAnswerTeamsPayloads.length;
+
+    await sendReply({
+      lineUserId: newLineUserId,
+      messageId: `auto-answer-new-case-${sequence}`,
+      text: "The connection problem is still happening",
+    });
+
+    const newCustomer = await store.upsertCustomer({ lineUserId: newLineUserId });
+    const newCase = (await store.listCases()).find((item) => item.customerId === newCustomer.id);
+    const audit = newCase?.messages.find((message) => message.messageType === "AUTO_ANSWER");
+    expect(lineReplies.length - lineCountBefore).toBe(1);
+    expect(autoAnswerTeamsPayloads.length - teamsCountBefore).toBe(1);
+    expect(audit?.metadata?.autoAnswerSolutionId).toBeTruthy();
+    const answerSourceCase = (await store.listCases()).find((item) => item.solutions.some((solution) => solution.id === audit?.metadata?.autoAnswerSolutionId));
+    expect(answerSourceCase?.id).toBeTruthy();
+    expect(answerSourceCase?.id).not.toBe(newCase?.id);
+    expect(newCase?.messages.some((message) => message.messageType === "CASE_ACKNOWLEDGEMENT")).toBe(false);
+    expect(newCase?.id).toBeTruthy();
+    await store.updateAutomationSettings({ enabled: false });
+  });
 });

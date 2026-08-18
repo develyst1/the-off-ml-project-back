@@ -15,6 +15,7 @@ type AutoAnswerAuditIdentity = {
   caseId: string;
   caseMessageId: string;
   solutionId?: string;
+  answerLibraryId?: string;
   analysisId?: string;
   analysisVersion?: number;
 };
@@ -23,6 +24,7 @@ type RecordAutoAnswerInput = {
   caseId: string;
   answerText: string;
   solutionId: string;
+  answerLibraryId?: string;
   analysisId?: string;
   analysisVersion?: number;
   sourceMessageId: string;
@@ -76,7 +78,36 @@ async function getContext(input: AutoAnswerAuditIdentity): Promise<{
   const solutionId = metadataString(audit, "autoAnswerSolutionId");
   if (!solutionId) throw new AutoAnswerNotificationError("auto_answer_solution_identity_missing", 400);
   validateOptionalIdentity(solutionId, input.solutionId, "solution_identity_mismatch");
-  const solution = caseDetail.solutions.find((item) => item.id === solutionId);
+  const answerLibraryId = metadataString(audit, "autoAnswerLibraryId");
+  validateOptionalIdentity(answerLibraryId, input.answerLibraryId, "answer_library_identity_mismatch");
+  const caseSolution = caseDetail.solutions.find((item) => item.id === solutionId);
+  const libraryEntry = caseSolution
+    ? undefined
+    : (typeof store.listAnswerLibrary === "function"
+      ? (await store.listAnswerLibrary()).find((item) => item.sourceSolutionId === solutionId || item.id === solutionId)
+      : undefined)
+      ?? (await store.listCases())
+        .flatMap((item) => item.solutions.map((candidate) => ({ candidate, sourceCase: item })))
+        .find(({ candidate }) => candidate.id === solutionId);
+  const catalogEntry = libraryEntry && "sourceSolutionId" in libraryEntry ? libraryEntry : undefined;
+  const legacyEntry = libraryEntry && !catalogEntry
+    ? libraryEntry as { candidate: Solution; sourceCase: NonNullable<Awaited<ReturnType<typeof store.getCaseDetail>>> }
+    : undefined;
+  const solution = caseSolution ?? (libraryEntry
+    ? {
+        id: catalogEntry?.sourceSolutionId ?? legacyEntry?.candidate.id ?? solutionId,
+        caseId: catalogEntry?.sourceCaseId ?? legacyEntry?.sourceCase.id ?? caseDetail.id,
+        rawReplyText: catalogEntry?.rewrittenCustomerText ?? legacyEntry?.candidate.rawReplyText ?? "",
+        rootCause: undefined,
+        solutionSteps: catalogEntry?.solutionSteps ?? legacyEntry?.candidate.solutionSteps ?? [],
+        rewrittenCustomerText: catalogEntry?.rewrittenCustomerText ?? legacyEntry?.candidate.rewrittenCustomerText ?? "",
+        confidence: catalogEntry?.confidence ?? legacyEntry?.candidate.confidence ?? 0,
+        validatedByTeam: catalogEntry?.validatedByTeam ?? legacyEntry?.candidate.validatedByTeam ?? false,
+        validatedAt: catalogEntry?.validatedAt ?? legacyEntry?.candidate.validatedAt,
+        validatedBy: catalogEntry?.validatedBy ?? legacyEntry?.candidate.validatedBy,
+        createdAt: catalogEntry?.createdAt ?? legacyEntry?.candidate.createdAt ?? new Date().toISOString(),
+      }
+    : undefined);
   if (!solution) throw new AutoAnswerNotificationError("solution_not_found", 404);
 
   const analysisId = metadataString(audit, "autoAnswerAnalysisId");
@@ -123,6 +154,7 @@ export async function notifyTeamsForAutoAnswer(input: AutoAnswerAuditIdentity) {
         lineUserId: context.caseDetail.customer.lineUserId,
         answerText: context.audit.originalText,
         solutionId: context.solution.id,
+        answerLibraryId: metadataString(context.audit, "autoAnswerLibraryId"),
         solutionText: context.solution.solutionSteps.join("\n"),
         analysisId: context.analysis?.analysisId,
         analysisVersion: context.analysis?.analysisVersion,
@@ -187,6 +219,7 @@ export async function recordAutoAnswerAndNotify(input: RecordAutoAnswerInput) {
           deliveredAt: input.sentAt,
           metadata: {
             autoAnswerSolutionId: input.solutionId,
+            autoAnswerLibraryId: input.answerLibraryId,
             autoAnswerAnalysisId: input.analysisId,
             autoAnswerAnalysisVersion: input.analysisVersion,
             autoAnswerSourceMessageId: input.sourceMessageId,
@@ -204,6 +237,7 @@ export async function recordAutoAnswerAndNotify(input: RecordAutoAnswerInput) {
       caseId: input.caseId,
       caseMessageId: audit.id,
       solutionId: input.solutionId,
+      answerLibraryId: input.answerLibraryId,
       analysisId: input.analysisId,
       analysisVersion: input.analysisVersion,
     });

@@ -167,6 +167,7 @@ export const teamsClient = {
     lineUserId: string;
     answerText: string;
     solutionId: string;
+    answerLibraryId?: string;
     solutionText: string;
     analysisId?: string;
     analysisVersion?: number;
@@ -185,6 +186,7 @@ export const teamsClient = {
           { title: "Case", value: `${input.caseNumber} (${input.caseId})` },
           { title: "Audit message", value: input.caseMessageId },
           { title: "Solution", value: input.solutionId },
+          { title: "Answer library", value: input.answerLibraryId ?? "-" },
           { title: "Analysis", value: input.analysisId ? `${input.analysisId} v${input.analysisVersion ?? "-"}` : "-" },
           { title: "LINE status", value: input.lineDeliveryStatus },
           { title: "Sent at", value: input.sentAt },

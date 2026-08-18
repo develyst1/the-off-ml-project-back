@@ -1,6 +1,6 @@
 import pg from "pg";
 import { env } from "../config/env";
-import type { AiReviewFeedback, Analysis, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
+import type { AiReviewFeedback, Analysis, AnswerLibraryEntry, AutomationSettings, CaseAiFeedback, CaseDetail, CaseMatchLog, CaseStatus, ConversationState, Customer, InboxMessage, InboxUser, Message, PendingCaseSelection, Solution, SupportCase } from "../domain/types";
 import { createId, nowIso } from "../lib/ids";
 import type { CaseStore, ChatRetentionCleanupResult, QualityReviewPersistenceInput, QualityReviewPersistenceResult } from "./case-store";
 import { dedupeCaseMessages, normalizeCaseMessage } from "./case-message-normalizer";
@@ -182,6 +182,22 @@ type DbSolution = {
   created_at: Date;
 };
 
+type DbAnswerLibraryEntry = {
+  id: string;
+  source_solution_id: string;
+  source_case_id: string;
+  category: string;
+  solution_steps: string[];
+  rewritten_customer_text: string;
+  confidence: string | number;
+  validated_by_team: boolean;
+  validated_at: Date | null;
+  validated_by: string | null;
+  status: AnswerLibraryEntry["status"];
+  created_at: Date;
+  updated_at: Date;
+};
+
 type DbAutomationSettings = {
   enabled: boolean;
   case_understanding_threshold: string | number;
@@ -223,6 +239,24 @@ function mapAutomationSettings(row: DbAutomationSettings): AutomationSettings {
     emergencyDisabledAt: row.emergency_disabled_at ? dateIso(row.emergency_disabled_at) : undefined,
     updatedAt: dateIso(row.updated_at),
     updatedBy: row.updated_by,
+  };
+}
+
+function mapAnswerLibraryEntry(row: DbAnswerLibraryEntry): AnswerLibraryEntry {
+  return {
+    id: row.id,
+    sourceSolutionId: row.source_solution_id,
+    sourceCaseId: row.source_case_id,
+    category: row.category,
+    solutionSteps: row.solution_steps,
+    rewrittenCustomerText: row.rewritten_customer_text,
+    confidence: Number(row.confidence),
+    validatedByTeam: row.validated_by_team,
+    validatedAt: row.validated_at ? dateIso(row.validated_at) : undefined,
+    validatedBy: row.validated_by ?? undefined,
+    status: row.status,
+    createdAt: dateIso(row.created_at),
+    updatedAt: dateIso(row.updated_at),
   };
 }
 
@@ -1090,6 +1124,59 @@ export class PostgresStore implements CaseStore {
     );
     if (!result.rows[0]) throw new Error("Solution not found");
     return mapSolution(result.rows[0]);
+  }
+
+  async listAnswerLibrary(): Promise<AnswerLibraryEntry[]> {
+    const result = await this.query<DbAnswerLibraryEntry>(
+      "select * from answer_library order by updated_at desc",
+    );
+    return result.rows.map(mapAnswerLibraryEntry);
+  }
+
+  async upsertAnswerLibrary(input: Omit<AnswerLibraryEntry, "id" | "createdAt" | "updatedAt"> & { id?: string }): Promise<AnswerLibraryEntry> {
+    const result = await this.query<DbAnswerLibraryEntry>(
+      `insert into answer_library (
+         id, source_solution_id, source_case_id, category, solution_steps,
+         rewritten_customer_text, confidence, validated_by_team, validated_at,
+         validated_by, status, created_at, updated_at
+       ) values (
+         coalesce($1, 'lib_' || $2), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, coalesce($12, now()), now()
+       )
+       on conflict (source_solution_id) do update set
+         source_case_id = excluded.source_case_id,
+         category = excluded.category,
+         solution_steps = excluded.solution_steps,
+         rewritten_customer_text = excluded.rewritten_customer_text,
+         confidence = excluded.confidence,
+         validated_by_team = excluded.validated_by_team,
+         validated_at = excluded.validated_at,
+         validated_by = excluded.validated_by,
+         status = excluded.status,
+         updated_at = now()
+       returning *`,
+      [
+        input.id ?? null,
+        input.sourceSolutionId,
+        input.sourceCaseId,
+        input.category,
+        input.solutionSteps,
+        input.rewrittenCustomerText,
+        input.confidence,
+        input.validatedByTeam,
+        input.validatedAt ?? null,
+        input.validatedBy ?? null,
+        input.status,
+        undefined,
+      ],
+    );
+    return mapAnswerLibraryEntry(result.rows[0]);
+  }
+
+  async retireAnswerLibraryBySourceSolution(sourceSolutionId: string): Promise<void> {
+    await this.query(
+      "update answer_library set status = 'RETIRED', updated_at = now() where source_solution_id = $1",
+      [sourceSolutionId],
+    );
   }
 
   async getAutomationSettings(): Promise<AutomationSettings> {

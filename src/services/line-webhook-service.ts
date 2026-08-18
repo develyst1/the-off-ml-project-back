@@ -12,12 +12,11 @@ import {
 } from "../lib/pending-information";
 import { store } from "../repositories/store";
 import { aiCenterClient, type LineMessageIntentClassification, type LineMessageIntentName } from "./ai-center-client";
-import { caseService } from "./case-service";
+import { caseService, findGlobalApprovedAnswer } from "./case-service";
 import { lineClient } from "./line-client";
 import { teamsClient } from "./teams-client";
 import { recordAutoAnswerAndNotify } from "./auto-answer-notification-service";
 import { realtimeEventHub } from "./realtime-event-hub";
-import { isAutoAnswerAllowedForSolution } from "./automation-settings";
 
 export const LINE_ACKNOWLEDGEMENT_TEXT =
   "รับเรื่องเรียบร้อยแล้วค่ะ ทีมงานกำลังตรวจสอบปัญหาให้คุณ";
@@ -74,6 +73,7 @@ async function sendCaseContinuation(input: {
   text: string;
   autoAnswer?: {
     solutionId: string;
+    answerLibraryId?: string;
     sourceMessageId: string;
     analysisId?: string;
     analysisVersion?: number;
@@ -87,6 +87,7 @@ async function sendCaseContinuation(input: {
       caseId: input.caseId,
       answerText: input.text,
       solutionId: input.autoAnswer.solutionId,
+      answerLibraryId: input.autoAnswer.answerLibraryId,
       analysisId: input.autoAnswer.analysisId,
       analysisVersion: input.autoAnswer.analysisVersion,
       sourceMessageId: input.autoAnswer.sourceMessageId,
@@ -143,10 +144,11 @@ const CLOSED_CASE_STATUSES = new Set(["closed", "resolved", "sent_to_customer", 
 const INTENT_CONFIDENCE_THRESHOLD = 0.7;
 const SHORT_FOLLOW_UP_RELATION_CONFIDENCE_THRESHOLD = 0.85;
 async function hasAutoAnswerReadySolution(caseDetail: CaseDetail) {
-  const readiness = await Promise.all(
-    caseDetail.solutions.map((solution) => isAutoAnswerAllowedForSolution(caseDetail.confidenceScore, solution, { caseId: caseDetail.id })),
-  );
-  return readiness.some(Boolean);
+  const answer = await findGlobalApprovedAnswer({
+    detail: caseDetail,
+    latestCustomerMessage: caseDetail.messages.at(-1)?.originalText ?? caseDetail.problemSummary ?? caseDetail.title ?? "",
+  });
+  return Boolean(answer);
 }
 
 function getIntentGroup(intent: LineMessageIntentName) {
@@ -1568,6 +1570,9 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
   });
 
   let caseDetail = await store.getCaseDetail(supportCase.id);
+  const globalAutoAnswer = caseDetail
+    ? await findGlobalApprovedAnswer({ detail: caseDetail, latestCustomerMessage: intakeText })
+    : undefined;
   if (caseDetail) {
     try {
       await teamsClient.notifyCase(caseDetail);
@@ -1597,27 +1602,59 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
     }
   }
 
-  const acknowledgement = buildInitialCaseAcknowledgement({
-    caseNumber: supportCase.caseNumber,
-    caseTitle,
-  });
-  const acknowledgementDelivery = await lineClient.replyToToken({
-    replyToken: input.replyToken,
-    text: acknowledgement,
-  });
+  const latestCustomerAnalysis = caseDetail?.analyses
+    .filter((analysisItem) => analysisItem.analysisType === "customer_message")
+    .sort((left, right) => right.analysisVersion - left.analysisVersion)[0];
+  if (caseDetail && globalAutoAnswer) {
+    const autoAnswerText = await aiCenterClient.generateLineContinuationReply({
+      replyType: "TROUBLESHOOTING_GUIDANCE",
+      caseNumber: caseDetail.caseNumber,
+      caseTitle,
+      originalCustomerText: intakeText,
+      latestCustomerMessage: intakeText,
+      recentConversation: caseDetail.messages.slice(-8).map((messageItem) => `${messageItem.direction}: ${messageItem.originalText}`),
+      newCustomerText: intakeText,
+      currentSummary: caseDetail.problemSummary ?? caseTitle,
+      knownFacts: [intakeText],
+      missingFacts: [],
+      currentCaseStatus: caseDetail.status,
+      approvedSolutionSteps: globalAutoAnswer.entry.solutionSteps,
+    });
+    await sendCaseContinuation({
+      caseId: supportCase.id,
+      replyToken: input.replyToken,
+      text: autoAnswerText,
+      autoAnswer: {
+        solutionId: globalAutoAnswer.entry.sourceSolutionId,
+        answerLibraryId: globalAutoAnswer.entry.id,
+        sourceMessageId: message.id,
+        analysisId: latestCustomerAnalysis?.analysisId,
+        analysisVersion: latestCustomerAnalysis?.analysisVersion,
+      },
+    });
+  } else {
+    const acknowledgement = buildInitialCaseAcknowledgement({
+      caseNumber: supportCase.caseNumber,
+      caseTitle,
+    });
+    const acknowledgementDelivery = await lineClient.replyToToken({
+      replyToken: input.replyToken,
+      text: acknowledgement,
+    });
 
-  await store.createMessage({
-    caseId: supportCase.id,
-    direction: "outbound_customer",
-    channel: "line",
-    originalText: acknowledgement,
-    senderType: "BOT",
-    messageType: "CASE_ACKNOWLEDGEMENT",
-    deliveryStatus: acknowledgementDelivery.delivered ? "delivered" : "pending",
-  });
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "outbound_customer",
+      channel: "line",
+      originalText: acknowledgement,
+      senderType: "BOT",
+      messageType: "CASE_ACKNOWLEDGEMENT",
+      deliveryStatus: acknowledgementDelivery.delivered ? "delivered" : "pending",
+    });
+  }
   await store.updateCase(supportCase.id, {
     lineSentAt: new Date().toISOString(),
-    lineDeliveredAt: acknowledgementDelivery.delivered ? new Date().toISOString() : undefined,
+    lineDeliveredAt: new Date().toISOString(),
   });
 
   caseDetail = await store.getCaseDetail(supportCase.id);

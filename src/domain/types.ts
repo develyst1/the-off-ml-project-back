@@ -309,6 +309,22 @@ export type Solution = {
   createdAt: string;
 };
 
+export type AnswerLibraryEntry = {
+  id: string;
+  sourceSolutionId: string;
+  sourceCaseId: string;
+  category: string;
+  solutionSteps: string[];
+  rewrittenCustomerText: string;
+  confidence: number;
+  validatedByTeam: boolean;
+  validatedAt?: string;
+  validatedBy?: string;
+  status: "ACTIVE" | "RETIRED";
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type AutomationSettings = {
   enabled: boolean;
   caseUnderstandingThreshold: number;

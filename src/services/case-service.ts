@@ -1,4 +1,4 @@
-import type { CaseAiFeedback, CaseAnalysisContext, CaseDetail, CaseStatus, InboxMessage, Message, MessageChannel, PendingCaseSelection } from "../domain/types";
+import type { AnswerLibraryEntry, CaseAiFeedback, CaseAnalysisContext, CaseDetail, CaseStatus, InboxMessage, Message, MessageChannel, PendingCaseSelection, Solution } from "../domain/types";
 import { env } from "../config/env";
 import { store } from "../repositories/store";
 import { aiCenterClient, type CaseHistoryCandidate, type CaseHistoryMatchDecision } from "./ai-center-client";
@@ -37,6 +37,70 @@ type CaseHistoryMatchResult = {
 
 function latestByCreatedAt<T extends { createdAt: string }>(items: T[]) {
   return [...items].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+}
+
+function answerLibraryEntryFromLegacySolution(detail: CaseDetail, solution: Solution): AnswerLibraryEntry {
+  const latestCustomerAnalysis = latestByCreatedAt(detail.analyses.filter((analysis) => analysis.analysisType === "customer_message"));
+  return {
+    id: `legacy-${solution.id}`,
+    sourceSolutionId: solution.id,
+    sourceCaseId: detail.id,
+    category: latestCustomerAnalysis?.category ?? detail.category ?? "อื่นๆ",
+    solutionSteps: solution.solutionSteps,
+    rewrittenCustomerText: solution.rewrittenCustomerText,
+    confidence: solution.confidence,
+    validatedByTeam: solution.validatedByTeam,
+    validatedAt: solution.validatedAt,
+    validatedBy: solution.validatedBy,
+    status: solution.autoAnswerReviewResult === "REJECTED" ? "RETIRED" : "ACTIVE",
+    createdAt: solution.createdAt,
+    updatedAt: solution.autoAnswerReviewedAt ?? solution.createdAt,
+  };
+}
+
+async function listReusableAnswerLibrary(): Promise<AnswerLibraryEntry[]> {
+  const persisted = await store.listAnswerLibrary();
+  if (persisted.length > 0) return persisted.filter((entry) => entry.status === "ACTIVE");
+  // Transitional fallback keeps already-approved case solutions usable while
+  // the schema backfill runs, and also keeps in-memory tests deterministic.
+  const legacy = (await store.listCases()).flatMap((detail) => detail.solutions
+    .map((solution) => answerLibraryEntryFromLegacySolution(detail, solution)));
+  return [...persisted, ...legacy].filter((entry) => entry.status === "ACTIVE");
+}
+
+export async function findGlobalApprovedAnswer(input: {
+  detail: CaseDetail;
+  latestCustomerMessage: string;
+}): Promise<{
+  entry: AnswerLibraryEntry;
+  relevance: { relevant: boolean; confidence: number; reason?: string };
+} | undefined> {
+  const latestCustomerAnalysis = latestByCreatedAt(input.detail.analyses.filter((analysis) => analysis.analysisType === "customer_message"));
+  const category = latestCustomerAnalysis?.category ?? input.detail.category;
+  const candidates = (await listReusableAnswerLibrary())
+    .filter((entry) => entry.validatedByTeam && actionableSolutionSteps(entry.solutionSteps).length > 0)
+    .sort((left, right) => {
+      const leftCategory = category && left.category === category ? 1 : 0;
+      const rightCategory = category && right.category === category ? 1 : 0;
+      return rightCategory - leftCategory
+        || right.confidence - left.confidence
+        || new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
+    })
+    .slice(0, 20);
+
+  for (const entry of candidates) {
+    const allowed = await isAutoAnswerAllowedForSolution(undefined, entry, { caseId: input.detail.id });
+    if (!allowed) continue;
+    const relevance = await aiCenterClient.evaluateAutoAnswerSolutionRelevance({
+      caseTitle: input.detail.title ?? category ?? "Tech Support",
+      currentSummary: input.detail.problemSummary ?? input.detail.title ?? "",
+      recentConversation: input.detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
+      latestCustomerMessage: input.latestCustomerMessage,
+      approvedSolutionSteps: entry.solutionSteps,
+    });
+    if (await isAutoAnswerAllowedForRelevance(relevance)) return { entry, relevance };
+  }
+  return undefined;
 }
 
 function isGenericResolutionOutcome(value: string) {
@@ -1225,30 +1289,14 @@ export const caseService = {
     const lastBotQuestion = [...detail.messages]
       .reverse()
       .find((message) => message.senderType === "BOT" && message.messageType === "REQUEST_MORE_INFO")?.originalText;
-    const approvedSolution = (await Promise.all(
-        detail.solutions
-          .slice()
-          .reverse()
-        .map(async (solution) => ({ solution, allowed: await isAutoAnswerAllowedForSolution(detail.confidenceScore, solution, { caseId: detail.id }) })),
-    )).find((item) => item.allowed)?.solution;
-    const solutionRelevance = approvedSolution
-      ? await aiCenterClient.evaluateAutoAnswerSolutionRelevance({
-          caseTitle: this.formatCaseTitle(detail),
-          currentSummary: detail.problemSummary ?? detail.title ?? "",
-          recentConversation: detail.messages.slice(-8).map((message) => `${message.direction}: ${message.originalText}`),
-          latestCustomerMessage: contextualText,
-          approvedSolutionSteps: approvedSolution.solutionSteps,
-        })
-      : undefined;
-    const canAutoAnswer = Boolean(
-      approvedSolution
-      && solutionRelevance
-      && await isAutoAnswerAllowedForRelevance(solutionRelevance),
-    );
+    const globalAnswer = await findGlobalApprovedAnswer({ detail, latestCustomerMessage: contextualText });
+    const approvedSolution = globalAnswer?.entry;
+    const solutionRelevance = globalAnswer?.relevance;
+    const canAutoAnswer = Boolean(approvedSolution && solutionRelevance);
     console.log({
       event: "auto_answer_solution_relevance_decision",
       caseId: input.caseId,
-      solutionId: approvedSolution?.id,
+      solutionId: approvedSolution?.sourceSolutionId,
       relevant: solutionRelevance?.relevant ?? false,
       confidence: solutionRelevance?.confidence ?? 0,
       reason: solutionRelevance?.reason ?? "NO_APPROVED_SOLUTION",
@@ -1380,7 +1428,8 @@ export const caseService = {
       continuationReply,
       autoAnswer: canAutoAnswer && approvedSolution
         ? {
-            solutionId: approvedSolution.id,
+          solutionId: approvedSolution.sourceSolutionId,
+            answerLibraryId: approvedSolution.id,
             sourceMessageId: message.id,
             analysisId: autoAnswerAnalysis?.analysisId,
             analysisVersion: autoAnswerAnalysis?.analysisVersion,
