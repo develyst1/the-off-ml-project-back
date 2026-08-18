@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono";
 import type { CaseStatus } from "../domain/types";
 import { readJsonObject, requiredString } from "../lib/request";
-import { caseService } from "../services/case-service";
+import { caseService, NoNewMessagesForReanalysisError } from "../services/case-service";
 import { listAiReviewFeedbackForAnalysis, saveAiReviewFeedback } from "../services/ai-review-feedback-service";
 import { categoryKeyOf } from "../lib/category";
 import { store } from "../repositories/store";
@@ -330,6 +330,13 @@ caseRoutes.post("/:id/backfill-reference-messages", async (c) => {
 });
 
 caseRoutes.post("/:id/refresh-solution", async (c) => {
-  const detail = await caseService.reanalyzeCase(c.req.param("id"));
-  return c.json({ data: await caseDetailResponse(detail) });
+  try {
+    const detail = await caseService.reanalyzeCase(c.req.param("id"));
+    return c.json({ data: await caseDetailResponse(detail) });
+  } catch (error) {
+    if (error instanceof NoNewMessagesForReanalysisError) {
+      return c.json({ error: "no_new_messages_to_analyze", message: error.message }, 409);
+    }
+    throw error;
+  }
 });

@@ -599,6 +599,16 @@ describe("POST /webhooks/teams/actions", () => {
       confidence: 75,
       rawJson: {},
     });
+    await store.createMessage({
+      caseId: supportCase.id,
+      direction: "INBOUND",
+      channel: "line",
+      originalText: "ยังพบปัญหาเดิมหลังจากลองอีกครั้ง",
+      senderType: "CUSTOMER",
+      messageType: "CUSTOMER_ADDITIONAL_INFO",
+      deliveryStatus: "RECEIVED",
+      receivedAt: new Date(Date.now() + 1_000).toISOString(),
+    });
     const beforeCount = (await store.getCaseDetail(supportCase.id))?.analyses.length;
     aiAnalysisShouldFail = true;
     try {
@@ -1279,6 +1289,17 @@ describe("POST /webhooks/teams/actions", () => {
       expect(initialRawJson?.sourceMessageIds).not.toContain(historicalMessage.id);
       expect(analysisEvents).toContain(initialAnalysis?.analysisId ?? "missing");
 
+      const botAcknowledgement = await store.createMessage({
+        caseId: body.data.id,
+        direction: "OUTBOUND",
+        channel: "line",
+        originalText: "รับเรื่องเรียบร้อยแล้วค่ะ ทีมงานจะตรวจสอบให้ค่ะ",
+        senderType: "BOT",
+        messageType: "CASE_ACKNOWLEDGEMENT",
+        deliveryStatus: "DELIVERED",
+        receivedAt: "2026-08-14T07:31:30.000Z",
+      });
+
       await caseService.appendLineMessageToCase({
         caseId: body.data.id,
         text: "ลบไฟล์ชั่วคราวแล้ว แต่ยังบันทึกไฟล์ไม่ได้",
@@ -1292,13 +1313,27 @@ describe("POST /webhooks/teams/actions", () => {
         analysisMode?: string;
         extractedSolution?: string;
         sourceMessageIds?: string[];
+        caseAnalysisContext?: { referenceMessages?: Array<{ messageId: string; content: string }> };
       } | undefined;
 
       expect(updatedRawJson?.analysisMode).toBe("CASE_REANALYSIS");
       expect(updatedRawJson?.extractedSolution).toBe("ตรวจสอบโควตาพื้นที่ของบัญชีและพื้นที่สำรองของระบบ");
       expect(updatedRawJson?.sourceMessageIds).not.toContain(historicalMessage.id);
+      expect(updatedRawJson?.sourceMessageIds).not.toContain(botAcknowledgement.id);
+      expect(updatedRawJson?.caseAnalysisContext?.referenceMessages?.map((message) => message.messageId)).not.toContain(botAcknowledgement.id);
+      expect(lastCustomerAnalysisInput?.conversationContext?.join("\n")).not.toContain("รับเรื่องเรียบร้อยแล้วค่ะ");
       expect(analysisEvents).toContain(updatedAnalysis?.analysisId ?? "missing");
       expect(updatedAnalysis?.analysisVersion).toBeGreaterThan(initialAnalysis?.analysisVersion ?? 0);
+
+      const repeatedResponse = await postRefreshSolution(body.data.id);
+      const repeatedDetail = await store.getCaseDetail(body.data.id);
+      const latestAfterRepeat = repeatedDetail?.analyses
+        .filter((analysis) => analysis.analysisType === "customer_message")
+        .sort((left, right) => right.analysisVersion - left.analysisVersion)[0];
+      expect(repeatedResponse.status).toBe(409);
+      expect((await repeatedResponse.json()) as { error: string }).toMatchObject({ error: "no_new_messages_to_analyze" });
+      expect(latestAfterRepeat?.analysisId).toBe(updatedAnalysis?.analysisId);
+      expect(latestAfterRepeat?.analysisVersion).toBe(updatedAnalysis?.analysisVersion);
     } finally {
       unsubscribe();
     }
@@ -1315,12 +1350,18 @@ describe("POST /webhooks/teams/actions", () => {
       externalMessageId: `line-reference-${sequence}`,
       webhookEventId: `webhook-reference-${sequence}`,
     });
+    const botAcknowledgement = await store.createInboxMessage({
+      customerId: customer.id,
+      direction: "OUTBOUND",
+      senderType: "BOT",
+      text: "รับเรื่องเรียบร้อยแล้วค่ะ ทีมงานจะตรวจสอบให้ค่ะ",
+    });
     const response = await openInboxCase(customer.id, {
       title: "หัวข้อจากทีม Tech",
       description: "รายละเอียดจากทีม Tech",
       from: new Date(new Date(first.createdAt).getTime() - 60_000).toISOString(),
-      to: new Date(new Date(second.createdAt).getTime() + 60_000).toISOString(),
-      selectedMessageIds: [second.id],
+      to: new Date(new Date(botAcknowledgement.createdAt).getTime() + 60_000).toISOString(),
+      selectedMessageIds: [second.id, botAcknowledgement.id],
     });
     const body = await response.json() as { data: { id: string; caseId?: string; activeCaseId?: string; messages: Array<{ originalText: string; sourceMessageId?: string; externalMessageId?: string; webhookEventId?: string; metadata?: Record<string, unknown> }> } };
     const referenceMessages = body.data.messages.filter((message) => message.metadata?.isCaseReference === true);
@@ -1328,15 +1369,19 @@ describe("POST /webhooks/teams/actions", () => {
     const detail = await store.getCaseDetail(body.data.id);
     const analysisContext = detail?.analyses.find((analysis) => analysis.analysisType === "customer_message")?.rawJson as {
       caseAnalysisContext?: { subject?: string; detail?: string; referenceMessages?: Array<{ messageId?: string }> };
+      sourceMessageIds?: string[];
     } | undefined;
 
     expect(response.status).toBe(201);
-    expect(referenceMessages).toHaveLength(1);
-    expect(referenceMessages[0]?.originalText).toBe("ข้อความที่เลือก");
-    expect(referenceMessages[0]?.sourceMessageId).toBeUndefined();
-    expect(referenceMessages[0]?.metadata?.sourceInboxMessageId).toBe(second.id);
-    expect(referenceMessages[0]?.externalMessageId).toBeUndefined();
-    expect(referenceMessages[0]?.webhookEventId).toBeUndefined();
+    expect(referenceMessages).toHaveLength(2);
+    const selectedTechReference = referenceMessages.find((message) => message.metadata?.sourceInboxMessageId === second.id);
+    const selectedBotReference = referenceMessages.find((message) => message.metadata?.sourceInboxMessageId === botAcknowledgement.id);
+    expect(selectedTechReference?.originalText).toBe("ข้อความที่เลือก");
+    expect(selectedTechReference?.sourceMessageId).toBeUndefined();
+    expect(selectedTechReference?.metadata?.sourceInboxMessageId).toBe(second.id);
+    expect(selectedTechReference?.externalMessageId).toBeUndefined();
+    expect(selectedTechReference?.webhookEventId).toBeUndefined();
+    expect(selectedBotReference?.originalText).toBe("รับเรื่องเรียบร้อยแล้วค่ะ ทีมงานจะตรวจสอบให้ค่ะ");
     expect(definition?.metadata?.caseSubject).toBe("หัวข้อจากทีม Tech");
     expect(definition?.metadata?.caseDetail).toBe("รายละเอียดจากทีม Tech");
     expect(lastCustomerAnalysisInput?.caseAnalysisContext).toMatchObject({
@@ -1346,6 +1391,9 @@ describe("POST /webhooks/teams/actions", () => {
     expect(analysisContext?.caseAnalysisContext?.subject).toBe("หัวข้อจากทีม Tech");
     expect(analysisContext?.caseAnalysisContext?.detail).toBe("รายละเอียดจากทีม Tech");
     expect(analysisContext?.caseAnalysisContext?.referenceMessages?.map((message) => message.messageId)).toEqual([second.id]);
+    expect(lastCustomerAnalysisInput?.conversationContext?.join("\n")).toContain("ข้อความที่เลือก");
+    expect(lastCustomerAnalysisInput?.conversationContext?.join("\n")).not.toContain("รับเรื่องเรียบร้อยแล้วค่ะ");
+    expect(analysisContext?.sourceMessageIds).not.toContain(botAcknowledgement.id);
     const inboxUser = await store.getInboxUser(customer.id);
     const selectedInboxMessage = inboxUser?.messages.find((message) => message.id === second.id);
     expect(selectedInboxMessage?.caseId).toBe(body.data.id);
@@ -1353,6 +1401,7 @@ describe("POST /webhooks/teams/actions", () => {
     expect(selectedInboxMessage?.assignedBy).toBe("SYSTEM_OPEN_CASE");
     expect(inboxUser?.customer.activeCaseId).toBe(body.data.id);
     expect(detail?.messages.filter((message) => message.metadata?.sourceInboxMessageId === second.id)).toHaveLength(1);
+    expect(detail?.messages.filter((message) => message.metadata?.sourceInboxMessageId === botAcknowledgement.id)).toHaveLength(1);
   });
 
   test("deduplicates case timeline rows by source identity without collapsing same-text messages", async () => {

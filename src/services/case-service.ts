@@ -11,6 +11,7 @@ import { actionableSolutionSteps } from "../lib/solution-quality";
 import { isAutoAnswerAllowedForRelevance, isAutoAnswerAllowedForSolution } from "./automation-settings";
 import { createHash } from "node:crypto";
 import { analysisMessageIdentity } from "../repositories/case-message-normalizer";
+import { getAnalysisSourceMessageIds } from "../lib/analysis";
 
 const CLOSED_CASE_STATUSES: CaseStatus[] = ["closed", "resolved", "sent_to_customer"];
 const CLOSED_INCOMING_CASE_STATUS_VALUES = new Set<string>([
@@ -18,6 +19,14 @@ const CLOSED_INCOMING_CASE_STATUS_VALUES = new Set<string>([
   "cancelled",
 ]);
 const RECENT_CLOSED_CASE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+const reanalysisLocks = new Map<string, Promise<void>>();
+
+export class NoNewMessagesForReanalysisError extends Error {
+  constructor() {
+    super("ยังไม่มีข้อความใหม่ให้วิเคราะห์");
+    this.name = "NoNewMessagesForReanalysisError";
+  }
+}
 
 type CaseHistoryMatchResult = {
   action: "ask_customer" | "create_new_case";
@@ -53,6 +62,7 @@ function buildCaseAnalysisContext(input: {
 }): CaseAnalysisContext {
   const referenceMessages = input.messages
     .filter((message) => message.metadata?.isCaseReference === true)
+    .filter((message) => message.senderType !== "BOT")
     .sort((left, right) => new Date(contextTime(left)).getTime() - new Date(contextTime(right)).getTime() || left.id.localeCompare(right.id))
     .map((message, index) => ({
       messageId: typeof message.metadata?.sourceInboxMessageId === "string" ? message.metadata.sourceInboxMessageId : message.id,
@@ -72,6 +82,10 @@ function buildInboxCaseAnalysisContext(input: {
   messages: Array<{ id: string; senderType: "CUSTOMER" | "TECH" | "BOT"; text: string; createdAt: string }>;
 }): CaseAnalysisContext {
   const referenceMessages = [...input.messages]
+    // LINE Bot acknowledgements and prompts are transport/UI messages, not
+    // evidence of the customer's problem or the Tech team's solution. Keep
+    // them in the case timeline, but never pass them to AI analysis.
+    .filter((message) => message.senderType !== "BOT")
     .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() || left.id.localeCompare(right.id))
     .map((message, index) => ({
       messageId: message.id,
@@ -96,7 +110,7 @@ function buildConversationCaseAnalysisContext(detail: CaseDetail): {
     .filter((message) => {
       const occurredAt = new Date(message.receivedAt ?? message.sentAt ?? message.deliveredAt ?? message.createdAt).getTime();
       return message.channel === "line"
-        && ["CUSTOMER", "TECH", "BOT"].includes(message.senderType ?? "")
+        && ["CUSTOMER", "TECH"].includes(message.senderType ?? "")
         && message.direction !== "INTERNAL"
         && message.messageType !== "SYSTEM_EVENT"
         && message.deliveryStatus?.toUpperCase() !== "FAILED"
@@ -503,13 +517,17 @@ export const caseService = {
     if (!inboxUser) throw new Error("ไม่พบผู้ใช้ใน Inbox");
     const selectedIds = new Set(input.selectedMessageIds);
     const selectedMessages = inboxUser.messages.filter((message) => selectedIds.has(message.id));
-    const conversationContext = selectedMessages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : "ทีม Tech"}: ${message.text}`);
+    const conversationContext = selectedMessages
+      .filter((message) => message.senderType !== "BOT")
+      .map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : "ทีม Tech"}: ${message.text}`);
     const sourceText = input.mode === "REWRITE"
       ? [input.title?.trim(), input.description?.trim(), ...conversationContext].filter(Boolean).join("\n")
       : conversationContext.join("\n");
     if (!sourceText.trim()) throw new Error("กรุณากรอกข้อมูลเคสหรือเลือกข้อความจากแชทก่อนใช้ AI");
 
-    const latestCustomerMessage = [...selectedMessages].reverse().find((message) => message.senderType === "CUSTOMER")?.text ?? sourceText;
+    const latestCustomerMessage = [...selectedMessages]
+      .reverse()
+      .find((message) => message.senderType === "CUSTOMER")?.text ?? sourceText;
     const analysis = await aiCenterClient.analyzeCustomerMessage({
       text: latestCustomerMessage,
       conversationContext,
@@ -695,7 +713,9 @@ export const caseService = {
 
     {
       const sourceMessage = copiedMessages.filter((message) => message.senderType === "CUSTOMER").at(-1);
-      const conversationContext = sourceMessages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : "ทีม Tech"}: ${message.text}`);
+      const conversationContext = sourceMessages
+        .filter((message) => message.senderType !== "BOT")
+        .map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : "ทีม Tech"}: ${message.text}`);
       const analysis = await aiCenterClient.analyzeCustomerMessage({
         text: `${resolvedTitle}\n${resolvedDescription}`,
         caseAnalysisContext,
@@ -714,7 +734,7 @@ export const caseService = {
           analysisMode: "INITIAL_CASE_ANALYSIS",
           caseAnalysisContext,
           sourceMessageIds: copiedMessages
-            .filter((message) => message.metadata?.isCaseReference === true)
+            .filter((message) => message.metadata?.isCaseReference === true && message.senderType !== "BOT")
             .map(analysisMessageIdentity),
           feedbackExamples,
         },
@@ -2428,12 +2448,35 @@ export const caseService = {
   },
 
   async reanalyzeCase(caseId: string) {
+    if (reanalysisLocks.has(caseId)) throw new NoNewMessagesForReanalysisError();
+    let releaseLock!: () => void;
+    const lock = new Promise<void>((resolve) => { releaseLock = resolve; });
+    reanalysisLocks.set(caseId, lock);
+    try {
+      return await this.reanalyzeCaseWithoutLock(caseId);
+    } finally {
+      releaseLock();
+      if (reanalysisLocks.get(caseId) === lock) reanalysisLocks.delete(caseId);
+    }
+  },
+
+  async reanalyzeCaseWithoutLock(caseId: string) {
     const detail = await store.getCaseDetail(caseId);
     if (!detail) throw new Error("Case not found");
     if (CLOSED_CASE_STATUSES.includes(detail.status)) throw new Error("ปิดเคสแล้ว ไม่สามารถอัปเดตผลวิเคราะห์ได้");
 
     const { context, messages } = buildConversationCaseAnalysisContext(detail);
     if (messages.length === 0) throw new Error("ยังไม่มีข้อความในช่วงเวลาของเคสให้วิเคราะห์");
+
+    const latestCustomerAnalysis = latestByCreatedAt(detail.analyses.filter((analysis) => analysis.analysisType === "customer_message"));
+    if (latestCustomerAnalysis) {
+      const analyzedMessageIds = getAnalysisSourceMessageIds(latestCustomerAnalysis);
+      const currentMessageIds = messages.map(analysisMessageIdentity);
+      const hasNewMessage = analyzedMessageIds.length > 0
+        ? currentMessageIds.some((messageId) => !analyzedMessageIds.includes(messageId))
+        : Math.max(...messages.map((message) => new Date(contextTime(message)).getTime())) > new Date(latestCustomerAnalysis.createdAt).getTime();
+      if (!hasNewMessage) throw new NoNewMessagesForReanalysisError();
+    }
 
     const feedbackExamples = await feedbackExamplesForContext(context, caseId);
     const conversationContext = messages.map((message) => `${message.senderType === "CUSTOMER" ? "ผู้ใช้งาน" : message.senderType === "TECH" ? "ทีม Tech" : "ระบบ"}: ${message.originalText}`);
