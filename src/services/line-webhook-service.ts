@@ -71,6 +71,7 @@ async function sendCaseContinuation(input: {
   caseId: string;
   replyToken?: string;
   text: string;
+  sourceMessageId?: string;
   autoAnswer?: {
     solutionId: string;
     answerLibraryId?: string;
@@ -96,6 +97,15 @@ async function sendCaseContinuation(input: {
     return;
   }
 
+  const sentAt = new Date().toISOString();
+  const inboxMessage = await recordBotCaseReply({
+    caseId: input.caseId,
+    text: input.text,
+    sourceMessageId: input.sourceMessageId,
+    messageType: "CASE_ACKNOWLEDGEMENT",
+    delivered: delivery.delivered,
+    sentAt,
+  });
   await store.createMessage({
     caseId: input.caseId,
     direction: "outbound_customer",
@@ -103,8 +113,60 @@ async function sendCaseContinuation(input: {
     originalText: input.text,
     senderType: "BOT",
     messageType: "CASE_ACKNOWLEDGEMENT",
+    metadata: inboxMessage ? { sourceInboxMessageId: inboxMessage.id } : undefined,
     deliveryStatus: "sent",
   });
+}
+
+async function recordBotCaseReply(input: {
+  caseId: string;
+  text: string;
+  sourceMessageId?: string;
+  messageType: string;
+  delivered: boolean;
+  sentAt: string;
+}) {
+  const detail = await store.getCaseDetail(input.caseId);
+  if (!detail) return undefined;
+
+  const externalMessageId = input.sourceMessageId
+    ? `bot:${input.messageType}:${input.sourceMessageId}`
+    : undefined;
+  let inboxMessage = externalMessageId
+    ? await store.getInboxMessageByExternalMessageId(externalMessageId)
+    : undefined;
+  if (!inboxMessage) {
+    inboxMessage = await store.createInboxMessage({
+      customerId: detail.customer.id,
+      caseId: input.caseId,
+      assignedCaseId: input.caseId,
+      assignedBy: "LINE_BOT",
+      assignedAt: input.sentAt,
+      direction: "OUTBOUND",
+      senderType: "BOT",
+      text: input.text,
+      externalMessageId,
+      deliveryStatus: input.delivered ? "SENT" : "FAILED",
+      sentAt: input.delivered ? input.sentAt : undefined,
+      deliveredAt: input.delivered ? input.sentAt : undefined,
+      createdAt: input.sentAt,
+    });
+  }
+
+  realtimeEventHub.publish({
+    name: "conversation.message.created",
+    data: {
+      eventId: `inbox:${inboxMessage.id}`,
+      messageId: inboxMessage.id,
+      conversationId: detail.customer.id,
+      userId: detail.customer.id,
+      caseId: input.caseId,
+      senderType: inboxMessage.senderType,
+      createdAt: inboxMessage.createdAt,
+      direction: inboxMessage.direction,
+    },
+  });
+  return inboxMessage;
 }
 
 function getPendingInformationFields(selection: PendingCaseSelection): PendingInformationField[] {
@@ -1149,6 +1211,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
         caseId: sourceCaseId,
         replyToken: input.replyToken,
         text: relatedResult.continuationReply,
+        sourceMessageId: input.messageId,
         autoAnswer: relatedResult.autoAnswer,
       });
       return { processed: true, duplicate: false, caseDetail: relatedResult.detail };
@@ -1466,6 +1529,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       caseId: relatedCase.id,
       replyToken: input.replyToken,
       text: continuationReply,
+      sourceMessageId: input.messageId,
       autoAnswer: relatedResult.autoAnswer,
     });
 
@@ -1642,6 +1706,15 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       text: acknowledgement,
     });
 
+    const acknowledgementSentAt = new Date().toISOString();
+    const inboxMessage = await recordBotCaseReply({
+      caseId: supportCase.id,
+      text: acknowledgement,
+      sourceMessageId: input.messageId,
+      messageType: "CASE_ACKNOWLEDGEMENT",
+      delivered: acknowledgementDelivery.delivered,
+      sentAt: acknowledgementSentAt,
+    });
     await store.createMessage({
       caseId: supportCase.id,
       direction: "outbound_customer",
@@ -1649,6 +1722,7 @@ export async function receiveLineTextMessage(input: LineTextMessageInput): Promi
       originalText: acknowledgement,
       senderType: "BOT",
       messageType: "CASE_ACKNOWLEDGEMENT",
+      metadata: inboxMessage ? { sourceInboxMessageId: inboxMessage.id } : undefined,
       deliveryStatus: acknowledgementDelivery.delivered ? "delivered" : "pending",
     });
   }

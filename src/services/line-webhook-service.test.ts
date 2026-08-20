@@ -98,6 +98,7 @@ mock.module("./ai-center-client", () => ({
 
 const { caseService } = await import("./case-service");
 const { buildInitialCaseAcknowledgement, receiveLineInboxMessage, receiveLineTextMessage } = await import("./line-webhook-service");
+const { realtimeEventHub } = await import("./realtime-event-hub");
 
 let sequence = 0;
 
@@ -451,6 +452,12 @@ describe("LINE intent classification guards", () => {
       caseNumber: detail!.caseNumber,
       caseTitle: "ส่งงานใน Microsoft Teams ไม่สำเร็จ",
     }));
+    const inboxUser = await store.getInboxUser(customer.id);
+    expect(inboxUser?.messages.filter((message) => message.caseId === detail?.id && message.senderType === "BOT").at(-1)).toMatchObject({
+      direction: "OUTBOUND",
+      text: lineReplies.at(-1),
+      deliveryStatus: "SENT",
+    });
     expect(initialReplyComposerCalls).toBe(0);
   });
 
@@ -869,19 +876,47 @@ describe("Phase 13 auto-answer Teams audit", () => {
     const lineCountBefore = lineReplies.length;
     const teamsCountBefore = autoAnswerTeamsPayloads.length;
     const eventCountBefore = autoAnswerDeliveryEvents.length;
-
-    await sendAutoAnswerFollowup({
-      lineUserId: setup.lineUserId,
-      caseId: setup.supportCase.id,
-      messageId: `auto-success-${sequence}`,
+    const realtimeEvents: Array<{ messageId: string; senderType?: string; direction: string }> = [];
+    const unsubscribe = realtimeEventHub.subscribe((event) => {
+      if (event.name !== "conversation.message.created" || event.data.caseId !== setup.supportCase.id || event.data.senderType !== "BOT") return;
+      realtimeEvents.push(event.data);
     });
+
+    try {
+      await sendAutoAnswerFollowup({
+        lineUserId: setup.lineUserId,
+        caseId: setup.supportCase.id,
+        messageId: `auto-success-${sequence}`,
+      });
+    } finally {
+      unsubscribe();
+    }
 
     const detail = await store.getCaseDetail(setup.supportCase.id);
     const audits = detail?.messages.filter((message) => message.messageType === "AUTO_ANSWER") ?? [];
     const audit = audits[0];
+    const inboxUser = await store.getInboxUser(setup.customer.id);
+    const inboxBotMessages = inboxUser?.messages.filter((message) => (
+      message.caseId === setup.supportCase.id && message.senderType === "BOT" && message.text === audit?.originalText
+    )) ?? [];
     const payload = autoAnswerTeamsPayloads.at(-1);
     expect(lineReplies.length - lineCountBefore).toBe(1);
     expect(autoAnswerTeamsPayloads.length - teamsCountBefore).toBe(1);
+    expect(inboxBotMessages).toHaveLength(1);
+    expect(inboxBotMessages[0]).toMatchObject({
+      caseId: setup.supportCase.id,
+      direction: "OUTBOUND",
+      senderType: "BOT",
+      text: audit?.originalText,
+      deliveryStatus: "SENT",
+    });
+    expect(realtimeEvents).toEqual([
+      expect.objectContaining({
+        messageId: inboxBotMessages[0]?.id,
+        senderType: "BOT",
+        direction: "OUTBOUND",
+      }),
+    ]);
     expect(audits).toHaveLength(1);
     expect(audit?.metadata).toMatchObject({
       autoAnswerSolutionId: setup.solution.id,

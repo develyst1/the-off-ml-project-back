@@ -1,6 +1,7 @@
 import type { Analysis, Message, Solution } from "../domain/types";
 import { store } from "../repositories/store";
 import { teamsClient } from "./teams-client";
+import { realtimeEventHub } from "./realtime-event-hub";
 
 export class AutoAnswerNotificationError extends Error {
   constructor(
@@ -198,6 +199,38 @@ export async function notifyTeamsForAutoAnswer(input: AutoAnswerAuditIdentity) {
 export async function recordAutoAnswerAndNotify(input: RecordAutoAnswerInput) {
   const externalMessageId = `auto-answer:${input.sourceMessageId}`;
   return withLock(recordLocks, externalMessageId, async () => {
+    const caseDetail = await store.getCaseDetail(input.caseId);
+    if (!caseDetail) throw new AutoAnswerNotificationError("case_not_found", 404);
+
+    // Keep the successful LINE Bot reply in the Inbox as well as the case audit.
+    // The external identity makes webhook/retry handling idempotent.
+    const inboxExternalMessageId = `auto-answer-inbox:${input.sourceMessageId}`;
+    let inboxMessage = await store.getInboxMessageByExternalMessageId(inboxExternalMessageId);
+    if (!inboxMessage) {
+      try {
+        inboxMessage = await store.createInboxMessage({
+          customerId: caseDetail.customer.id,
+          caseId: input.caseId,
+          assignedCaseId: input.caseId,
+          assignedBy: "AUTO_ANSWER",
+          assignedAt: input.sentAt,
+          direction: "OUTBOUND",
+          senderType: "BOT",
+          text: input.answerText,
+          externalMessageId: inboxExternalMessageId,
+          deliveryStatus: "SENT",
+          sentAt: input.sentAt,
+          deliveredAt: input.sentAt,
+          createdAt: input.sentAt,
+        });
+      } catch (error) {
+        inboxMessage = await store.getInboxMessageByExternalMessageId(inboxExternalMessageId);
+        if (!inboxMessage) throw error;
+      }
+    }
+
+    if (!inboxMessage) throw new Error("AUTO_ANSWER_INBOX_MESSAGE_MISSING");
+
     let audit = await store.getMessageByExternalMessageId(externalMessageId);
     if (audit && (audit.caseId !== input.caseId || audit.messageType !== "AUTO_ANSWER")) {
       throw new AutoAnswerNotificationError("auto_answer_audit_identity_conflict", 400);
@@ -218,6 +251,7 @@ export async function recordAutoAnswerAndNotify(input: RecordAutoAnswerInput) {
           sentAt: input.sentAt,
           deliveredAt: input.sentAt,
           metadata: {
+            sourceInboxMessageId: inboxMessage.id,
             autoAnswerSolutionId: input.solutionId,
             autoAnswerLibraryId: input.answerLibraryId,
             autoAnswerAnalysisId: input.analysisId,
@@ -231,7 +265,28 @@ export async function recordAutoAnswerAndNotify(input: RecordAutoAnswerInput) {
         audit = await store.getMessageByExternalMessageId(externalMessageId);
         if (!audit) throw error;
       }
+    } else if (audit.metadata?.sourceInboxMessageId !== inboxMessage.id) {
+      await store.updateMessage(audit.id, {
+        metadata: {
+          ...audit.metadata,
+          sourceInboxMessageId: inboxMessage.id,
+        },
+      });
     }
+
+    realtimeEventHub.publish({
+      name: "conversation.message.created",
+      data: {
+        eventId: `inbox:${inboxMessage.id}`,
+        messageId: inboxMessage.id,
+        conversationId: caseDetail.customer.id,
+        userId: caseDetail.customer.id,
+        caseId: input.caseId,
+        senderType: inboxMessage.senderType,
+        createdAt: inboxMessage.createdAt,
+        direction: inboxMessage.direction,
+      },
+    });
 
     const notification = await notifyTeamsForAutoAnswer({
       caseId: input.caseId,
